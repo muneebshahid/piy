@@ -267,8 +267,9 @@ Implement `Store.start_run()` as one transaction:
 1. verify that the session exists;
 2. check for a still-running run;
 3. reject a busy session when replacement is disabled;
-4. insert the new running run with its prompt and configured metadata;
-5. commit before provider execution begins.
+4. snapshot the committed session history used to bootstrap execution;
+5. insert the new running run with its prompt and configured metadata;
+6. commit before provider execution begins.
 
 Remove `_active_prompt_session_ids` as the consistency authority. The runtime
 may retain a local collection of handles only for cancellation and lifecycle
@@ -379,11 +380,13 @@ The start transaction:
 If the previous run finished before this transaction acquired the write lock,
 there is nothing to replace and the new run starts normally.
 
-Return both the new record and the optional replaced ID:
+Return the new record, its transactionally consistent committed history
+snapshot, and the optional replaced ID:
 
 ```python
 class StartedRun(BaseModel):
     run: RunRecord
+    committed_history: tuple[HistoryItem, ...]
     replaced_run_id: str | None
 ```
 

@@ -14,6 +14,7 @@ from tile import (
     Completed,
     ExecutionFailure,
     Failed,
+    HistoryItem,
     PersistenceFailure,
     RunHandle,
     RunPersistenceError,
@@ -24,6 +25,7 @@ from tile import (
 )
 from tile.events import AgentEvent, RunEndEvent
 from tile.types import (
+    AssistantTurn,
     AsyncEventStream,
     ConversationItem,
     ToolDefinition,
@@ -138,6 +140,47 @@ def test_runtime_persists_running_record_before_provider_execution() -> None:
         store.close()
 
     asyncio.run(_run())
+
+
+def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
+    """Avoid a second fallible Store read after durable run acceptance."""
+
+    store = _UnavailablePublicHistoryStore(in_memory=True)
+    store.create_session(session_id="session-1")
+    started = store.start_run(
+        run_id="seed",
+        session_id="session-1",
+        prompt="first",
+        model="gpt-5.4",
+        provider="test",
+    )
+    store.finish_run(
+        run_id=started.run.run_id,
+        outcome=Completed(value="first answer"),
+        history_delta=[
+            UserMessage(content="first"),
+            AssistantTurn(response_id="response-1"),
+        ],
+    )
+    provider = ProviderStreamMock([final_text_stream("response-2", "second answer")])
+    runtime = AgentRuntime(
+        stream_fn=provider.fn,
+        model="gpt-5.4",
+        cwd=Path("."),
+        store=store,
+    )
+
+    async def _run() -> None:
+        handle = await runtime.get_session("session-1").prompt("second")
+        assert await handle.wait() == "completed"
+
+    asyncio.run(_run())
+    assert [item.role for item in provider.history(0)] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    store.close()
 
 
 def test_runtime_failure_commits_the_valid_completed_prefix() -> None:
@@ -531,6 +574,16 @@ class _FailingFinishStore(SQLiteStore):
             model=model,
             ended_at=ended_at,
         )
+
+
+class _UnavailablePublicHistoryStore(SQLiteStore):
+    """SQLite Store whose standalone history read is unavailable."""
+
+    def get_history(self, session_id: str) -> tuple[HistoryItem, ...]:
+        """Prove prompt bootstrap does not perform a second Store read."""
+
+        _ = session_id
+        raise AssertionError("AgentRuntime must use StartedRun.committed_history")
 
 
 def _runtime(

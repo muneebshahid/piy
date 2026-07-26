@@ -153,11 +153,12 @@ class HistoryItem(BaseModel):
 
 
 class StartedRun(BaseModel):
-    """Result of atomically starting one run."""
+    """Atomic bootstrap state for one newly started run."""
 
     model_config = ConfigDict(frozen=True)
 
     run: RunRecord
+    committed_history: tuple[HistoryItem, ...]
     replaced_run_id: str | None = None
 
 

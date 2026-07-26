@@ -9,6 +9,7 @@ from threading import Barrier
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
 from tile import (
     Aborted,
@@ -50,6 +51,7 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
     try:
         session = store.create_session(session_id="session-1", name="First")
         started = _start_run(store)
+        assert started.committed_history == ()
         finished = store.finish_run(
             run_id=started.run.run_id,
             outcome=Completed(value="done"),
@@ -212,6 +214,9 @@ def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
         )
 
         assert started.replaced_run_id is None
+        assert tuple(item.item for item in started.committed_history) == (
+            UserMessage(content="hello"),
+        )
         assert store.get_run("run-1") == completed
         assert store.get_run("run-2").status == "running"
     finally:
@@ -417,6 +422,55 @@ def test_file_backed_store_survives_restart(tmp_path: Path) -> None:
         assert reopened.get_history("session-1")[0].item == UserMessage(content="hello")
     finally:
         reopened.close()
+
+
+def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
+    tmp_path: Path,
+) -> None:
+    """Keep the predecessor active when bootstrap history cannot be decoded."""
+
+    database_path = tmp_path / "invalid-bootstrap-history.db"
+    seed = SQLiteStore(database_path)
+    seed.create_session(session_id="session-1")
+    first = _start_run(seed)
+    seed.finish_run(
+        run_id=first.run.run_id,
+        outcome=Completed(value="done"),
+        history_delta=[UserMessage(content="hello")],
+        ended_at=ENDED_AT,
+    )
+    active = seed.start_run(
+        run_id="run-2",
+        session_id="session-1",
+        prompt="active",
+        model="gpt-5.4",
+        provider="test",
+    ).run
+    seed.close()
+    connection = sqlite3.connect(database_path)
+    connection.execute("UPDATE history_items SET payload_json = 'not-json'")
+    connection.commit()
+    connection.close()
+
+    store = SQLiteStore(database_path)
+    try:
+        with pytest.raises(ValidationError):
+            store.start_run(
+                run_id="run-3",
+                session_id="session-1",
+                prompt="replacement",
+                model="gpt-5.4",
+                provider="test",
+                replace_active=True,
+            )
+
+        assert store.get_run("run-2") == active
+        assert [run.run_id for run in store.list_runs("session-1")] == [
+            "run-1",
+            "run-2",
+        ]
+    finally:
+        store.close()
 
 
 def test_unified_store_rejects_legacy_schema_without_migration(

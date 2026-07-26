@@ -146,7 +146,7 @@ class AgentRuntime:
         self._cancel_replaced_local_run(started.replaced_run_id)
         handle = RunHandle(
             record=started.run,
-            committed_history=self._store.get_history(session_id),
+            committed_history=started.committed_history,
             spec=_RunSpec(result=result),
             deps=self._deps,
             on_finished=self._release_run,

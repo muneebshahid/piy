@@ -87,7 +87,11 @@ class Store(Protocol):
         replace_active: bool = False,
         started_at: datetime | None = None,
     ) -> StartedRun:
-        """Atomically create a running run and optionally replace its predecessor."""
+        """Atomically start a run and snapshot its committed session history.
+
+        The returned history must come from the same consistency boundary as
+        the accepted run and optional predecessor replacement.
+        """
         ...
 
     def finish_run(

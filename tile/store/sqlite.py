@@ -141,8 +141,16 @@ class SQLiteStore:
                 replace_active=replace_active,
                 replaced_at=record.started_at,
             )
+            committed_history = self._history_prefix(
+                session_id,
+                through_position=None,
+            )
             self._insert_run(record)
-        return StartedRun(run=record, replaced_run_id=replaced_run_id)
+        return StartedRun(
+            run=record,
+            committed_history=committed_history,
+            replaced_run_id=replaced_run_id,
+        )
 
     def finish_run(
         self,

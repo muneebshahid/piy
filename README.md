@@ -154,7 +154,8 @@ finishes; session history therefore contains complete committed turns only.
 
 Execution sits between two short transactions:
 
-1. `start_run` validates the session and inserts the running record.
+1. `start_run` validates the session, snapshots committed history, and inserts
+   the running record atomically.
 2. Provider streaming and tool execution happen entirely in memory.
 3. `finish_run` conditionally finalizes the still-running record and appends
    its complete history delta in one transaction.
