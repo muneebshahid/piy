@@ -1,5 +1,9 @@
 # Persistence-First Runtime Redesign
 
+**Implementation status:** complete on `codex/persistence-first-redesign-plan`.
+All eight units are implemented; final verification is recorded in the
+implementing change rather than maintained as mutable state in this plan.
+
 ## Purpose
 
 Tile currently treats the live `Run` handle as authoritative and persists run

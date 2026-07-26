@@ -8,8 +8,6 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from tile.agent import run_agent
-from tile.history import InMemoryHistoryStore
-from tile.runs import InMemoryRunStore
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
     NO_RESULT_REASON,
@@ -20,6 +18,7 @@ from tile.result import (
     Failed,
 )
 from tile.runtime import AgentRuntime
+from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.tools.complete import CompleteDetails, tool as complete_tool
 from tile.tools.fail import tool as fail_tool
@@ -322,8 +321,7 @@ def test_runtime_maps_fail_tool_to_failed_outcome() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -332,7 +330,7 @@ def test_runtime_maps_fail_tool_to_failed_outcome() -> None:
         """Run one result prompt and return its outcome when failed."""
 
         run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
+        assert await run.wait() == "failed"
         return run.outcome if isinstance(run.outcome, Failed) else None
 
     outcome = asyncio.run(_run())
@@ -382,12 +380,11 @@ def test_runtime_nudges_text_only_agent_run_toward_result() -> None:
         ]
     )
 
-    store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=store,
-        run_store=InMemoryRunStore(),
+        store=store,
         auto_mode=False,
         cwd=Path("."),
     )
@@ -411,7 +408,9 @@ def test_runtime_nudges_text_only_agent_run_toward_result() -> None:
     assert follow_ups[0].message.content == RESULT_FOLLOW_UP
     nudged_history = provider.history(1)
     assert nudged_history[-1] == UserMessage(content=RESULT_FOLLOW_UP)
-    assert UserMessage(content=RESULT_FOLLOW_UP) in store.get_history("nudged")
+    assert UserMessage(content=RESULT_FOLLOW_UP) in tuple(
+        item.item for item in store.get_history("nudged")
+    )
     assert outcome is not None
     assert outcome.value == WeatherReport(city="Munich", temp_c=21.0)
 
@@ -428,8 +427,7 @@ def test_runtime_fails_after_follow_up_cap() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -438,7 +436,7 @@ def test_runtime_fails_after_follow_up_cap() -> None:
         """Run until the output-contract follow-up limit is exhausted."""
 
         run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
+        assert await run.wait() == "failed"
         return run.outcome if isinstance(run.outcome, Failed) else None
 
     outcome = asyncio.run(_run())
@@ -459,8 +457,7 @@ def test_runtime_without_contract_completes_with_text() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -487,12 +484,11 @@ def test_runtime_fails_when_nudge_attempt_hits_stream_error() -> None:
         ]
     )
 
-    store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=store,
-        run_store=InMemoryRunStore(),
+        store=store,
         auto_mode=False,
         cwd=Path("."),
     )
@@ -512,7 +508,7 @@ def test_runtime_fails_when_nudge_attempt_hits_stream_error() -> None:
     asyncio.run(_run())
 
     assert provider.await_count == 2
-    history = list(store.get_history("nudged-error"))
+    history = [item.item for item in store.get_history("nudged-error")]
     assert len(history) == 3
     assert history[0] == UserMessage(content="Weather?")
     first_attempt = history[1]
@@ -588,8 +584,7 @@ def test_runtime_keeps_terminal_text_separate_from_result_value() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -619,12 +614,11 @@ def test_session_prompt_composes_result_tools_and_contract() -> None:
             ),
         ]
     )
-    store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=store,
-        run_store=InMemoryRunStore(),
+        store=store,
         auto_mode=False,
         cwd=Path("."),
     )
@@ -660,8 +654,7 @@ def test_session_mixes_contract_and_plain_prompts() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -699,6 +692,5 @@ def test_runtime_rejects_reserved_tool_names() -> None:
             model="gpt-5.4",
             tools=[city_tool("complete", "Not the real complete.", _weather)],
             cwd=Path("."),
-            history_store=InMemoryHistoryStore(),
-            run_store=InMemoryRunStore(),
+            store=SQLiteStore(in_memory=True),
         )

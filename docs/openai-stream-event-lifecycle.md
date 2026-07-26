@@ -338,17 +338,13 @@ Rules:
   Agent events carry no attempt label: attempts are strictly sequential,
   so position in the log identifies them, with `ResultFollowUpEvent`
   separating retries.
-- Terminal record persistence happens after the run end is committed;
-  `Run.wait()` returns only after finalization, so waiters always observe
-  a closed log.
+- The terminal run record and replayable history are committed atomically
+  before `RunEndEvent` closes the live log. If that transaction fails, the
+  run end carries a persistence failure and `RunHandle.wait()` raises.
 - Provider stream fragments (`TextStart/End`, `ReasoningStart/End`,
   `ToolCallStart/Delta/End`, and the provider `StreamStart/Done/Error`
   events) are message content, not lifecycle scopes; the containing
   message's end, or the sweep, terminates their outstanding state.
-- A producer that completes without committing a run end fails the run
-  with an explicit "ended without a committed run end event" execution
-  failure.
-
 Abort ordering during a tool call — the open scopes are simply left open
 and the run end sweeps them:
 

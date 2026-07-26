@@ -7,9 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tile import RunStatus
+from tile import RunStatus, SQLiteStore
 from tile.events import StreamFn
-from tile.history import InMemoryHistoryStore
 from tile.types.conversation import ConversationItem
 from tile.types.tools import ToolTextContent
 from examples import local_runner
@@ -29,11 +28,11 @@ from tests.support.conversation_assertions import (
 def test_run_prompt_streams_runtime_tool_flow_as_json_lines(tmp_path: Path) -> None:
     """Run one prompt through the local runtime with a deterministic file tool."""
 
-    provider, history_store, output = _run_runtime_tool_flow(tmp_path)
+    provider, store, output = _run_runtime_tool_flow(tmp_path)
 
     _assert_runtime_event_sequence(output)
     _assert_provider_received_tool_result(provider)
-    _assert_runtime_persisted_completed_history(history_store)
+    _assert_runtime_persisted_completed_history(store)
 
 
 def test_run_cli_rejects_empty_prompt() -> None:
@@ -67,7 +66,7 @@ def test_run_cli_reads_prompt_from_stdin(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def _run_runtime_tool_flow(
     tmp_path: Path,
-) -> tuple[ProviderStreamMock, InMemoryHistoryStore, io.StringIO]:
+) -> tuple[ProviderStreamMock, SQLiteStore, io.StringIO]:
     """Run the local runner through a fake provider and real read tool."""
 
     provider = ProviderStreamMock(
@@ -84,7 +83,7 @@ def _run_runtime_tool_flow(
             ),
         ]
     )
-    history_store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     output = io.StringIO()
     (tmp_path / "notes.txt").write_text("hello from disk\n", encoding="utf-8")
 
@@ -93,12 +92,12 @@ def _run_runtime_tool_flow(
             "Read the note",
             stream_fn=provider.fn,
             model="gpt-5.4",
-            history_store=history_store,
+            store=store,
             cwd=tmp_path,
             output=output,
         )
     )
-    return provider, history_store, output
+    return provider, store, output
 
 
 def _assert_runtime_event_sequence(output: io.StringIO) -> None:
@@ -138,14 +137,16 @@ def _assert_provider_received_tool_result(
 
 
 def _assert_runtime_persisted_completed_history(
-    history_store: InMemoryHistoryStore,
+    store: SQLiteStore,
 ) -> None:
     """Assert runtime history contains the completed local-runner turn."""
 
-    sessions = history_store.list_sessions()
+    sessions = store.list_sessions()
     assert len(sessions) == 1
     assert sessions[0].name == "local-runner"
-    history = history_store.get_history(sessions[0].session_id)
+    history = tuple(
+        envelope.item for envelope in store.get_history(sessions[0].session_id)
+    )
     assert [_history_role(item) for item in history] == [
         "user",
         "assistant",

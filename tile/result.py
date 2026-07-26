@@ -50,14 +50,16 @@ class Completed(BaseModel):
     )
 
 
-ExecutionFailureOrigin: TypeAlias = Literal["submission", "turn", "execution"]
+ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
+PersistenceOperation: TypeAlias = Literal["start_run", "finish_run"]
+AbortReason: TypeAlias = Literal["cancelled", "replaced"]
 
 
 class AgentFailure(BaseModel):
     """The agent declared it could not deliver the requested result.
 
-    Execution finished normally, so the run's status stays ``completed``;
-    this cause records the model's own verdict that the task failed.
+    Execution finished normally, but the model's own verdict is a failed
+    outcome and therefore produces ``status="failed"``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -82,7 +84,18 @@ class ExecutionFailure(BaseModel):
     message: str
 
 
-FailureCause: TypeAlias = AgentFailure | ExecutionFailure
+class PersistenceFailure(BaseModel):
+    """Serializable diagnostics for an atomic persistence operation failure."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: Literal["persistence_failure"] = "persistence_failure"
+    operation: PersistenceOperation
+    exception_type: str
+    message: str
+
+
+FailureCause: TypeAlias = AgentFailure | ExecutionFailure | PersistenceFailure
 
 
 class Failed(BaseModel):
@@ -99,11 +112,12 @@ class Failed(BaseModel):
 
 
 class Aborted(BaseModel):
-    """Terminal outcome for a run cancelled before it reached a verdict."""
+    """Terminal outcome for a cancelled or atomically replaced run."""
 
     model_config = ConfigDict(frozen=True)
 
     type: Literal["aborted"] = "aborted"
+    reason: AbortReason = "cancelled"
 
 
 RunOutcome: TypeAlias = Completed | Failed | Aborted

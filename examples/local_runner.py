@@ -10,10 +10,9 @@ from openai import AsyncOpenAI
 
 from tile import (
     AgentRuntime,
-    HistoryStore,
-    InMemoryHistoryStore,
-    InMemoryRunStore,
     RunStatus,
+    SQLiteStore,
+    Store,
 )
 from tile.events import AgentEvent, StreamFn
 from tile.providers.openai import create_stream_api
@@ -50,31 +49,38 @@ async def run_prompt(
     stream_fn: StreamFn,
     model: str | None = None,
     tools: Sequence[ToolDefinition] | None = None,
-    history_store: HistoryStore | None = None,
+    store: Store | None = None,
     cwd: Path | str | None = None,
     output: TextIO | None = None,
 ) -> RunStatus:
     """Run one prompt through a runtime session and write JSON event lines."""
 
     active_tools = tuple(tools) if tools is not None else BUILTIN_TOOLS
-    runtime = AgentRuntime(
-        stream_fn=stream_fn,
-        model=model or settings.openai_model,
-        history_store=history_store
-        if history_store is not None
-        else InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
-        tools=active_tools,
-        cwd=cwd if cwd is not None else Path.cwd(),
-    )
-    session = runtime.session(name="local-runner")
-    event_output = output or sys.stdout
+    if store is None:
+        owned_store: SQLiteStore | None = SQLiteStore(in_memory=True)
+        active_store: Store = owned_store
+    else:
+        owned_store = None
+        active_store = store
+    try:
+        runtime = AgentRuntime(
+            stream_fn=stream_fn,
+            model=model or settings.openai_model,
+            store=active_store,
+            tools=active_tools,
+            cwd=cwd if cwd is not None else Path.cwd(),
+        )
+        session = runtime.session(name="local-runner")
+        event_output = output or sys.stdout
 
-    run = await session.prompt(prompt)
-    async for event in run.events():
-        event_output.write(_serialize_event(event))
-        event_output.write("\n")
-    return await run.wait()
+        run = await session.prompt(prompt)
+        async for event in run.events():
+            event_output.write(_serialize_event(event))
+            event_output.write("\n")
+        return await run.wait()
+    finally:
+        if owned_store is not None:
+            owned_store.close() # Comment: Why is the caller calling close here.
 
 
 def _read_prompt(argv: Sequence[str], stdin: TextIO) -> str:
