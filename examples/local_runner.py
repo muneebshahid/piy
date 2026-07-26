@@ -80,7 +80,7 @@ async def run_prompt(
         return await run.wait()
     finally:
         if owned_store is not None:
-            owned_store.close() # Comment: Why is the caller calling close here.
+            owned_store.close()
 
 
 def _read_prompt(argv: Sequence[str], stdin: TextIO) -> str:
