@@ -31,8 +31,11 @@ def persist_outcome(
 ) -> RunRecord:
     """Finish and persist one Store-owned running record."""
 
-    record = store.get_run(run_id).finish(outcome=outcome)
-    return store.finish_run(record=record, history_delta=history_delta)
+    return store.finish_run(
+        run_id=run_id,
+        outcome=outcome,
+        history_delta=history_delta,
+    )
 
 
 def running_record() -> RunRecord:

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Iterator, cast
 
 from tile._sqlite import immediate_transaction, resolve_connection_target
-from tile.result import Aborted
+from tile.result import Aborted, RunOutcome
 from tile.store.base import (
     ActiveRunError,
     RunAlreadyExistsError,
@@ -18,6 +18,7 @@ from tile.store.base import (
     SessionAlreadyExistsError,
     SessionNotFoundError,
     StaleRunError,
+    StoreError,
     StoreOperation,
     StorePersistenceError,
 )
@@ -73,7 +74,7 @@ class SQLiteStore:
     ) -> SessionRecord:
         """Create and return one session, rejecting an existing id."""
 
-        with _translate_sqlite_errors("create_session"):
+        with _translate_store_errors("create_session"):
             try:
                 with immediate_transaction(self._connection):
                     self._insert_session(record)
@@ -86,13 +87,13 @@ class SQLiteStore:
     def get_session(self, session_id: str) -> SessionRecord:
         """Return one session or raise when it does not exist."""
 
-        with _translate_sqlite_errors("get_session"):
+        with _translate_store_errors("get_session"):
             return self._get_session(session_id)
 
     def list_sessions(self) -> tuple[SessionRecord, ...]:
         """Return sessions in creation order."""
 
-        with _translate_sqlite_errors("list_sessions"):
+        with _translate_store_errors("list_sessions"):
             rows = self._connection.execute(
                 """
                 SELECT id, name, created_at, updated_at
@@ -100,8 +101,8 @@ class SQLiteStore:
                 ORDER BY created_at, id
                 """
             ).fetchall()
-        session_rows = cast("Sequence[SessionRow]", rows)
-        return tuple(session_from_row(row) for row in session_rows)
+            session_rows = cast("Sequence[SessionRow]", rows)
+            return tuple(session_from_row(row) for row in session_rows)
 
     def start_run(
         self,
@@ -111,7 +112,10 @@ class SQLiteStore:
     ) -> StartedRun:
         """Atomically create a run and optionally replace its active predecessor."""
 
-        with _translate_sqlite_errors("start_run"):
+        if record.status != "running":
+            raise ValueError("start_run requires a running RunRecord.")
+
+        with _translate_store_errors("start_run"):
             with immediate_transaction(self._connection):
                 self._require_session(record.session_id)
                 active = self._running_run_for_session(record.session_id)
@@ -130,16 +134,18 @@ class SQLiteStore:
     def finish_run(
         self,
         *,
-        record: RunRecord,
+        run_id: str,
+        outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
     ) -> RunRecord:
         """Atomically finalize a still-running run and append its history delta."""
 
-        with _translate_sqlite_errors("finish_run"):
+        with _translate_store_errors("finish_run"):
             with immediate_transaction(self._connection):
-                run = self._get_run(record.run_id)
+                run = self._get_run(run_id)
                 if run.status != "running":
-                    raise StaleRunError(f"Run is no longer active: {record.run_id}")
+                    raise StaleRunError(f"Run is no longer active: {run_id}")
+                record = run.finish(outcome=outcome)
                 self._update_running_run(record)
                 self._insert_history_delta(record, history_delta)
                 self._touch_session(record)
@@ -148,27 +154,27 @@ class SQLiteStore:
     def get_history(self, session_id: str) -> tuple[HistoryItem, ...]:
         """Return committed history in session-local order."""
 
-        with _translate_sqlite_errors("get_history"):
+        with _translate_store_errors("get_history"):
             self._require_session(session_id)
             return self._history_for_session(session_id)
 
     def get_run(self, run_id: str) -> RunRecord:
         """Return one persistent run or raise when it does not exist."""
 
-        with _translate_sqlite_errors("get_run"):
+        with _translate_store_errors("get_run"):
             return self._get_run(run_id)
 
     def list_runs(self, session_id: str) -> tuple[RunRecord, ...]:
         """Return runs in ascending start-time order; ties are unspecified."""
 
-        with _translate_sqlite_errors("list_runs"):
+        with _translate_store_errors("list_runs"):
             self._require_session(session_id)
             rows = self._connection.execute(
                 _SELECT_RUN_SQL + " WHERE session_id = ? ORDER BY started_at",
                 (session_id,),
             ).fetchall()
-        run_rows = cast("Sequence[RunRow]", rows)
-        return tuple(run_from_row(row) for row in run_rows)
+            run_rows = cast("Sequence[RunRow]", rows)
+            return tuple(run_from_row(row) for row in run_rows)
 
     def fork_session(
         self,
@@ -178,7 +184,7 @@ class SQLiteStore:
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
 
-        with _translate_sqlite_errors("fork_session"):
+        with _translate_store_errors("fork_session"):
             with immediate_transaction(self._connection):
                 self._require_session(source_session_id)
                 self._reject_existing_session(target.session_id)
@@ -391,12 +397,14 @@ class SQLiteStore:
 
 
 @contextmanager
-def _translate_sqlite_errors(operation: StoreOperation) -> Iterator[None]:
-    """Translate backend failures into the Store-owned error contract."""
+def _translate_store_errors(operation: StoreOperation) -> Iterator[None]:
+    """Preserve domain errors and translate backend or decoding failures."""
 
     try:
         yield
-    except sqlite3.Error as error:
+    except StoreError:
+        raise
+    except (sqlite3.Error, ValueError) as error:
         raise StorePersistenceError(operation, error) from error
 
 

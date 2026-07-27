@@ -342,7 +342,10 @@ Rules:
 - The terminal run record and replayable history are committed atomically
   before `RunEndEvent` closes the live log. If that transaction fails, the
   run end preserves the execution outcome and `RunHandle.wait()` returns a
-  `RunReport` whose `finalization_error` carries the Store failure.
+  `RunReport` whose `finalization_error` carries the Store failure. A stale
+  writer is reported the same way with `StaleRunError`; its report retains the
+  local outcome and history delta while an explicit Store read reveals the
+  winning durable outcome.
 - Provider stream fragments (`TextStart/End`, `ReasoningStart/End`,
   `ToolCallStart/Delta/End`, and the provider `StreamStart/Done/Error`
   events) are message content, not lifecycle scopes; the containing

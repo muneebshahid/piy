@@ -16,6 +16,7 @@ from tile.prompt import DEFAULT_INSTRUCTIONS
 from tile.result import (
     COMPLETE_TOOL_NAME,
     FAIL_TOOL_NAME,
+    RunOutcome,
 )
 from tile.runtime.execution import _ExecutionDependencies
 from tile.runtime.handle import RunHandle, _RunCompletion
@@ -23,7 +24,6 @@ from tile.runtime.session import Session
 from tile.store.base import (
     SessionAlreadyExistsError,
     SessionNotFoundError,
-    StaleRunError,
     Store,
 )
 from tile.store.models import RunRecord, SessionRecord
@@ -192,21 +192,13 @@ class AgentRuntime:
         """Persist one candidate completion and release its local handle."""
 
         try:
-            return self._persist_completion(completion)
-        finally:
-            self._active_runs.pop(completion.record.run_id, None)
-
-    def _persist_completion(self, completion: _RunCompletion) -> RunRecord:
-        """Return the Store record for a successful or stale finalization."""
-
-        try:
-            record = self._store.finish_run(
-                record=completion.record,
+            return self._store.finish_run(
+                run_id=completion.record.run_id,
+                outcome=cast("RunOutcome", completion.record.outcome),
                 history_delta=completion.history_delta,
             )
-        except StaleRunError:
-            return self._store.get_run(completion.record.run_id)
-        return record
+        finally:
+            self._active_runs.pop(completion.record.run_id, None)
 
     def _build_session(self, record: SessionRecord) -> Session:
         """Build the application facade for one persistent session."""

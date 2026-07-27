@@ -137,22 +137,24 @@ class RunHandle:
         self._changed.set()
 
     def _finalize(self, task: asyncio.Task[RunOutcome]) -> None:
-        """Delegate terminal persistence, then close the live event log."""
+        """Delegate persistence and always release terminal-state waiters."""
 
-        outcome, execution_error = _terminal_outcome(
-            task,
-            abort_reason=self._abort_reason,
-        )
-        self._history.heal()
-        history_delta = self._history.conversation_items()
-        report = self._persist(
-            record=self._initial_record.finish(outcome=outcome),
-            history_delta=history_delta,
-            execution_error=execution_error,
-        )
-        self._apply_report(report)
-        self._finalized.set()
-        self._changed.set()
+        try:
+            outcome, execution_error = _terminal_outcome(
+                task,
+                abort_reason=self._abort_reason,
+            )
+            self._history.heal()
+            history_delta = self._history.conversation_items()
+            report = self._persist(
+                record=self._initial_record.finish(outcome=outcome),
+                history_delta=history_delta,
+                execution_error=execution_error,
+            )
+            self._apply_report(report)
+        finally:
+            self._finalized.set()
+            self._changed.set()
 
     def _persist(
         self,

@@ -105,10 +105,10 @@ def test_finish_and_replace_race_preserves_one_valid_winner(tmp_path: Path) -> N
 
         store = SQLiteStore(database_path)
         try:
-            record = store.get_run("run-1").finish(outcome=Completed(value="done"))
             barrier.wait()
             store.finish_run(
-                record=record,
+                run_id="run-1",
+                outcome=Completed(value="done"),
                 history_delta=[UserMessage(content="hello")],
             )
             return "finished"

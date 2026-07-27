@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from typing import Literal, Protocol, TypeAlias
 
+from tile.result import RunOutcome
 from tile.store.models import HistoryItem, RunRecord, SessionRecord, StartedRun
 from tile.types.conversation import ConversationItem
 
@@ -96,6 +97,9 @@ class Store(Protocol):
     ) -> StartedRun:
         """Atomically start a run and snapshot its committed session history.
 
+        ``record`` must represent a running run. Terminal records are not valid
+        inputs to this insert operation.
+
         The returned history must come from the same consistency boundary as
         the accepted run and optional predecessor replacement.
         """
@@ -104,14 +108,15 @@ class Store(Protocol):
     def finish_run(
         self,
         *,
-        record: RunRecord,
+        run_id: str,
+        outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
     ) -> RunRecord:
         """Atomically finalize a run and commit its replayable history delta.
 
-        The caller owns construction of the terminal record and valid history
-        delta. Implementations own stale-run fencing and all-or-nothing
-        persistence.
+        The caller owns the terminal outcome and valid history delta.
+        Implementations load the authoritative run identity and own terminal
+        record construction, stale-run fencing, and all-or-nothing persistence.
         """
         ...
 

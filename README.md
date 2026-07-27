@@ -154,17 +154,19 @@ record contains the submitted prompt before provider execution begins. The
 prompt and all replayable assistant/tool items remain provisional until the run
 finishes; session history therefore contains complete committed turns only.
 The runtime constructs new records through `SessionRecord.create()` and
-`RunRecord.start()` before handing them to the Store; adapters own atomic
-persistence rather than domain-object construction.
+`RunRecord.start()` before handing them to the Store. Inserts therefore accept
+complete records. Finalization is a state transition instead: the runtime
+supplies only the run id, outcome, and history delta, and the Store derives the
+authoritative terminal record from its stored running row.
 
 Execution sits between two short transactions:
 
 1. `start_run` validates the session, snapshots committed history, and inserts
    the running record atomically.
 2. Provider streaming and tool execution happen entirely in memory.
-3. The handle derives a terminal record when execution ends, and `finish_run`
-   conditionally persists it with the complete history delta in one
-   transaction.
+3. The handle derives a local terminal record when execution ends. `finish_run`
+   applies its outcome to the authoritative stored record and conditionally
+   persists that record with the complete history delta in one transaction.
 
 ```python
 from pathlib import Path
@@ -194,11 +196,13 @@ session_records = runtime.runs_for(session.id)
 
 `finish_run` uses the run's `status="running"` condition as a stale-writer
 fence. If another process has already replaced or finalized that run, no
-history is inserted. If any terminal write fails, the transaction rolls back
-and the stored run remains `running`. `RunHandle.wait()` still returns the
-process-local execution result, with `report.persisted == False` and the
-Store-owned error in `report.finalization_error`. Recover explicitly by
-submitting another prompt with `replace_active=True`.
+history is inserted, and the report retains the process-local execution result
+with `StaleRunError` in `report.finalization_error`. If a terminal write fails
+because of a backend error, the transaction rolls back and the stored run
+remains `running`. In either case, `RunHandle.wait()` returns the local result
+with `report.persisted == False`; use `runtime.get_run(run.id)` when the
+authoritative stored outcome is needed. Recover from a still-running record
+explicitly by submitting another prompt with `replace_active=True`.
 
 ```python
 replacement = await session.prompt("Try again", replace_active=True)
@@ -290,7 +294,8 @@ result contract through `AgentFailure` or execution broke through
 | Reminder cap exhausted | `failed` | `Failed(cause=AgentFailure(...))` |
 | Provider dies (stream error or raise) | `failed` | `Failed(cause=ExecutionFailure(...))` |
 | Explicit cancellation | `aborted` | `Aborted(reason="cancelled")` |
-| Replaced by a newer run | `aborted` | `Aborted(reason="replaced")` |
+| Replaced locally by a newer run | `aborted` | `Aborted(reason="replaced")` plus `StaleRunError`; `persisted=False` |
+| Replaced by another process | local candidate status; durable record is `aborted` | local outcome plus `StaleRunError`; `persisted=False` |
 | Atomic finalization fails | candidate status in the report; durable record may remain `running` | original outcome plus `finalization_error`; `persisted=False` |
 
 A provider death never corrupts the session: partial turns are dropped, history
@@ -303,9 +308,11 @@ Run events are replayable facts, and the run-level closure survives every
 in-process termination: an exception or abort still lands exactly one
 `RunEndEvent` as the log's final event before the terminal status lands.
 After a successful finalization, `RunEndEvent.outcome`, `report.outcome`, and
-the stored record agree. On persistence failure, the event and report preserve
-the execution outcome, `report.finalization_error` carries a
-`StorePersistenceError`, and the stored run remains `running`.
+the stored record agree. When a stale writer is fenced, the event and report
+preserve its local execution outcome, `report.finalization_error` carries a
+`StaleRunError`, and an explicit Store read reveals the winning durable
+outcome. On a backend persistence failure, the error is a
+`StorePersistenceError` and the stored run remains `running`.
 
 ## Observability
 

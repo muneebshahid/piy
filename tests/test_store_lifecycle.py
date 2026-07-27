@@ -40,7 +40,8 @@ def _invoke_finish_run(store: SQLiteStore) -> None:
     """Invoke finish_run for backend-error translation coverage."""
 
     store.finish_run(
-        record=running_record().finish(outcome=Completed(value="done")),
+        run_id="run-1",
+        outcome=Completed(value="done"),
         history_delta=(),
     )
 
@@ -67,7 +68,8 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
         started = start_run(store)
         assert started.committed_history == ()
         finished = store.finish_run(
-            record=started.run.finish(outcome=Completed(value="done")),
+            run_id=started.run.run_id,
+            outcome=Completed(value="done"),
             history_delta=[
                 UserMessage(content="hello"),
                 AssistantTurn(response_id="response-1"),
@@ -169,6 +171,28 @@ def test_start_run_enforces_one_active_run_per_session() -> None:
         store.close()
 
 
+def test_start_run_rejects_terminal_record_before_replacing_active() -> None:
+    """Preserve the active run when a replacement is not a running insert."""
+
+    store = SQLiteStore(in_memory=True)
+    try:
+        create_session(store, session_id="session-1")
+        active = start_run(store).run
+        terminal = run_record(
+            run_id="run-2",
+            session_id="session-1",
+            prompt="invalid replacement",
+        ).finish(outcome=Completed(value="already done"))
+
+        with pytest.raises(ValueError, match="requires a running RunRecord"):
+            store.start_run(record=terminal, replace_active=True)
+
+        assert store.get_run(active.run_id) == active
+        assert store.list_runs("session-1") == (active,)
+    finally:
+        store.close()
+
+
 def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
     """Replace and create in one transaction, then reject old finalization."""
 
@@ -176,7 +200,6 @@ def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
     try:
         create_session(store, session_id="session-1")
         first = start_run(store)
-        late = first.run.finish(outcome=Completed(value="late"))
 
         second = store.start_run(
             record=run_record(
@@ -193,7 +216,8 @@ def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
         assert replaced.outcome == Aborted(reason="replaced")
         with pytest.raises(StaleRunError, match="run-1"):
             store.finish_run(
-                record=late,
+                run_id=first.run.run_id,
+                outcome=Completed(value="late"),
                 history_delta=[UserMessage(content="must not commit")],
             )
         assert store.get_history("session-1") == ()
@@ -279,8 +303,7 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
     store = SQLiteStore(in_memory=True)
     try:
         create_session(store, session_id="session-1")
-        started = start_run(store)
-        rewritten = started.run.finish(outcome=Completed(value="rewritten"))
+        start_run(store)
         persist_outcome(
             store,
             outcome=Failed(cause=AgentFailure(reason="cannot deliver")),
@@ -289,7 +312,8 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
 
         with pytest.raises(StaleRunError, match="run-1"):
             store.finish_run(
-                record=rewritten,
+                run_id="run-1",
+                outcome=Completed(value="rewritten"),
                 history_delta=[],
             )
         assert store.get_run("run-1").status == "failed"
@@ -343,6 +367,35 @@ def test_file_backed_store_survives_restart(tmp_path: Path) -> None:
         reopened.close()
 
 
+def test_store_translates_corrupted_run_outcome_payloads(tmp_path: Path) -> None:
+    """Hide adapter validation details behind operation-specific Store errors."""
+
+    database_path = tmp_path / "invalid-run-outcome.db"
+    seed = SQLiteStore(database_path)
+    create_session(seed, session_id="session-1")
+    start_run(seed)
+    persist_outcome(seed, outcome=Completed(value="done"), history_delta=[])
+    seed.close()
+    connection = sqlite3.connect(database_path)
+    connection.execute("UPDATE runs SET outcome_json = 'not-json'")
+    connection.commit()
+    connection.close()
+
+    store = SQLiteStore(database_path)
+    try:
+        with pytest.raises(StorePersistenceError) as get_error:
+            store.get_run("run-1")
+        assert get_error.value.operation == "get_run"
+        assert isinstance(get_error.value.cause, ValidationError)
+
+        with pytest.raises(StorePersistenceError) as list_error:
+            store.list_runs("session-1")
+        assert list_error.value.operation == "list_runs"
+        assert isinstance(list_error.value.cause, ValidationError)
+    finally:
+        store.close()
+
+
 def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
     tmp_path: Path,
 ) -> None:
@@ -353,7 +406,8 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
     create_session(seed, session_id="session-1")
     first = start_run(seed)
     seed.finish_run(
-        record=first.run.finish(outcome=Completed(value="done")),
+        run_id=first.run.run_id,
+        outcome=Completed(value="done"),
         history_delta=[UserMessage(content="hello")],
     )
     active = seed.start_run(
@@ -371,7 +425,12 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
 
     store = SQLiteStore(database_path)
     try:
-        with pytest.raises(ValidationError):
+        with pytest.raises(StorePersistenceError) as history_error:
+            store.get_history("session-1")
+        assert history_error.value.operation == "get_history"
+        assert isinstance(history_error.value.cause, ValidationError)
+
+        with pytest.raises(StorePersistenceError) as start_error:
             store.start_run(
                 record=run_record(
                     run_id="run-3",
@@ -380,6 +439,8 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
                 ),
                 replace_active=True,
             )
+        assert start_error.value.operation == "start_run"
+        assert isinstance(start_error.value.cause, ValidationError)
 
         assert store.get_run("run-2") == active
         assert [run.run_id for run in store.list_runs("session-1")] == [

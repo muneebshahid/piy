@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tile import Completed, RunHandle, RunRecord, RunReport
-from tile.events import RunEndEvent
+from tile.events import AgentEvent, RunEndEvent
 from tile.runtime.execution import _ExecutionDependencies
 from tile.runtime.handle import (
     _RunCompletion,
@@ -15,6 +15,10 @@ from tile.runtime.handle import (
 )
 from tile.tool_executor import ToolExecutor
 from tests.support.agent_streams import ProviderStreamMock, final_text_stream
+
+
+class _FinalizationCrash(BaseException):
+    """Unexpected failure that bypasses normal finalization error handling."""
 
 
 def test_run_handle_delegates_completion_without_a_store() -> None:
@@ -99,6 +103,47 @@ def test_run_handle_closes_when_finalization_callback_raises() -> None:
     assert isinstance(report.finalization_error, RuntimeError)
     assert len(terminal) == 1
     assert terminal[0].outcome == Completed(value="done")
+
+
+def test_run_handle_releases_waiters_after_unexpected_finalization_crash() -> None:
+    """Terminate wait and event iteration even when no report can be produced."""
+
+    provider = ProviderStreamMock([final_text_stream("response-1", "done")])
+
+    def crash_finalization(completion: _RunCompletion) -> RunRecord:
+        """Raise outside the normal Exception-based finalization contract."""
+
+        _ = completion
+        raise _FinalizationCrash("unexpected finalization crash")
+
+    async def _run() -> list[AgentEvent]:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(lambda _loop, _context: None)
+        handle = RunHandle(
+            record=_running_record(),
+            committed_history=(),
+            result=None,
+            execution=_execution(provider),
+            on_finished=crash_finalization,
+        )
+
+        with pytest.raises(
+            RuntimeError,
+            match="finalized without producing a report",
+        ):
+            await asyncio.wait_for(handle.wait(), timeout=1)
+
+        async def collect_events() -> list[AgentEvent]:
+            """Collect the closed event log without waiting indefinitely."""
+
+            return [event async for event in handle.events()]
+
+        return await asyncio.wait_for(collect_events(), timeout=1)
+
+    events = asyncio.run(_run())
+
+    assert events
+    assert not any(isinstance(event, RunEndEvent) for event in events)
 
 
 def test_cancelled_task_requires_an_explicit_abort_reason() -> None:

@@ -22,6 +22,7 @@ from tile import (
     SessionRecord,
     SessionNotFoundError,
     SQLiteStore,
+    StaleRunError,
     StorePersistenceError,
 )
 from tile.events import AgentEvent, RunEndEvent
@@ -235,7 +236,8 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
         ),
     )
     store.finish_run(
-        record=started.run.finish(outcome=Completed(value="first answer")),
+        run_id=started.run.run_id,
+        outcome=Completed(value="first answer"),
         history_delta=[
             UserMessage(content="first"),
             AssistantTurn(response_id="response-1"),
@@ -428,6 +430,8 @@ def test_replace_active_fences_old_history_and_runs_the_successor() -> None:
         first_report = await first.wait()
         assert first_report.status == "aborted"
         assert first_report.outcome == Aborted(reason="replaced")
+        assert not first_report.persisted
+        assert isinstance(first_report.finalization_error, StaleRunError)
         second_release.set()
         assert (await second.wait()).status == "completed"
         assert [
@@ -472,9 +476,11 @@ def test_replace_active_works_across_runtime_instances(tmp_path: Path) -> None:
         assert (await second.wait()).status == "completed"
         first_release.set()
         first_report = await first.wait()
-        assert first_report.status == "aborted"
-        assert first_report.outcome == Aborted(reason="replaced")
-        assert first_report.persisted
+        assert first_report.status == "completed"
+        assert first_report.outcome == Completed(value="answer 0")
+        assert not first_report.persisted
+        assert isinstance(first_report.finalization_error, StaleRunError)
+        assert first_report.last_assistant_turn is not None
         assert [
             item.content
             for item in second_session.history
@@ -795,7 +801,8 @@ class _FailingFinishStore(SQLiteStore):
     def finish_run(
         self,
         *,
-        record: RunRecord,
+        run_id: str,
+        outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
     ) -> RunRecord:
         """Fail or delegate one atomic finish operation."""
@@ -803,7 +810,8 @@ class _FailingFinishStore(SQLiteStore):
         if self.fail_finishes:
             raise StorePersistenceError("finish_run", OSError("disk full"))
         return super().finish_run(
-            record=record,
+            run_id=run_id,
+            outcome=outcome,
             history_delta=history_delta,
         )
 
