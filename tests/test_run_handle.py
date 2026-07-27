@@ -6,12 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from tile import Completed, ExecutionFailure, Failed, RunHandle, RunRecord
+from tile import Completed, RunHandle, RunRecord, RunReport
 from tile.events import RunEndEvent
 from tile.runtime.execution import _ExecutionDependencies
 from tile.runtime.handle import (
     _RunCompletion,
-    _RunFinalization,
     _terminal_outcome,
 )
 from tile.tool_executor import ToolExecutor
@@ -24,14 +23,13 @@ def test_run_handle_delegates_completion_without_a_store() -> None:
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     completions: list[_RunCompletion] = []
 
-    def finish(completion: _RunCompletion) -> _RunFinalization:
+    def finish(completion: _RunCompletion) -> RunRecord:
         """Simulate the runtime's persistence callback."""
 
         completions.append(completion)
-        record = completion.record.finish(outcome=completion.outcome)
-        return _RunFinalization(record=record, outcome=completion.outcome)
+        return completion.record
 
-    async def _run() -> RunHandle:
+    async def _run() -> tuple[RunHandle, RunReport]:
         handle = RunHandle(
             record=_running_record(),
             committed_history=(),
@@ -39,13 +37,29 @@ def test_run_handle_delegates_completion_without_a_store() -> None:
             execution=_execution(provider),
             on_finished=finish,
         )
-        assert await handle.wait() == "completed"
-        return handle
+        report = await handle.wait()
+        return handle, report
 
-    handle = asyncio.run(_run())
+    handle, report = asyncio.run(_run())
 
-    assert handle.record.status == "completed"
-    assert handle.outcome == Completed(value="done")
+    assert report.status == "completed"
+    assert report.outcome == Completed(value="done")
+    assert report.persisted
+    assert report.execution_error is None
+    assert report.finalization_error is None
+    assert report.last_assistant_turn is not None
+    assert handle.id == "run-1"
+    for removed_property in (
+        "status",
+        "record",
+        "outcome",
+        "failure",
+        "error_message",
+        "exception",
+        "output_text",
+        "conversation_items",
+    ):
+        assert not hasattr(handle, removed_property)
     assert [item.role for item in completions[0].history_delta] == [
         "user",
         "assistant",
@@ -57,13 +71,13 @@ def test_run_handle_closes_when_finalization_callback_raises() -> None:
 
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
 
-    def fail_finalization(completion: _RunCompletion) -> _RunFinalization:
+    def fail_finalization(completion: _RunCompletion) -> RunRecord:
         """Raise instead of returning the required finalization value."""
 
         _ = completion
         raise RuntimeError("finalization unavailable")
 
-    async def _run() -> tuple[RunHandle, list[RunEndEvent]]:
+    async def _run() -> tuple[RunReport, list[RunEndEvent]]:
         handle = RunHandle(
             record=_running_record(),
             committed_history=(),
@@ -71,19 +85,20 @@ def test_run_handle_closes_when_finalization_callback_raises() -> None:
             execution=_execution(provider),
             on_finished=fail_finalization,
         )
-        with pytest.raises(RuntimeError, match="finalization unavailable"):
-            await handle.wait()
+        report = await handle.wait()
         terminal = [
             event async for event in handle.events() if isinstance(event, RunEndEvent)
         ]
-        return handle, terminal
+        return report, terminal
 
-    handle, terminal = asyncio.run(_run())
+    report, terminal = asyncio.run(_run())
 
-    assert handle.status == "running"
+    assert report.status == "completed"
+    assert report.outcome == Completed(value="done")
+    assert not report.persisted
+    assert isinstance(report.finalization_error, RuntimeError)
     assert len(terminal) == 1
-    assert isinstance(terminal[0].outcome, Failed)
-    assert isinstance(terminal[0].outcome.cause, ExecutionFailure)
+    assert terminal[0].outcome == Completed(value="done")
 
 
 def test_cancelled_task_requires_an_explicit_abort_reason() -> None:

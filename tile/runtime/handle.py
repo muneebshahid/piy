@@ -10,29 +10,25 @@ from pydantic import BaseModel
 
 from tile.events import (
     AgentEvent,
-    MessageEndEvent,
     RunEndEvent,
     RunStartEvent,
 )
 from tile.result import (
     AbortReason,
     Aborted,
-    AgentFailure,
     ExecutionFailure,
     ExecutionFailureOrigin,
     Failed,
-    FailureCause,
-    PersistenceFailure,
     RunOutcome,
 )
 from tile.runtime.execution import (
     TurnFailedError,
-    _assistant_text,
     _ExecutionDependencies,
     execute_prompt,
 )
 from tile.runtime.history import _RunHistory
-from tile.store.models import HistoryItem, RunRecord, RunStatus
+from tile.runtime.report import RunReport
+from tile.store.models import HistoryItem, RunRecord
 from tile.types.conversation import ConversationItem
 
 
@@ -41,26 +37,10 @@ class _RunCompletion:
     """Execution result prepared for application-owned finalization."""
 
     record: RunRecord
-    outcome: RunOutcome
     history_delta: tuple[ConversationItem, ...]
 
-    @property
-    def run_id(self) -> str:
-        """Return the persistent run identifier."""
 
-        return self.record.run_id
-
-
-@dataclass(frozen=True)
-class _RunFinalization:
-    """Application resolution applied to the live handle and event log."""
-
-    record: RunRecord
-    outcome: RunOutcome
-    wait_error: BaseException | None = None
-
-
-_OnFinished = Callable[[_RunCompletion], _RunFinalization]
+_OnFinished = Callable[[_RunCompletion], RunRecord]
 
 
 class RunHandle:
@@ -77,16 +57,14 @@ class RunHandle:
     ) -> None:
         """Start execution and delegate durable finalization to the callback."""
 
-        self._record = record
+        self._initial_record = record
         self._on_finished = on_finished
         self._events: list[AgentEvent] = [RunStartEvent()]
         self._history = _RunHistory.start(
             committed_history,
             prompt=record.prompt,
         )
-        self._exception: BaseException | None = None
-        self._outcome: RunOutcome | None = None
-        self._wait_error: BaseException | None = None
+        self._report: RunReport | None = None
         self._abort_reason: AbortReason | None = None
         self._changed = asyncio.Event()
         self._finalized = asyncio.Event()
@@ -104,71 +82,13 @@ class RunHandle:
     def id(self) -> str:
         """Return the stable run id."""
 
-        return self._record.run_id
+        return self._initial_record.run_id
 
     @property
     def session_id(self) -> str:
         """Return the session this run belongs to."""
 
-        return self._record.session_id
-
-    @property
-    def status(self) -> RunStatus:
-        """Return the latest persistent lifecycle snapshot."""
-
-        return self.record.status
-
-    @property
-    def record(self) -> RunRecord:
-        """Return the persistent record supplied at start or finalization."""
-
-        return self._record
-
-    @property
-    def error_message(self) -> str | None:
-        """Return a concise terminal failure message when present."""
-
-        failure = self.failure
-        if isinstance(failure, AgentFailure):
-            return failure.reason
-        if isinstance(failure, ExecutionFailure | PersistenceFailure):
-            return failure.message
-        return None
-
-    @property
-    def failure(self) -> FailureCause | None:
-        """Return the structured terminal failure cause when present."""
-
-        if isinstance(self._outcome, Failed):
-            return self._outcome.cause
-        return None
-
-    @property
-    def exception(self) -> BaseException | None:
-        """Return the original in-process execution exception."""
-
-        return self._exception
-
-    @property
-    def output_text(self) -> str | None:
-        """Return text from the latest completed assistant message."""
-
-        for event in reversed(self._events):
-            if isinstance(event, MessageEndEvent):
-                return _assistant_text(event.assistant_turn)
-        return None
-
-    @property
-    def outcome(self) -> RunOutcome | None:
-        """Return the live log's terminal outcome after finalization."""
-
-        return self._outcome
-
-    @property
-    def conversation_items(self) -> tuple[ConversationItem, ...]:
-        """Return defensive snapshots of this run's provisional history delta."""
-
-        return self._history.conversation_items()
+        return self._initial_record.session_id
 
     async def events(self) -> AsyncIterator[AgentEvent]:
         """Yield run events from the start through exactly one terminal event."""
@@ -183,13 +103,13 @@ class RunHandle:
                 return
             await self._changed.wait()
 
-    async def wait(self) -> RunStatus:
-        """Wait for finalization, raising when the atomic commit failed."""
+    async def wait(self) -> RunReport:
+        """Wait for and return the complete terminal report without lifecycle raises."""
 
         await self._finalized.wait()
-        if self._wait_error is not None:
-            raise self._wait_error
-        return self.status
+        if self._report is None:
+            raise RuntimeError("Run finalized without producing a report.")
+        return self._report
 
     def abort(self) -> None:
         """Request explicit cancellation of this run."""
@@ -219,37 +139,53 @@ class RunHandle:
     def _finalize(self, task: asyncio.Task[RunOutcome]) -> None:
         """Delegate terminal persistence, then close the live event log."""
 
-        try:
-            outcome, self._exception = _terminal_outcome(
-                task,
-                abort_reason=self._abort_reason,
-            )
-            self._history.heal()
-            finalization = self._on_finished(self._completion(outcome))
-        except BaseException as error:
-            self._exception = self._exception or error
-            finalization = _failed_finalization(self._record, error)
-        finally:
-            self._apply_finalization(finalization)
-            self._finalized.set()
-            self._changed.set()
-
-    def _completion(self, outcome: RunOutcome) -> _RunCompletion:
-        """Build the immutable value passed to application orchestration."""
-
-        return _RunCompletion(
-            record=self._record,
-            outcome=outcome,
-            history_delta=self._history.conversation_items(),
+        outcome, execution_error = _terminal_outcome(
+            task,
+            abort_reason=self._abort_reason,
         )
+        self._history.heal()
+        history_delta = self._history.conversation_items()
+        report = self._persist(
+            record=self._initial_record.finish(outcome=outcome),
+            history_delta=history_delta,
+            execution_error=execution_error,
+        )
+        self._apply_report(report)
+        self._finalized.set()
+        self._changed.set()
 
-    def _apply_finalization(self, finalization: _RunFinalization) -> None:
-        """Apply the runtime's durable resolution and close exactly once."""
+    def _persist(
+        self,
+        *,
+        record: RunRecord,
+        history_delta: tuple[ConversationItem, ...],
+        execution_error: BaseException | None,
+    ) -> RunReport:
+        """Persist through the application callback or retain a local result."""
 
-        self._record = finalization.record
-        self._outcome = finalization.outcome
-        self._wait_error = finalization.wait_error
-        self._events.append(RunEndEvent(outcome=finalization.outcome))
+        completion = _RunCompletion(
+            record=record,
+            history_delta=history_delta,
+        )
+        try:
+            return RunReport(
+                record=self._on_finished(completion),
+                history_delta=history_delta,
+                execution_error=execution_error,
+            )
+        except Exception as error:
+            return RunReport(
+                record=record,
+                history_delta=history_delta,
+                execution_error=execution_error,
+                finalization_error=error,
+            )
+
+    def _apply_report(self, report: RunReport) -> None:
+        """Store the terminal report and close the event log exactly once."""
+
+        self._report = report
+        self._events.append(RunEndEvent(outcome=report.outcome))
         self._changed.set()
 
 
@@ -275,24 +211,6 @@ def _aborted_outcome(abort_reason: AbortReason | None) -> Aborted:
     if abort_reason is None:
         raise RuntimeError("Cancelled run is missing an abort reason")
     return Aborted(reason=abort_reason)
-
-
-def _failed_finalization(
-    record: RunRecord,
-    error: BaseException,
-) -> _RunFinalization:
-    """Close safely when local finalization violates its no-raise contract."""
-
-    failure = ExecutionFailure(
-        origin="execution",
-        exception_type=type(error).__name__,
-        message=f"Run finalization failed: {error}",
-    )
-    return _RunFinalization(
-        record=record,
-        outcome=Failed(cause=failure),
-        wait_error=error,
-    )
 
 
 def _execution_failure_origin(error: BaseException) -> ExecutionFailureOrigin:

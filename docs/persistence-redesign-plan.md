@@ -307,7 +307,7 @@ attempts without a database write.
 - Typed-result retries see prior attempts and follow-ups.
 - No history rows are written while the run is active.
 - `Session.history` exposes committed history only.
-- `RunHandle.conversation_items` exposes provisional run-local history.
+- `RunReport.history_delta` exposes the terminal run-local history.
 - Live events remain replayable to multiple subscribers.
 
 ## Unit 5: Atomic run finalization
@@ -319,15 +319,16 @@ Before persistence, prepare a typed replayable history delta:
 - prepend the submitted user prompt;
 - retain completed assistant turns;
 - include tool results;
-- heal unanswered tool calls when appropriate;
-- reject structurally invalid conversation history.
+- heal unanswered tool calls when appropriate.
 
-`RunHandle` prepares this completion value and passes it to the
+`RunHandle` derives the terminal `RunRecord`, prepares this completion value,
+and passes it to the
 application-owned `on_finished` callback. `AgentRuntime` owns that callback:
-it invokes `Store.finish_run()`, reconciles stale replacements, translates
-persistence failures, and returns the final record and live-log outcome.
-`RunHandle` never receives or calls a `Store`; it applies the returned
-finalization and closes its event log.
+it invokes `Store.finish_run()`, reconciles stale replacements, and returns
+exactly one `RunRecord`. `RunHandle` never receives or calls a `Store`; it
+builds one immutable `RunReport` from the returned record and closes its event
+log. Store adapters translate backend-specific failures into
+`StorePersistenceError`.
 
 Implement `Store.finish_run()` as one transaction:
 
@@ -356,11 +357,11 @@ History policy:
 | Explicit abort | Valid healed prefix |
 | Replaced | Nothing |
 
-If persistence fails, the handle must not report the candidate execution
-outcome as durably completed. It closes its live log with a persistence
-failure, and `wait()` raises `RunPersistenceError`. The stored run remains
-`running` because the transaction rolled back and requires explicit
-replacement.
+If persistence fails, the handle preserves the candidate execution outcome in
+a process-local terminal record and puts the Store error in
+`RunReport.finalization_error`. `wait()` returns that report rather than
+raising, and `RunReport.persisted` is false. The stored run remains `running`
+because the transaction rolled back and requires explicit replacement.
 
 ### Verification
 
@@ -368,7 +369,7 @@ replacement.
 - A history failure rolls back the run transition.
 - A run-transition failure inserts no history.
 - A replaced run cannot commit.
-- Persistence failure is visible to waiters.
+- Persistence failure is visible without replacing the execution outcome.
 - Every in-process log still closes with exactly one `RunEndEvent`.
 
 ## Unit 6: Active-run replacement

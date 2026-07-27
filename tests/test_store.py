@@ -1,7 +1,7 @@
 """Contract and transaction tests for the unified SQLite Store."""
 
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,18 +17,48 @@ from tile import (
     Completed,
     Failed,
     RunAlreadyExistsError,
+    RunRecord,
     SessionAlreadyExistsError,
     SessionNotFoundError,
     StaleRunError,
+    StorePersistenceError,
 )
 from tile.store import SQLiteStore, SQLiteStoreSchemaError, StartedRun
 from tile.types import (
     AssistantTurn,
+    ConversationItem,
     UserMessage,
 )
 
 STARTED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
 ENDED_AT = STARTED_AT + timedelta(seconds=2)
+
+
+def _invoke_start_run(store: SQLiteStore) -> None:
+    """Invoke start_run for backend-error translation coverage."""
+
+    store.start_run(
+        run_id="run-1",
+        session_id="session-1",
+        prompt="hello",
+        model="gpt-5.4",
+        provider="test",
+    )
+
+
+def _invoke_finish_run(store: SQLiteStore) -> None:
+    """Invoke finish_run for backend-error translation coverage."""
+
+    store.finish_run(
+        record=_running_record().finish(outcome=Completed(value="done")),
+        history_delta=(),
+    )
+
+
+def _invoke_get_run(store: SQLiteStore) -> None:
+    """Invoke get_run for backend-error translation coverage."""
+
+    store.get_run("run-1")
 
 
 def test_sqlite_store_requires_an_explicit_storage_mode() -> None:
@@ -47,17 +77,18 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
         started = _start_run(store)
         assert started.committed_history == ()
         finished = store.finish_run(
-            run_id=started.run.run_id,
-            outcome=Completed(value="done"),
+            record=started.run.finish(outcome=Completed(value="done")),
             history_delta=[
                 UserMessage(content="hello"),
                 AssistantTurn(response_id="response-1"),
             ],
-            ended_at=ENDED_AT,
         )
 
-        assert store.get_session(session.session_id) == session
-        assert store.list_sessions() == (session,)
+        stored_session = store.get_session(session.session_id)
+        assert stored_session.session_id == session.session_id
+        assert stored_session.name == session.name
+        assert stored_session.updated_at >= session.updated_at
+        assert store.list_sessions() == (stored_session,)
         assert store.get_run(finished.run_id) == finished
         assert store.list_runs(session.session_id) == (finished,)
         history = store.get_history(session.session_id)
@@ -78,11 +109,10 @@ def test_sqlite_store_returns_defensive_typed_snapshots() -> None:
     try:
         store.create_session(session_id="session-1")
         _start_run(store)
-        store.finish_run(
-            run_id="run-1",
+        _persist_outcome(
+            store,
             outcome=Completed(value="done"),
             history_delta=[UserMessage(content="original")],
-            ended_at=ENDED_AT,
         )
         fetched = store.get_history("session-1")[0].item
         assert isinstance(fetched, UserMessage)
@@ -157,6 +187,7 @@ def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
     try:
         store.create_session(session_id="session-1")
         first = _start_run(store)
+        late = first.run.finish(outcome=Completed(value="late"))
 
         second = store.start_run(
             run_id="run-2",
@@ -174,8 +205,7 @@ def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
         assert replaced.outcome == Aborted(reason="replaced")
         with pytest.raises(StaleRunError, match="run-1"):
             store.finish_run(
-                run_id="run-1",
-                outcome=Completed(value="late"),
+                record=late,
                 history_delta=[UserMessage(content="must not commit")],
             )
         assert store.get_history("session-1") == ()
@@ -190,11 +220,10 @@ def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
     try:
         store.create_session(session_id="session-1")
         _start_run(store)
-        completed = store.finish_run(
-            run_id="run-1",
+        completed = _persist_outcome(
+            store,
             outcome=Completed(value="done"),
             history_delta=[UserMessage(content="hello")],
-            ended_at=ENDED_AT,
         )
 
         started = store.start_run(
@@ -241,14 +270,16 @@ def test_finish_run_rolls_back_status_when_history_insert_fails(
 
     store = SQLiteStore(database_path)
     try:
-        with pytest.raises(sqlite3.IntegrityError, match="history insert failed"):
-            store.finish_run(
-                run_id="run-1",
+        with pytest.raises(StorePersistenceError) as raised:
+            _persist_outcome(
+                store,
                 outcome=Completed(value="done"),
                 history_delta=[UserMessage(content="hello")],
-                ended_at=ENDED_AT,
             )
 
+        assert raised.value.operation == "finish_run"
+        assert isinstance(raised.value.cause, sqlite3.IntegrityError)
+        assert "history insert failed" in str(raised.value.cause)
         assert store.get_run("run-1").status == "running"
         assert store.get_history("session-1") == ()
     finally:
@@ -261,23 +292,46 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
     store = SQLiteStore(in_memory=True)
     try:
         store.create_session(session_id="session-1")
-        _start_run(store)
-        store.finish_run(
-            run_id="run-1",
+        started = _start_run(store)
+        rewritten = started.run.finish(outcome=Completed(value="rewritten"))
+        _persist_outcome(
+            store,
             outcome=Failed(cause=AgentFailure(reason="cannot deliver")),
             history_delta=[UserMessage(content="hello")],
-            ended_at=ENDED_AT,
         )
 
         with pytest.raises(StaleRunError, match="run-1"):
             store.finish_run(
-                run_id="run-1",
-                outcome=Completed(value="rewritten"),
+                record=rewritten,
                 history_delta=[],
             )
         assert store.get_run("run-1").status == "failed"
     finally:
         store.close()
+
+
+@pytest.mark.parametrize(
+    ("operation", "invoke"),
+    [
+        pytest.param("start_run", _invoke_start_run, id="start-run"),
+        pytest.param("finish_run", _invoke_finish_run, id="finish-run"),
+        pytest.param("get_run", _invoke_get_run, id="get-run"),
+    ],
+)
+def test_sqlite_store_translates_backend_errors(
+    operation: str,
+    invoke: Callable[[SQLiteStore], None],
+) -> None:
+    """Expose adapter failures through the Store-owned error contract."""
+
+    store = SQLiteStore(in_memory=True)
+    store.close()
+
+    with pytest.raises(StorePersistenceError) as raised:
+        invoke(store)
+
+    assert raised.value.operation == operation
+    assert isinstance(raised.value.cause, sqlite3.ProgrammingError)
 
 
 def test_fork_session_copies_all_history_with_new_envelopes() -> None:
@@ -287,14 +341,13 @@ def test_fork_session_copies_all_history_with_new_envelopes() -> None:
     try:
         store.create_session(session_id="source")
         _start_run(store, session_id="source")
-        store.finish_run(
-            run_id="run-1",
+        _persist_outcome(
+            store,
             outcome=Completed(value="done"),
             history_delta=[
                 UserMessage(content="hello"),
                 AssistantTurn(response_id="response-1"),
             ],
-            ended_at=ENDED_AT,
         )
 
         fork = store.fork_session(
@@ -326,11 +379,10 @@ def test_file_backed_store_survives_restart(tmp_path: Path) -> None:
     first = SQLiteStore(database_path)
     first.create_session(session_id="session-1")
     _start_run(first)
-    first.finish_run(
-        run_id="run-1",
+    _persist_outcome(
+        first,
         outcome=Completed(value="done"),
         history_delta=[UserMessage(content="hello")],
-        ended_at=ENDED_AT,
     )
     first.close()
 
@@ -352,10 +404,8 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
     seed.create_session(session_id="session-1")
     first = _start_run(seed)
     seed.finish_run(
-        run_id=first.run.run_id,
-        outcome=Completed(value="done"),
+        record=first.run.finish(outcome=Completed(value="done")),
         history_delta=[UserMessage(content="hello")],
-        ended_at=ENDED_AT,
     )
     active = seed.start_run(
         run_id="run-2",
@@ -619,12 +669,11 @@ def test_finish_and_replace_race_preserves_one_valid_winner(tmp_path: Path) -> N
 
         store = SQLiteStore(database_path)
         try:
+            record = store.get_run("run-1").finish(outcome=Completed(value="done"))
             barrier.wait()
             store.finish_run(
-                run_id="run-1",
-                outcome=Completed(value="done"),
+                record=record,
                 history_delta=[UserMessage(content="hello")],
-                ended_at=ENDED_AT,
             )
             return "finished"
         except StaleRunError:
@@ -720,4 +769,31 @@ def _start_run(
         model="gpt-5.4",
         provider="test",
         started_at=STARTED_AT,
+    )
+
+
+def _persist_outcome(
+    store: SQLiteStore,
+    *,
+    outcome: Completed | Failed | Aborted,
+    history_delta: Sequence[ConversationItem],
+    run_id: str = "run-1",
+) -> RunRecord:
+    """Finish and persist one Store-owned running record."""
+
+    record = store.get_run(run_id).finish(outcome=outcome)
+    return store.finish_run(record=record, history_delta=history_delta)
+
+
+def _running_record() -> RunRecord:
+    """Build one deterministic running record without Store access."""
+
+    return RunRecord(
+        run_id="run-1",
+        session_id="session-1",
+        prompt="hello",
+        status="running",
+        started_at=STARTED_AT,
+        model="gpt-5.4",
+        provider="test",
     )

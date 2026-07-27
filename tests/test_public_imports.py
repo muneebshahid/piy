@@ -13,13 +13,14 @@ from tile import (
     ExecutionFailureOrigin,
     Failed,
     FailureCause,
-    PersistenceFailure,
     RunHandle,
+    RunReport,
     RunRecord,
     Session,
     SessionNotFoundError,
     SQLiteStore,
     Store,
+    StorePersistenceError,
     TurnFailedError,
 )
 from tile.events import AgentEvent, MessageEndEvent, RunEndEvent, StreamFn
@@ -67,11 +68,9 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
     assert get_args(ExecutionFailureOrigin) == ("turn", "execution")
-    assert get_args(FailureCause) == (
-        AgentFailure,
-        ExecutionFailure,
-        PersistenceFailure,
-    )
+    assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
+    assert RunReport.__name__ == "RunReport"
+    assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]
     assert Aborted().type == "aborted"
     assert ToolInputValidationFailure.model_fields["issues"]

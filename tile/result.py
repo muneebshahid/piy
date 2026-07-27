@@ -51,15 +51,14 @@ class Completed(BaseModel):
 
 
 ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
-PersistenceOperation: TypeAlias = Literal["start_run", "finish_run"]
 AbortReason: TypeAlias = Literal["cancelled", "replaced"]
 
 
 class AgentFailure(BaseModel):
-    """The agent declared it could not deliver the requested result.
+    """The agent could not deliver the requested result.
 
-    Execution finished normally, but the model's own verdict is a failed
-    outcome and therefore produces ``status="failed"``.
+    This includes an explicit ``fail`` result and exhaustion of the result
+    contract after the allowed correction attempts.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -84,18 +83,7 @@ class ExecutionFailure(BaseModel):
     message: str
 
 
-class PersistenceFailure(BaseModel):
-    """Serializable diagnostics for an atomic persistence operation failure."""
-
-    model_config = ConfigDict(frozen=True)
-
-    type: Literal["persistence_failure"] = "persistence_failure"
-    operation: PersistenceOperation
-    exception_type: str
-    message: str
-
-
-FailureCause: TypeAlias = AgentFailure | ExecutionFailure | PersistenceFailure
+FailureCause: TypeAlias = AgentFailure | ExecutionFailure
 
 
 class Failed(BaseModel):

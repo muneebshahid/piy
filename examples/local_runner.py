@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 
 from tile import (
     AgentRuntime,
-    RunStatus,
+    RunReport,
     SQLiteStore,
     Store,
 )
@@ -39,8 +39,8 @@ async def run_cli(argv: Sequence[str]) -> int:
         api_key=settings.openai_api_key,
         base_url=settings.openai_base_url,
     )
-    status = await run_prompt(prompt, stream_fn=create_stream_api(client))
-    return 0 if status == "completed" else 1
+    report = await run_prompt(prompt, stream_fn=create_stream_api(client))
+    return 0 if report.status == "completed" else 1
 
 
 async def run_prompt(
@@ -52,7 +52,7 @@ async def run_prompt(
     store: Store | None = None,
     cwd: Path | str | None = None,
     output: TextIO | None = None,
-) -> RunStatus:
+) -> RunReport:
     """Run one prompt through a runtime session and write JSON event lines."""
 
     active_tools = tuple(tools) if tools is not None else BUILTIN_TOOLS

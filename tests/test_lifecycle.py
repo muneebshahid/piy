@@ -69,7 +69,7 @@ def test_provider_raise_before_stream_fails_the_run() -> None:
         """Fail the run and collect its complete log."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
+        assert (await run.wait()).status == "failed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -102,7 +102,7 @@ def test_provider_raise_mid_stream_leaves_message_and_turn_open() -> None:
         """Fail the run mid-message and collect its complete log."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
+        assert (await run.wait()).status == "failed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -138,8 +138,12 @@ def test_stream_exhausted_without_terminal_event_fails_the_run() -> None:
         """Fail the run on a stream that ends without a terminal event."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
-        return [event async for event in run.events()], run.error_message
+        report = await run.wait()
+        assert report.status == "failed"
+        outcome = report.outcome
+        assert isinstance(outcome, Failed)
+        assert isinstance(outcome.cause, ExecutionFailure)
+        return [event async for event in run.events()], outcome.cause.message
 
     events, error_message = asyncio.run(_run())
 
@@ -169,7 +173,7 @@ def test_in_band_stream_error_keeps_producer_ends_and_fails_the_run() -> None:
         """Fail the run through an in-band stream error event."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
+        assert (await run.wait()).status == "failed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -214,7 +218,7 @@ def test_abort_during_tool_execution_leaves_the_tool_open() -> None:
             if isinstance(event, ToolExecutionStartEvent):
                 break
         run.abort()
-        assert await run.wait() == "aborted"
+        assert (await run.wait()).status == "aborted"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -257,7 +261,7 @@ def test_abort_during_provider_stream_leaves_the_message_open() -> None:
             if isinstance(event, MessageStartEvent):
                 break
         run.abort()
-        assert await run.wait() == "aborted"
+        assert (await run.wait()).status == "aborted"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -285,7 +289,7 @@ def test_abort_before_first_tick_still_yields_a_closed_log() -> None:
 
         run = await session.prompt("hello")
         run.abort()
-        assert await run.wait() == "aborted"
+        assert (await run.wait()).status == "aborted"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -314,8 +318,9 @@ def test_typed_result_attempts_each_close_before_the_next_starts() -> None:
         """Complete the typed result on the nudged second attempt."""
 
         run = await session.prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
-        assert isinstance(run.outcome, Completed)
+        report = await run.wait()
+        assert report.status == "completed"
+        assert isinstance(report.outcome, Completed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -355,7 +360,7 @@ def test_tool_loop_prompt_yields_the_full_expected_event_order() -> None:
         """Complete one tool-loop prompt and collect its full log."""
 
         run = await session.prompt("check weather")
-        assert await run.wait() == "completed"
+        assert (await run.wait()).status == "completed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -399,7 +404,7 @@ def test_typed_result_prompt_yields_the_full_expected_event_order() -> None:
         """Complete the typed result on the nudged second attempt."""
 
         run = await session.prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
+        assert (await run.wait()).status == "completed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())

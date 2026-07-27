@@ -2,9 +2,8 @@
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol, TypeAlias
 
-from tile.result import RunOutcome
 from tile.store.models import HistoryItem, RunRecord, SessionRecord, StartedRun
 from tile.types.conversation import ConversationItem
 
@@ -37,15 +36,28 @@ class RunNotFoundError(StoreError, KeyError):
     """Raised when an operation references an unknown run."""
 
 
-class RunPersistenceError(StoreError):
-    """Raised when a run cannot atomically persist its terminal state."""
+StoreOperation: TypeAlias = Literal[
+    "create_session",
+    "get_session",
+    "list_sessions",
+    "start_run",
+    "finish_run",
+    "get_history",
+    "get_run",
+    "list_runs",
+    "fork_session",
+]
 
-    def __init__(self, run_id: str, cause: BaseException) -> None:
-        """Retain the failing run and original persistence exception."""
 
-        self.run_id = run_id
+class StorePersistenceError(StoreError):
+    """Raised when a Store backend cannot complete an operation."""
+
+    def __init__(self, operation: StoreOperation, cause: BaseException) -> None:
+        """Retain the failed Store operation and backend exception."""
+
+        self.operation = operation
         self.cause = cause
-        super().__init__(f"Could not finalize run {run_id}: {cause}")
+        super().__init__(f"Store operation {operation!r} failed: {cause}")
 
 
 class InvalidHistoryError(StoreError, ValueError):
@@ -57,6 +69,8 @@ class Store(Protocol):
 
     Implementations must make each mutating method atomic. A backend that
     cannot provide equivalent all-or-nothing behavior is not a valid Store.
+    Backend-specific failures must be raised as ``StorePersistenceError``;
+    lifecycle conflicts and missing aggregates use the narrower domain errors.
     """
 
     def create_session(
@@ -97,15 +111,14 @@ class Store(Protocol):
     def finish_run(
         self,
         *,
-        run_id: str,
-        outcome: RunOutcome,
+        record: RunRecord,
         history_delta: Sequence[ConversationItem],
-        ended_at: datetime | None = None,
     ) -> RunRecord:
         """Atomically finalize a run and commit its replayable history delta.
 
-        The caller owns construction of a valid history delta. Implementations
-        own stale-run fencing and all-or-nothing persistence.
+        The caller owns construction of the terminal record and valid history
+        delta. Implementations own stale-run fencing and all-or-nothing
+        persistence.
         """
         ...
 

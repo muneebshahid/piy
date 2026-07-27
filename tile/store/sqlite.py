@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Iterator, cast
 from uuid import uuid4
 
 from tile._sqlite import immediate_transaction, resolve_connection_target
-from tile.result import Aborted, RunOutcome
+from tile.result import Aborted
 from tile.store.base import (
     ActiveRunError,
     RunAlreadyExistsError,
@@ -18,6 +19,8 @@ from tile.store.base import (
     SessionAlreadyExistsError,
     SessionNotFoundError,
     StaleRunError,
+    StoreOperation,
+    StorePersistenceError,
 )
 from tile.store.models import (
     HistoryItem,
@@ -74,40 +77,33 @@ class SQLiteStore:
         """Create and return one session, rejecting an existing id."""
 
         record = _new_session_record(session_id, name)
-        try:
-            with immediate_transaction(self._connection):
-                self._insert_session(record)
-        except sqlite3.IntegrityError as error:
-            raise SessionAlreadyExistsError(
-                f"Session already exists: {session_id}"
-            ) from error
+        with _translate_sqlite_errors("create_session"):
+            try:
+                with immediate_transaction(self._connection):
+                    self._insert_session(record)
+            except sqlite3.IntegrityError as error:
+                raise SessionAlreadyExistsError(
+                    f"Session already exists: {session_id}"
+                ) from error
         return record
 
     def get_session(self, session_id: str) -> SessionRecord:
         """Return one session or raise when it does not exist."""
 
-        row = self._connection.execute(
-            """
-            SELECT id, name, created_at, updated_at
-            FROM sessions
-            WHERE id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        if row is None:
-            raise SessionNotFoundError(f"Unknown session: {session_id}")
-        return session_from_row(cast("SessionRow", row))
+        with _translate_sqlite_errors("get_session"):
+            return self._get_session(session_id)
 
     def list_sessions(self) -> tuple[SessionRecord, ...]:
         """Return sessions in creation order."""
 
-        rows = self._connection.execute(
-            """
-            SELECT id, name, created_at, updated_at
-            FROM sessions
-            ORDER BY created_at, id
-            """
-        ).fetchall()
+        with _translate_sqlite_errors("list_sessions"):
+            rows = self._connection.execute(
+                """
+                SELECT id, name, created_at, updated_at
+                FROM sessions
+                ORDER BY created_at, id
+                """
+            ).fetchall()
         session_rows = cast("Sequence[SessionRow]", rows)
         return tuple(session_from_row(row) for row in session_rows)
 
@@ -132,16 +128,16 @@ class SQLiteStore:
             provider=provider,
             started_at=started_at,
         )
-        with immediate_transaction(self._connection):
-            self._require_session(session_id)
-            active = self._running_run_for_session(session_id)
-            replaced_run_id = self._replace_active_run(
-                active,
-                replace_active=replace_active,
-                replaced_at=record.started_at,
-            )
-            committed_history = self._history_for_session(session_id)
-            self._insert_run(record)
+        with _translate_sqlite_errors("start_run"):
+            with immediate_transaction(self._connection):
+                self._require_session(session_id)
+                active = self._running_run_for_session(session_id)
+                replaced_run_id = self._replace_active_run(
+                    active,
+                    replace_active=replace_active,
+                )
+                committed_history = self._history_for_session(session_id)
+                self._insert_run(record)
         return StartedRun(
             run=record,
             committed_history=committed_history,
@@ -151,55 +147,53 @@ class SQLiteStore:
     def finish_run(
         self,
         *,
-        run_id: str,
-        outcome: RunOutcome,
+        record: RunRecord,
         history_delta: Sequence[ConversationItem],
-        ended_at: datetime | None = None,
     ) -> RunRecord:
         """Atomically finalize a still-running run and append its history delta."""
 
-        with immediate_transaction(self._connection):
-            run = self._get_run(run_id)
-            if run.status != "running":
-                raise StaleRunError(f"Run is no longer active: {run_id}")
-            finished = run.finish(
-                outcome=outcome,
-                ended_at=ended_at,
-            )
-            self._update_running_run(finished)
-            self._insert_history_delta(finished, history_delta)
-            self._touch_session(finished)
-        return finished
+        with _translate_sqlite_errors("finish_run"):
+            with immediate_transaction(self._connection):
+                run = self._get_run(record.run_id)
+                if run.status != "running":
+                    raise StaleRunError(f"Run is no longer active: {record.run_id}")
+                self._update_running_run(record)
+                self._insert_history_delta(record, history_delta)
+                self._touch_session(record)
+        return record
 
     def get_history(self, session_id: str) -> tuple[HistoryItem, ...]:
         """Return committed history in session-local order."""
 
-        self._require_session(session_id)
-        rows = self._connection.execute(
-            """
-            SELECT id, session_id, run_id, position, role, payload_json, created_at
-            FROM history_items
-            WHERE session_id = ?
-            ORDER BY position
-            """,
-            (session_id,),
-        ).fetchall()
+        with _translate_sqlite_errors("get_history"):
+            self._require_session(session_id)
+            rows = self._connection.execute(
+                """
+                SELECT id, session_id, run_id, position, role, payload_json, created_at
+                FROM history_items
+                WHERE session_id = ?
+                ORDER BY position
+                """,
+                (session_id,),
+            ).fetchall()
         history_rows = cast("Sequence[HistoryRow]", rows)
         return tuple(history_from_row(row) for row in history_rows)
 
     def get_run(self, run_id: str) -> RunRecord:
         """Return one persistent run or raise when it does not exist."""
 
-        return self._get_run(run_id)
+        with _translate_sqlite_errors("get_run"):
+            return self._get_run(run_id)
 
     def list_runs(self, session_id: str) -> tuple[RunRecord, ...]:
         """Return runs originating in a session in submission order."""
 
-        self._require_session(session_id)
-        rows = self._connection.execute(
-            _SELECT_RUNS_SQL + " WHERE session_id = ? ORDER BY started_at, id",
-            (session_id,),
-        ).fetchall()
+        with _translate_sqlite_errors("list_runs"):
+            self._require_session(session_id)
+            rows = self._connection.execute(
+                _SELECT_RUNS_SQL + " WHERE session_id = ? ORDER BY started_at, id",
+                (session_id,),
+            ).fetchall()
         run_rows = cast("Sequence[RunRow]", rows)
         return tuple(run_from_row(row) for row in run_rows)
 
@@ -212,13 +206,14 @@ class SQLiteStore:
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
 
-        with immediate_transaction(self._connection):
-            self._require_session(source_session_id)
-            self._reject_existing_session(target_session_id)
-            record = _new_session_record(target_session_id, name)
-            self._insert_session(record)
-            source_items = self._history_for_session(source_session_id)
-            self._copy_history_items(source_items, target_session_id)
+        with _translate_sqlite_errors("fork_session"):
+            with immediate_transaction(self._connection):
+                self._require_session(source_session_id)
+                self._reject_existing_session(target_session_id)
+                record = _new_session_record(target_session_id, name)
+                self._insert_session(record)
+                source_items = self._history_for_session(source_session_id)
+                self._copy_history_items(source_items, target_session_id)
         return record
 
     def close(self) -> None:
@@ -236,6 +231,21 @@ class SQLiteStore:
             """,
             session_values(record),
         )
+
+    def _get_session(self, session_id: str) -> SessionRecord:
+        """Return one session inside or outside a transaction."""
+
+        row = self._connection.execute(
+            """
+            SELECT id, name, created_at, updated_at
+            FROM sessions
+            WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise SessionNotFoundError(f"Unknown session: {session_id}")
+        return session_from_row(cast("SessionRow", row))
 
     def _require_session(self, session_id: str) -> None:
         """Raise when a session id is unknown."""
@@ -271,7 +281,6 @@ class SQLiteStore:
         active: RunRecord | None,
         *,
         replace_active: bool,
-        replaced_at: datetime,
     ) -> str | None:
         """Replace an active run or reject the conflicting start."""
 
@@ -281,10 +290,7 @@ class SQLiteStore:
             raise ActiveRunError(
                 f"Session already has an active run: {active.session_id}"
             )
-        replaced = active.finish(
-            outcome=Aborted(reason="replaced"),
-            ended_at=replaced_at,
-        )
+        replaced = active.finish(outcome=Aborted(reason="replaced"))
         self._update_running_run(replaced)
         return active.run_id
 
@@ -358,7 +364,7 @@ class SQLiteStore:
 
         if run.ended_at is None:
             raise ValueError("A committed run requires an end timestamp.")
-        current = self.get_session(run.session_id)
+        current = self._get_session(run.session_id)
         updated_at = max(current.updated_at, run.ended_at)
         self._connection.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
@@ -413,6 +419,16 @@ class SQLiteStore:
             for item in items
         ]
         self._connection.executemany(_INSERT_HISTORY_SQL, rows)
+
+
+@contextmanager
+def _translate_sqlite_errors(operation: StoreOperation) -> Iterator[None]:
+    """Translate backend failures into the Store-owned error contract."""
+
+    try:
+        yield
+    except sqlite3.Error as error:
+        raise StorePersistenceError(operation, error) from error
 
 
 _RUN_COLUMNS = (

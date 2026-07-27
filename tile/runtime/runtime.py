@@ -16,15 +16,11 @@ from tile.prompt import DEFAULT_INSTRUCTIONS
 from tile.result import (
     COMPLETE_TOOL_NAME,
     FAIL_TOOL_NAME,
-    Failed,
-    PersistenceFailure,
-    RunOutcome,
 )
 from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.handle import RunHandle, _RunCompletion, _RunFinalization
+from tile.runtime.handle import RunHandle, _RunCompletion
 from tile.runtime.session import Session
 from tile.store.base import (
-    RunPersistenceError,
     SessionAlreadyExistsError,
     SessionNotFoundError,
     StaleRunError,
@@ -184,41 +180,25 @@ class AgentRuntime:
         if handle is not None:
             handle._replace()
 
-    def _finish_run(self, completion: _RunCompletion) -> _RunFinalization:
+    def _finish_run(self, completion: _RunCompletion) -> RunRecord:
         """Persist one candidate completion and release its local handle."""
 
         try:
             return self._persist_completion(completion)
         finally:
-            self._active_runs.pop(completion.run_id, None)
+            self._active_runs.pop(completion.record.run_id, None)
 
-    def _persist_completion(self, completion: _RunCompletion) -> _RunFinalization:
-        """Resolve successful, stale, and failed persistence paths."""
+    def _persist_completion(self, completion: _RunCompletion) -> RunRecord:
+        """Return the Store record for a successful or stale finalization."""
 
         try:
             record = self._store.finish_run(
-                run_id=completion.run_id,
-                outcome=completion.outcome,
+                record=completion.record,
                 history_delta=completion.history_delta,
             )
         except StaleRunError:
-            return self._resolve_stale_completion(completion)
-        except BaseException as error:
-            return _persistence_failure(completion, error)
-        return _RunFinalization(record=record, outcome=completion.outcome)
-
-    def _resolve_stale_completion(
-        self,
-        completion: _RunCompletion,
-    ) -> _RunFinalization:
-        """Use the terminal record committed by another lifecycle owner."""
-
-        try:
-            record = self._store.get_run(completion.run_id)
-        except BaseException as error:
-            return _persistence_failure(completion, error)
-        outcome = cast("RunOutcome", record.outcome)
-        return _RunFinalization(record=record, outcome=outcome)
+            return self._store.get_run(completion.record.run_id)
+        return record
 
     def _build_session(self, record: SessionRecord) -> Session:
         """Build the application facade for one persistent session."""
@@ -227,24 +207,6 @@ class AgentRuntime:
 
 
 RESERVED_TOOL_NAMES = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
-
-
-def _persistence_failure(
-    completion: _RunCompletion,
-    error: BaseException,
-) -> _RunFinalization:
-    """Return a visible failure while retaining the last durable snapshot."""
-
-    failure = PersistenceFailure(
-        operation="finish_run",
-        exception_type=type(error).__name__,
-        message=str(error),
-    )
-    return _RunFinalization(
-        record=completion.record,
-        outcome=Failed(cause=failure),
-        wait_error=RunPersistenceError(completion.run_id, error),
-    )
 
 
 def _reject_reserved_tool_names(tools: Sequence[ToolDefinition]) -> None:

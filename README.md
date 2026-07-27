@@ -73,8 +73,9 @@ async def main() -> None:
     )
     session = runtime.session(name="quickstart")
     run = await session.prompt("List the files in the current directory.")
-    print(await run.wait())  # "completed"
-    print(run.output_text)
+    report = await run.wait()
+    print(report.status)  # "completed"
+    print(report.outcome)
 
 
 asyncio.run(main())
@@ -129,7 +130,8 @@ subscribers can observe the event stream.
 run = await session.prompt("Inspect the current repository")
 async for event in run.events():
     ...
-status = await run.wait()  # "completed" | "failed" | "aborted"
+report = await run.wait()
+status = report.status  # "completed" | "failed" | "aborted"
 ```
 
 Every run's log begins with `RunStartEvent` and ends with exactly one
@@ -157,8 +159,9 @@ Execution sits between two short transactions:
 1. `start_run` validates the session, snapshots committed history, and inserts
    the running record atomically.
 2. Provider streaming and tool execution happen entirely in memory.
-3. `finish_run` conditionally finalizes the still-running record and appends
-   its complete history delta in one transaction.
+3. The handle derives a terminal record when execution ends, and `finish_run`
+   conditionally persists it with the complete history delta in one
+   transaction.
 
 ```python
 from pathlib import Path
@@ -188,10 +191,11 @@ session_records = runtime.runs_for(session.id)
 
 `finish_run` uses the run's `status="running"` condition as a stale-writer
 fence. If another process has already replaced or finalized that run, no
-history is inserted. If any terminal write fails, the transaction rolls back,
-the stored run remains `running`, and `RunHandle.wait()` raises
-`RunPersistenceError`. Recover explicitly by submitting another prompt with
-`replace_active=True`.
+history is inserted. If any terminal write fails, the transaction rolls back
+and the stored run remains `running`. `RunHandle.wait()` still returns the
+process-local execution result, with `report.persisted == False` and the
+Store-owned error in `report.finalization_error`. Recover explicitly by
+submitting another prompt with `replace_active=True`.
 
 ```python
 replacement = await session.prompt("Try again", replace_active=True)
@@ -234,8 +238,8 @@ class WeatherReport(BaseModel):
 
 
 run = await session.prompt("What's the weather in Munich?", result=WeatherReport)
-await run.wait()
-match run.outcome:
+report = await run.wait()
+match report.outcome:
     case Completed(value=report):
         print(report.city, report.temp_c)   # a WeatherReport instance
     case Failed(cause=AgentFailure(reason=reason)):
@@ -260,16 +264,20 @@ and contract text sit at the front of every provider request, so alternating
 typed and plain prompts — or switching schemas — within a session re-reads the
 whole session history at full price on each flip.
 
-## Status and outcome
+## Run reports, status, and outcome
 
-`run.status` reflects the persistent record supplied when the handle starts or
-finalizes. Use `runtime.get_run(run.id)` when an immediate cross-process
-authoritative read is required. Every successfully persisted terminal run
-carries exactly one `Completed`, `Failed`, or `Aborted` outcome, and status is
-derived directly from that variant. A `Failed` outcome preserves whether the
-model declined through `AgentFailure` or execution broke through
-`ExecutionFailure`. `run.exception` retains an original in-process execution
-exception for local debugging; it is never serialized.
+`await run.wait()` returns one immutable `RunReport`. Its `record`, `status`,
+`outcome`, `history_delta`, and `last_assistant_turn` describe the terminal
+result. `execution_error` retains an original in-process exception for local
+debugging; it is never serialized. `finalization_error` describes a Store or
+other post-execution failure without changing the execution outcome.
+
+Use `runtime.get_run(run.id)` when an immediate cross-process authoritative
+read is required. Every terminal report carries exactly one `Completed`,
+`Failed`, or `Aborted` outcome, and status is derived directly from that
+variant. A `Failed` outcome preserves whether the agent could not satisfy the
+result contract through `AgentFailure` or execution broke through
+`ExecutionFailure`.
 
 | Run ending | `status` | `outcome` |
 |---|---|---|
@@ -280,7 +288,7 @@ exception for local debugging; it is never serialized.
 | Provider dies (stream error or raise) | `failed` | `Failed(cause=ExecutionFailure(...))` |
 | Explicit cancellation | `aborted` | `Aborted(reason="cancelled")` |
 | Replaced by a newer run | `aborted` | `Aborted(reason="replaced")` |
-| Atomic finalization fails | remains `running` in the Store | live `Failed(cause=PersistenceFailure(...))`; `wait()` raises |
+| Atomic finalization fails | candidate status in the report; durable record may remain `running` | original outcome plus `finalization_error`; `persisted=False` |
 
 A provider death never corrupts the session: partial turns are dropped, history
 ends at the last stable item, unanswered tool calls are healed, and the session
@@ -291,9 +299,10 @@ recovery unit above that is re-prompting the session.
 Run events are replayable facts, and the run-level closure survives every
 in-process termination: an exception or abort still lands exactly one
 `RunEndEvent` as the log's final event before the terminal status lands.
-After a successful finalization, `RunEndEvent.outcome`, `run.outcome`, and the
-stored record agree. On persistence failure, the event carries a structured
-persistence failure, `wait()` raises, and the stored run remains `running`.
+After a successful finalization, `RunEndEvent.outcome`, `report.outcome`, and
+the stored record agree. On persistence failure, the event and report preserve
+the execution outcome, `report.finalization_error` carries a
+`StorePersistenceError`, and the stored run remains `running`.
 
 ## Observability
 
@@ -365,11 +374,12 @@ from tile import (
     ExecutionFailure,
     Failed,
     HistoryItem,
-    RunPersistenceError,
     RunHandle,
+    RunReport,
     RunRecord,
     SQLiteStore,
     Store,
+    StorePersistenceError,
 )
 from tile.events import AgentEvent, MessageEndEvent, RunEndEvent, StreamFn
 from tile.providers.openai import create_stream_api

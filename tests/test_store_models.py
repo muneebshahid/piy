@@ -10,9 +10,9 @@ from tile import (
     Aborted,
     AgentFailure,
     Completed,
+    ExecutionFailure,
     Failed,
     HistoryItem,
-    PersistenceFailure,
     RunHandle,
     RunRecord,
     SessionRecord,
@@ -94,14 +94,14 @@ def test_conversation_item_is_discriminated_by_role() -> None:
         ),
         pytest.param(
             Failed(
-                cause=PersistenceFailure(
-                    operation="finish_run",
-                    exception_type="OSError",
-                    message="disk full",
+                cause=ExecutionFailure(
+                    origin="execution",
+                    exception_type="RuntimeError",
+                    message="runtime failed",
                 )
             ),
             "failed",
-            id="persistence-failure",
+            id="execution-failure",
         ),
         pytest.param(
             Aborted(reason="cancelled"),
@@ -121,7 +121,7 @@ def test_run_record_derives_status_from_every_outcome(
 ) -> None:
     """Keep terminal status consistent with its serializable outcome."""
 
-    finished = _running_record().finish(outcome=outcome, ended_at=CREATED_AT)
+    finished = _running_record().finish(outcome=outcome)
 
     assert finished.status == expected_status
     assert finished.outcome == outcome
@@ -139,31 +139,32 @@ def test_run_record_requires_a_provider_at_creation() -> None:
         RunRecord.model_validate(values)
 
 
-def test_run_record_finish_rejects_a_naive_end_timestamp() -> None:
-    """Reject an end timestamp whose timezone would make ordering ambiguous."""
+def test_run_record_finish_sets_its_terminal_timestamp() -> None:
+    """Capture the completion time inside the domain transition."""
 
-    with pytest.raises(ValueError, match="timezone-aware"):
-        _running_record().finish(
-            outcome=Completed(value="done"),
-            ended_at=datetime(2026, 7, 26, 12, 1),
-        )
+    before = datetime.now(UTC)
+    finished = _running_record().finish(outcome=Completed(value="done"))
+    after = datetime.now(UTC)
+
+    assert finished.ended_at is not None
+    assert before <= finished.ended_at <= after
 
 
 def test_failure_causes_round_trip_without_losing_their_kind() -> None:
-    """Preserve agent, execution, and persistence failure distinctions."""
+    """Preserve the execution failure kind through serialization."""
 
     outcome = Failed(
-        cause=PersistenceFailure(
-            operation="finish_run",
-            exception_type="OSError",
-            message="disk full",
+        cause=ExecutionFailure(
+            origin="execution",
+            exception_type="RuntimeError",
+            message="runtime failed",
         )
     )
     adapter = TypeAdapter(Failed)
 
     loaded = adapter.validate_json(outcome.model_dump_json())
 
-    assert isinstance(loaded.cause, PersistenceFailure)
+    assert isinstance(loaded.cause, ExecutionFailure)
     assert loaded == outcome
 
 

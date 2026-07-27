@@ -59,7 +59,6 @@ class RunRecord(BaseModel):
         self,
         *,
         outcome: RunOutcome,
-        ended_at: datetime | None = None,
     ) -> RunRecord:
         """Return the terminal form while preserving execution identity.
 
@@ -69,8 +68,7 @@ class RunRecord(BaseModel):
 
         if self.status != "running":
             raise ValueError("Only a running run can be finished.")
-        requested_end = ended_at if ended_at is not None else datetime.now(UTC)
-        terminal_time = _normalize_timestamp(requested_end, label="Run")
+        terminal_time = datetime.now(UTC)
         return RunRecord(
             run_id=self.run_id,
             session_id=self.session_id,

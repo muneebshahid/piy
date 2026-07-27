@@ -9,18 +9,15 @@ from tile.result import (
     ExecutionFailureOrigin,
     Failed,
     FailureCause,
-    PersistenceFailure,
-    PersistenceOperation,
     RunOutcome,
 )
-from tile.runtime import AgentRuntime, RunHandle, Session, TurnFailedError
+from tile.runtime import AgentRuntime, RunHandle, RunReport, Session, TurnFailedError
 from tile.store import (
     ActiveRunError,
     HistoryItem,
     InvalidHistoryError,
     RunAlreadyExistsError,
     RunNotFoundError,
-    RunPersistenceError,
     RunRecord,
     RunStatus,
     SessionAlreadyExistsError,
@@ -32,6 +29,8 @@ from tile.store import (
     StartedRun,
     Store,
     StoreError,
+    StoreOperation,
+    StorePersistenceError,
 )
 from tile.tool_executor import ToolExecutor
 
@@ -48,13 +47,11 @@ __all__ = [
     "FailureCause",
     "HistoryItem",
     "InvalidHistoryError",
-    "PersistenceFailure",
-    "PersistenceOperation",
     "RunAlreadyExistsError",
     "RunHandle",
     "RunNotFoundError",
     "RunOutcome",
-    "RunPersistenceError",
+    "RunReport",
     "RunRecord",
     "RunStatus",
     "SQLiteStore",
@@ -67,6 +64,8 @@ __all__ = [
     "StartedRun",
     "Store",
     "StoreError",
+    "StoreOperation",
+    "StorePersistenceError",
     "ToolExecutor",
     "TurnFailedError",
 ]

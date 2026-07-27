@@ -3,11 +3,12 @@
 import asyncio
 import io
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from tile import RunStatus, SQLiteStore
+from tile import Completed, RunRecord, RunReport, SQLiteStore
 from tile.events import StreamFn
 from tile.types.conversation import ConversationItem
 from tile.types.tools import ToolTextContent
@@ -48,11 +49,11 @@ def test_run_cli_reads_prompt_from_stdin(monkeypatch: pytest.MonkeyPatch) -> Non
 
     prompts: list[str] = []
 
-    async def _record_prompt(prompt: str, *, stream_fn: StreamFn) -> RunStatus:
+    async def _record_prompt(prompt: str, *, stream_fn: StreamFn) -> RunReport:
         """Record the prompt passed by the CLI."""
 
         prompts.append(prompt)
-        return "completed"
+        return _completed_report()
 
     monkeypatch.setattr("sys.stdin", io.StringIO("Hello from stdin\n"))
     monkeypatch.setattr(local_runner.settings, "openai_api_key", "test-key")
@@ -62,6 +63,25 @@ def test_run_cli_reads_prompt_from_stdin(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert status == 0
     assert prompts == ["Hello from stdin"]
+
+
+def _completed_report() -> RunReport:
+    """Build the successful report returned by the CLI test double."""
+
+    started_at = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
+    running = RunRecord(
+        run_id="run-1",
+        session_id="session-1",
+        prompt="hello",
+        status="running",
+        started_at=started_at,
+        model="gpt-5.4",
+        provider="test",
+    )
+    return RunReport(
+        record=running.finish(outcome=Completed(value="done")),
+        history_delta=(),
+    )
 
 
 def _run_runtime_tool_flow(
