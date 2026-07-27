@@ -172,21 +172,34 @@ def test_run_record_finish_sets_its_terminal_timestamp() -> None:
     assert before <= finished.ended_at <= after
 
 
-def test_failure_causes_round_trip_without_losing_their_kind() -> None:
-    """Preserve the execution failure kind through serialization."""
+@pytest.mark.parametrize(
+    "cause",
+    [
+        pytest.param(
+            AgentFailure(reason="cannot deliver"),
+            id="agent-failure",
+        ),
+        pytest.param(
+            ExecutionFailure(
+                origin="execution",
+                exception_type="RuntimeError",
+                message="runtime failed",
+            ),
+            id="execution-failure",
+        ),
+    ],
+)
+def test_failure_causes_round_trip_without_losing_their_kind(
+    cause: AgentFailure | ExecutionFailure,
+) -> None:
+    """Preserve every failure cause kind through serialization."""
 
-    outcome = Failed(
-        cause=ExecutionFailure(
-            origin="execution",
-            exception_type="RuntimeError",
-            message="runtime failed",
-        )
-    )
+    outcome = Failed(cause=cause)
     adapter = TypeAdapter(Failed)
 
     loaded = adapter.validate_json(outcome.model_dump_json())
 
-    assert isinstance(loaded.cause, ExecutionFailure)
+    assert type(loaded.cause) is type(cause)
     assert loaded == outcome
 
 

@@ -115,6 +115,41 @@ class GatedProviderStreamMock(ProviderStreamMock):
         return async_stream(final_text_stream(f"resp_{index}", f"answer {index}"))
 
 
+class GatedQueuedProviderStreamMock(ProviderStreamMock):
+    """Queued provider streams whose individual calls require release."""
+
+    def __init__(
+        self,
+        streams: Sequence[Sequence[ProviderStreamEvent]],
+        releases: Sequence[asyncio.Event],
+    ) -> None:
+        """Create one gate for each configured provider stream."""
+
+        if len(streams) != len(releases):
+            raise ValueError("Each queued stream requires one release event.")
+        self._streams = tuple(tuple(stream) for stream in streams)
+        self._releases = tuple(releases)
+        self._next_stream_index = 0
+        self.mock = AsyncMock(side_effect=self._stream)
+        self.mock.provider = TEST_PROVIDER
+
+    async def _stream(
+        self,
+        _history: Sequence[ConversationItem],
+        _model: str,
+        *,
+        instructions: str,
+        tools: Sequence[ToolDefinition] | None,
+    ) -> AsyncEventStream:
+        """Return the next queued stream after its release event is set."""
+
+        _ = instructions, tools
+        index = self._next_stream_index
+        self._next_stream_index += 1
+        await self._releases[index].wait()
+        return async_stream(self._streams[index])
+
+
 def final_text_stream(response_id: str, text: str) -> list[ProviderStreamEvent]:
     """Build a minimal provider stream that completes with final text."""
 

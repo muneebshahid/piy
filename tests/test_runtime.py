@@ -39,6 +39,7 @@ from tile.types import (
 from tile.types.stream_events import ProviderStreamEvent
 from tests.support.agent_streams import (
     GatedProviderStreamMock,
+    GatedQueuedProviderStreamMock,
     ProviderStreamMock,
     error_stream,
     final_text_stream,
@@ -102,6 +103,76 @@ def test_runtime_commits_a_complete_turn_only_at_finalization() -> None:
         assert prompt.content == "hello"
         assert len(session.history) == 2
         assert store.get_run(handle.id).outcome == Completed(value="answer 0")
+        store.close()
+
+    asyncio.run(_run())
+
+
+def test_runtime_keeps_multi_attempt_history_provisional_until_finalization() -> None:
+    """Keep assistant, tool, and result-follow-up items local while running."""
+
+    async def _run() -> None:
+        releases = (asyncio.Event(), asyncio.Event(), asyncio.Event())
+        releases[0].set()
+        releases[1].set()
+        provider = GatedQueuedProviderStreamMock(
+            [
+                tool_call_stream(
+                    response_id="response-1",
+                    call_id="call-1",
+                    tool_name="inspect",
+                    arguments={},
+                ),
+                final_text_stream("response-2", "inspection complete"),
+                tool_call_stream(
+                    response_id="response-3",
+                    call_id="call-2",
+                    tool_name="complete",
+                    arguments={"value": "done"},
+                ),
+            ],
+            releases,
+        )
+
+        async def inspect(params: _NoInput) -> ToolResult:
+            """Return one replayable non-terminal tool result."""
+
+            _ = params
+            return ToolResult.text("inspected")
+
+        store = SQLiteStore(in_memory=True)
+        runtime = AgentRuntime(
+            stream_fn=provider.fn,
+            model="gpt-5.4",
+            cwd=Path("."),
+            store=store,
+            tools=[_tool("inspect", inspect)],
+        )
+        session = runtime.session(session_id="provisional")
+        handle = await session.prompt("inspect", result=_TextResult)
+
+        await _wait_for_provider(provider, expected=3)
+        assert session.history == ()
+        assert [item.role for item in provider.history(2)] == [
+            "user",
+            "assistant",
+            "tool_result",
+            "assistant",
+            "user",
+        ]
+
+        releases[2].set()
+        report = await handle.wait()
+        assert report.persisted
+        assert [item.role for item in session.history] == [
+            "user",
+            "assistant",
+            "tool_result",
+            "assistant",
+            "user",
+            "assistant",
+            "tool_result",
+        ]
         store.close()
 
     asyncio.run(_run())
@@ -216,6 +287,47 @@ def test_runtime_failure_commits_the_valid_completed_prefix() -> None:
     prompt = session.history[0]
     assert isinstance(prompt, UserMessage)
     assert prompt.content == "hello"
+    store.close()
+
+
+def test_agent_failure_commits_its_complete_replayable_history() -> None:
+    """Persist an agent-declared failure and every replayable item it produced."""
+
+    provider = ProviderStreamMock(
+        [
+            tool_call_stream(
+                response_id="response-1",
+                call_id="call-1",
+                tool_name="fail",
+                arguments={"reason": "cannot deliver"},
+            )
+        ]
+    )
+    store = SQLiteStore(in_memory=True)
+    runtime = AgentRuntime(
+        stream_fn=provider.fn,
+        model="gpt-5.4",
+        cwd=Path("."),
+        store=store,
+    )
+    session = runtime.session(session_id="agent-failure-history")
+
+    async def _run() -> None:
+        handle = await session.prompt("try", result=_TextResult)
+        report = await handle.wait()
+
+        expected = Failed(cause=AgentFailure(reason="cannot deliver"))
+        assert report.outcome == expected
+        assert report.persisted
+        assert store.get_run(handle.id).outcome == expected
+        assert [item.role for item in session.history] == [
+            "user",
+            "assistant",
+            "tool_result",
+        ]
+        assert tuple(session.history) == report.history_delta
+
+    asyncio.run(_run())
     store.close()
 
 

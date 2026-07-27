@@ -24,7 +24,6 @@ RunRow: TypeAlias = tuple[
     str | None,
 ]
 HistoryRow: TypeAlias = tuple[str, str, str, int, str, str, str]
-HistoryInsertRow: TypeAlias = tuple[str, str, str, int, str, str, str]
 TerminalRunValues: TypeAlias = tuple[str, str, str, str]
 
 _OUTCOME_ADAPTER = TypeAdapter(RunOutcome)
@@ -120,7 +119,7 @@ def history_values(
     session_id: str,
     position: int,
     created_at: datetime,
-) -> HistoryInsertRow:
+) -> HistoryRow:
     """Serialize one new committed history envelope."""
 
     return (

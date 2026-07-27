@@ -37,7 +37,7 @@ class Session:
 
     @property
     def history(self) -> Sequence[ConversationItem]:
-        """Return completed conversation history for this session."""
+        """Return the session's committed replayable conversation history."""
 
         return self._runtime.history_for(self.id)
 

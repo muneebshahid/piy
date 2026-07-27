@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, cast
-from uuid import uuid4
 
 from tile._sqlite import immediate_transaction, resolve_connection_target
 from tile.result import Aborted
@@ -33,7 +32,6 @@ from tile.store.serialization import (
     HistoryRow,
     RunRow,
     SessionRow,
-    dump_conversation_item,
     history_from_row,
     history_values,
     run_from_row,
@@ -152,17 +150,7 @@ class SQLiteStore:
 
         with _translate_sqlite_errors("get_history"):
             self._require_session(session_id)
-            rows = self._connection.execute(
-                """
-                SELECT id, session_id, run_id, position, role, payload_json, created_at
-                FROM history_items
-                WHERE session_id = ?
-                ORDER BY position
-                """,
-                (session_id,),
-            ).fetchall()
-        history_rows = cast("Sequence[HistoryRow]", rows)
-        return tuple(history_from_row(row) for row in history_rows)
+            return self._history_for_session(session_id)
 
     def get_run(self, run_id: str) -> RunRecord:
         """Return one persistent run or raise when it does not exist."""
@@ -176,7 +164,7 @@ class SQLiteStore:
         with _translate_sqlite_errors("list_runs"):
             self._require_session(session_id)
             rows = self._connection.execute(
-                _SELECT_RUNS_SQL + " WHERE session_id = ? ORDER BY started_at",
+                _SELECT_RUN_SQL + " WHERE session_id = ? ORDER BY started_at",
                 (session_id,),
             ).fetchall()
         run_rows = cast("Sequence[RunRow]", rows)
@@ -254,7 +242,7 @@ class SQLiteStore:
         """Return the session's running run when present."""
 
         row = self._connection.execute(
-            _SELECT_RUNS_SQL + " WHERE session_id = ? AND status = 'running'",
+            _SELECT_RUN_SQL + " WHERE session_id = ? AND status = 'running'",
             (session_id,),
         ).fetchone()
         return None if row is None else run_from_row(cast("RunRow", row))
@@ -302,7 +290,7 @@ class SQLiteStore:
         """Return one run inside or outside a transaction."""
 
         row = self._connection.execute(
-            _SELECT_RUNS_SQL + " WHERE id = ?",
+            _SELECT_RUN_SQL + " WHERE id = ?",
             (run_id,),
         ).fetchone()
         if row is None:
@@ -390,14 +378,12 @@ class SQLiteStore:
         """Duplicate history envelopes while retaining run provenance."""
 
         rows = [
-            (
-                str(uuid4()),
-                target_session_id,
-                item.run_id,
-                item.position,
-                item.item.role,
-                dump_conversation_item(item.item),
-                item.created_at.isoformat(),
+            history_values(
+                item=item.item,
+                run_id=item.run_id,
+                session_id=target_session_id,
+                position=item.position,
+                created_at=item.created_at,
             )
             for item in items
         ]
@@ -425,7 +411,7 @@ _RUN_COLUMNS = (
     "provider",
     "outcome_json",
 )
-_SELECT_RUNS_SQL = f"SELECT {', '.join(_RUN_COLUMNS)} FROM runs"
+_SELECT_RUN_SQL = f"SELECT {', '.join(_RUN_COLUMNS)} FROM runs"
 _INSERT_RUN_SQL = f"""
     INSERT INTO runs ({", ".join(_RUN_COLUMNS)})
     VALUES ({", ".join("?" for _ in _RUN_COLUMNS)})

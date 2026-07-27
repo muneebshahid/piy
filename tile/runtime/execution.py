@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -108,8 +108,6 @@ async def _execute_plain(
         observation,
         deps=deps,
         history=history,
-        tool_executor=deps.tool_executor,
-        instructions=deps.instructions,
     )
     turn = _require_completed_turn(observation.last_turn)
     return Completed(value=_assistant_text(turn))
@@ -124,19 +122,14 @@ async def _execute_typed(
 ) -> RunOutcome:
     """Run agent attempts until the required result is produced or exhausted."""
 
-    tool_executor = ToolExecutor(
-        (*deps.tool_executor.tools, complete_tool(result), fail_tool)
-    )
-    instructions = f"{deps.instructions}\n\n{RESULT_CONTRACT}"
+    attempt_dependencies = _typed_attempt_dependencies(deps, result)
     for attempt in range(MAX_RESULT_FOLLOW_UPS + 1):
         observation = _AgentRunObservation()
         await _run_attempt(
             publish,
             observation,
-            deps=deps,
+            deps=attempt_dependencies,
             history=history,
-            tool_executor=tool_executor,
-            instructions=instructions,
         )
         _require_completed_turn(observation.last_turn)
         outcome = _result_outcome(observation.terminal_details)
@@ -153,8 +146,6 @@ async def _run_attempt(
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
-    tool_executor: ToolExecutor,
-    instructions: str,
 ) -> None:
     """Drive one stateless agent attempt, publishing every event.
 
@@ -169,9 +160,9 @@ async def _run_attempt(
         history,
         stream_fn=deps.stream_fn,
         model=deps.model,
-        tool_executor=tool_executor,
+        tool_executor=deps.tool_executor,
         instructions=build_system_prompt(
-            instructions,
+            deps.instructions,
             deps.cwd,
             auto_mode=deps.auto_mode,
         ),
@@ -180,6 +171,21 @@ async def _run_attempt(
         async for event in events:
             observation.observe(event)
             publish(event)
+
+
+def _typed_attempt_dependencies(
+    deps: _ExecutionDependencies,
+    result: type[BaseModel],
+) -> _ExecutionDependencies:
+    """Resolve one typed prompt's shared attempt dependencies."""
+
+    return replace(
+        deps,
+        instructions=f"{deps.instructions}\n\n{RESULT_CONTRACT}",
+        tool_executor=ToolExecutor(
+            (*deps.tool_executor.tools, complete_tool(result), fail_tool)
+        ),
+    )
 
 
 @dataclass

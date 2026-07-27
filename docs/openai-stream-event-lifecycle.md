@@ -18,7 +18,7 @@ sequenceDiagram
     participant Asm as assemble_stream
     participant Stream as StreamEvent
     participant Agent as run_agent
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     SDK->>SDKA: OpenAI Python SDK event object
     SDKA->>Norm: transport-independent event
@@ -191,7 +191,7 @@ sequenceDiagram
     participant Asm as assemble_stream
     participant Stream as StreamEvent
     participant Agent as run_agent
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     SDK->>Adapter: ResponseCompletedEvent
     Adapter->>Norm: COMPLETED(stop_reason=stop)
@@ -215,7 +215,7 @@ sequenceDiagram
     participant Stream as StreamEvent
     participant Agent as run_agent
     participant Tool as Tool execution
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     Adapter->>Norm: COMPLETED(stop_reason=tool_use)
     Norm->>Asm: COMPLETED
@@ -243,7 +243,7 @@ sequenceDiagram
     participant Asm as assemble_stream
     participant Stream as StreamEvent
     participant Agent as run_agent
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     SDK->>Adapter: ResponseIncompleteEvent(max_output_tokens)
     Adapter->>Norm: INCOMPLETE(stop_reason=length)

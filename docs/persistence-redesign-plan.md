@@ -1,8 +1,8 @@
 # Persistence-First Runtime Redesign
 
-**Implementation status:** complete on `codex/persistence-first-redesign-plan`.
-All eight units are implemented; final verification is recorded in the
-implementing change rather than maintained as mutable state in this plan.
+**Implementation status:** complete.
+All eight units are implemented. This document records the design decisions
+and implementation sequence rather than branch-specific progress.
 
 ## Purpose
 

@@ -159,7 +159,7 @@ class RunRecord(BaseModel):
 
 
 class HistoryItem(BaseModel):
-    """One immutable item in a session's committed conversation timeline."""
+    """A frozen envelope containing a defensive conversation-item snapshot."""
 
     model_config = ConfigDict(frozen=True)
 
