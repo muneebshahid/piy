@@ -1,7 +1,6 @@
 """Atomic persistence boundary for sessions, runs, and committed history."""
 
 from collections.abc import Sequence
-from datetime import datetime
 from typing import Literal, Protocol, TypeAlias
 
 from tile.store.models import HistoryItem, RunRecord, SessionRecord, StartedRun
@@ -76,8 +75,7 @@ class Store(Protocol):
     def create_session(
         self,
         *,
-        session_id: str,
-        name: str | None = None,
+        record: SessionRecord,
     ) -> SessionRecord:
         """Create and return one session, rejecting an existing id."""
         ...
@@ -93,13 +91,8 @@ class Store(Protocol):
     def start_run(
         self,
         *,
-        run_id: str,
-        session_id: str,
-        prompt: str,
-        model: str,
-        provider: str,
+        record: RunRecord,
         replace_active: bool = False,
-        started_at: datetime | None = None,
     ) -> StartedRun:
         """Atomically start a run and snapshot its committed session history.
 
@@ -138,8 +131,7 @@ class Store(Protocol):
         self,
         *,
         source_session_id: str,
-        target_session_id: str,
-        name: str | None = None,
+        target: SessionRecord,
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
         ...

@@ -153,6 +153,9 @@ One `Store` owns sessions, runs, and committed conversation history. A running
 record contains the submitted prompt before provider execution begins. The
 prompt and all replayable assistant/tool items remain provisional until the run
 finishes; session history therefore contains complete committed turns only.
+The runtime constructs new records through `SessionRecord.create()` and
+`RunRecord.start()` before handing them to the Store; adapters own atomic
+persistence rather than domain-object construction.
 
 Execution sits between two short transactions:
 

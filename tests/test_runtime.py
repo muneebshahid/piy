@@ -19,6 +19,7 @@ from tile import (
     RunHandle,
     RunOutcome,
     RunRecord,
+    SessionRecord,
     SessionNotFoundError,
     SQLiteStore,
     StorePersistenceError,
@@ -152,13 +153,15 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
     """Avoid a second fallible Store read after durable run acceptance."""
 
     store = _UnavailablePublicHistoryStore(in_memory=True)
-    store.create_session(session_id="session-1")
+    store.create_session(record=SessionRecord.create(session_id="session-1"))
     started = store.start_run(
-        run_id="seed",
-        session_id="session-1",
-        prompt="first",
-        model="gpt-5.4",
-        provider="test",
+        record=RunRecord.start(
+            run_id="seed",
+            session_id="session-1",
+            prompt="first",
+            model="gpt-5.4",
+            provider="test",
+        ),
     )
     store.finish_run(
         record=started.run.finish(outcome=Completed(value="first answer")),

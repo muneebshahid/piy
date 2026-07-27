@@ -24,6 +24,23 @@ class SessionRecord(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @classmethod
+    def create(
+        cls,
+        *,
+        session_id: str,
+        name: str | None = None,
+    ) -> SessionRecord:
+        """Create a new session record at the current time."""
+
+        now = datetime.now(UTC)
+        return cls(
+            session_id=session_id,
+            name=name,
+            created_at=now,
+            updated_at=now,
+        )
+
     @field_validator("created_at", "updated_at")
     @classmethod
     def _normalize_timestamp(cls, value: datetime) -> datetime:
@@ -54,6 +71,28 @@ class RunRecord(BaseModel):
     model: str
     provider: str
     outcome: RunOutcome | None = None
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        run_id: str,
+        session_id: str,
+        prompt: str,
+        model: str,
+        provider: str,
+    ) -> RunRecord:
+        """Create a new running record at the current time."""
+
+        return cls(
+            run_id=run_id,
+            session_id=session_id,
+            prompt=prompt,
+            status="running",
+            started_at=datetime.now(UTC),
+            model=model,
+            provider=provider,
+        )
 
     def finish(
         self,

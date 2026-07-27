@@ -31,18 +31,26 @@ exposes atomic lifecycle operations rather than independent table CRUD:
 
 ```python
 class Store(Protocol):
-    def create_session(...) -> SessionRecord: ...
+    def create_session(*, record: SessionRecord) -> SessionRecord: ...
     def get_session(...) -> SessionRecord: ...
     def list_sessions(...) -> Sequence[SessionRecord]: ...
 
-    def start_run(...) -> StartedRun: ...
-    def finish_run(...) -> RunRecord: ...
+    def start_run(*, record: RunRecord, replace_active: bool) -> StartedRun: ...
+    def finish_run(
+        *,
+        record: RunRecord,
+        history_delta: Sequence[ConversationItem],
+    ) -> RunRecord: ...
 
     def get_history(...) -> Sequence[HistoryItem]: ...
     def get_run(...) -> RunRecord: ...
     def list_runs(...) -> Sequence[RunRecord]: ...
 
-    def fork_session(...) -> SessionRecord: ...
+    def fork_session(
+        *,
+        source_session_id: str,
+        target: SessionRecord,
+    ) -> SessionRecord: ...
 ```
 
 The protocol must not expose unrestricted `update_run()` or
@@ -220,6 +228,8 @@ versions fail clearly instead of being silently reinterpreted.
 
 - Introduce or refine immutable `SessionRecord`, `RunRecord`, and
   `HistoryItem` models.
+- Construct new records through `SessionRecord.create()` and
+  `RunRecord.start()` before they cross the Store boundary.
 - Add the submitted prompt to `RunRecord`.
 - Rename the execution-facing `Run` to `RunHandle`.
 - Make `ConversationItem` an explicit discriminated union.
@@ -243,6 +253,8 @@ versions fail clearly instead of being silently reinterpreted.
 ### Changes
 
 - Introduce the use-case-oriented `Store` protocol.
+- Accept caller-constructed records for session creation, run start and
+  finish, and the target side of a fork.
 - Implement one `SQLiteStore`, including `in_memory=True`.
 - Create the unified schema and foreign keys.
 - Add history ordering and active-run constraints.
@@ -268,7 +280,7 @@ Implement `Store.start_run()` as one transaction:
 2. check for a still-running run;
 3. reject a busy session when replacement is disabled;
 4. snapshot the committed session history used to bootstrap execution;
-5. insert the new running run with its prompt and configured metadata;
+5. insert the supplied running record with its prompt and configured metadata;
 6. commit before provider execution begins.
 
 Remove `_active_prompt_session_ids` as the consistency authority. The runtime
@@ -418,7 +430,7 @@ Database fencing remains authoritative when the old handle lives elsewhere.
 Implement `Store.fork_session()` as one transaction:
 
 1. validate the source and target IDs;
-2. insert the target session;
+2. insert the supplied target session record;
 3. read all committed source history;
 4. insert duplicated history rows with new item IDs and the target session ID;
 5. preserve positions, typed payloads, origin run IDs, and timestamps;

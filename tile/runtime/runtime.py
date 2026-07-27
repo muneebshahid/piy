@@ -114,12 +114,15 @@ class AgentRuntime:
     ) -> Session:
         """Atomically fork all committed history into a new session."""
 
-        record = self._store.fork_session(
-            source_session_id=source_session_id,
-            target_session_id=(
+        target = SessionRecord.create(
+            session_id=(
                 target_session_id if target_session_id is not None else str(uuid4())
             ),
             name=name,
+        )
+        record = self._store.fork_session(
+            source_session_id=source_session_id,
+            target=target,
         )
         return self._build_session(record)
 
@@ -133,12 +136,15 @@ class AgentRuntime:
     ) -> RunHandle:
         """Persist a running record, then start its in-memory execution."""
 
-        started = self._store.start_run(
+        record = RunRecord.start(
             run_id=str(uuid4()),
             session_id=session_id,
             prompt=content,
             model=self._execution.model,
             provider=self._execution.stream_fn.provider,
+        )
+        started = self._store.start_run(
+            record=record,
             replace_active=replace_active,
         )
         self._cancel_replaced_local_run(started.replaced_run_id)
@@ -165,8 +171,10 @@ class AgentRuntime:
         except SessionNotFoundError:
             try:
                 return self._store.create_session(
-                    session_id=session_id,
-                    name=name,
+                    record=SessionRecord.create(
+                        session_id=session_id,
+                        name=name,
+                    ),
                 )
             except SessionAlreadyExistsError:
                 return self._store.get_session(session_id)

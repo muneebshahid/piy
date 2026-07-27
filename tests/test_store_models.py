@@ -56,6 +56,28 @@ def test_session_record_validates_its_lifecycle_timestamps() -> None:
         )
 
 
+def test_record_factories_construct_new_aggregate_states() -> None:
+    """Create new session and running records inside the domain models."""
+
+    before = datetime.now(UTC)
+    session = SessionRecord.create(session_id="session-1", name="Session")
+    run = RunRecord.start(
+        run_id="run-1",
+        session_id=session.session_id,
+        prompt="hello",
+        model="gpt-5.4",
+        provider="openai",
+    )
+    after = datetime.now(UTC)
+
+    assert session.created_at == session.updated_at
+    assert before <= session.created_at <= after
+    assert run.status == "running"
+    assert run.ended_at is None
+    assert run.outcome is None
+    assert before <= run.started_at <= after
+
+
 def test_history_item_round_trips_typed_conversation_payloads() -> None:
     """Deserialize adapter-shaped JSON back into the conversation union."""
 

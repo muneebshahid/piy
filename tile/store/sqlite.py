@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, cast
 from uuid import uuid4
@@ -71,19 +71,17 @@ class SQLiteStore:
     def create_session(
         self,
         *,
-        session_id: str,
-        name: str | None = None,
+        record: SessionRecord,
     ) -> SessionRecord:
         """Create and return one session, rejecting an existing id."""
 
-        record = _new_session_record(session_id, name)
         with _translate_sqlite_errors("create_session"):
             try:
                 with immediate_transaction(self._connection):
                     self._insert_session(record)
             except sqlite3.IntegrityError as error:
                 raise SessionAlreadyExistsError(
-                    f"Session already exists: {session_id}"
+                    f"Session already exists: {record.session_id}"
                 ) from error
         return record
 
@@ -110,33 +108,20 @@ class SQLiteStore:
     def start_run(
         self,
         *,
-        run_id: str,
-        session_id: str,
-        prompt: str,
-        model: str,
-        provider: str,
+        record: RunRecord,
         replace_active: bool = False,
-        started_at: datetime | None = None,
     ) -> StartedRun:
         """Atomically create a run and optionally replace its active predecessor."""
 
-        record = _new_run_record(
-            run_id=run_id,
-            session_id=session_id,
-            prompt=prompt,
-            model=model,
-            provider=provider,
-            started_at=started_at,
-        )
         with _translate_sqlite_errors("start_run"):
             with immediate_transaction(self._connection):
-                self._require_session(session_id)
-                active = self._running_run_for_session(session_id)
+                self._require_session(record.session_id)
+                active = self._running_run_for_session(record.session_id)
                 replaced_run_id = self._replace_active_run(
                     active,
                     replace_active=replace_active,
                 )
-                committed_history = self._history_for_session(session_id)
+                committed_history = self._history_for_session(record.session_id)
                 self._insert_run(record)
         return StartedRun(
             run=record,
@@ -201,20 +186,18 @@ class SQLiteStore:
         self,
         *,
         source_session_id: str,
-        target_session_id: str,
-        name: str | None = None,
+        target: SessionRecord,
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
 
         with _translate_sqlite_errors("fork_session"):
             with immediate_transaction(self._connection):
                 self._require_session(source_session_id)
-                self._reject_existing_session(target_session_id)
-                record = _new_session_record(target_session_id, name)
-                self._insert_session(record)
+                self._reject_existing_session(target.session_id)
+                self._insert_session(target)
                 source_items = self._history_for_session(source_session_id)
-                self._copy_history_items(source_items, target_session_id)
-        return record
+                self._copy_history_items(source_items, target.session_id)
+        return target
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""
@@ -464,37 +447,3 @@ _INSERT_HISTORY_SQL = """
     )
     VALUES (?, ?, ?, ?, ?, ?, ?)
 """
-
-
-def _new_session_record(session_id: str, name: str | None) -> SessionRecord:
-    """Create one session record with a stable creation timestamp."""
-
-    now = datetime.now(UTC)
-    return SessionRecord(
-        session_id=session_id,
-        name=name,
-        created_at=now,
-        updated_at=now,
-    )
-
-
-def _new_run_record(
-    *,
-    run_id: str,
-    session_id: str,
-    prompt: str,
-    model: str,
-    provider: str,
-    started_at: datetime | None,
-) -> RunRecord:
-    """Create one validated running run record."""
-
-    return RunRecord(
-        run_id=run_id,
-        session_id=session_id,
-        prompt=prompt,
-        status="running",
-        started_at=started_at if started_at is not None else datetime.now(UTC),
-        model=model,
-        provider=provider,
-    )

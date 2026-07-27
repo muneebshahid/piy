@@ -3,7 +3,7 @@
 import sqlite3
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
 
@@ -23,7 +23,12 @@ from tile import (
     StaleRunError,
     StorePersistenceError,
 )
-from tile.store import SQLiteStore, SQLiteStoreSchemaError, StartedRun
+from tile.store import (
+    SQLiteStore,
+    SQLiteStoreSchemaError,
+    SessionRecord,
+    StartedRun,
+)
 from tile.types import (
     AssistantTurn,
     ConversationItem,
@@ -31,18 +36,13 @@ from tile.types import (
 )
 
 STARTED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
-ENDED_AT = STARTED_AT + timedelta(seconds=2)
 
 
 def _invoke_start_run(store: SQLiteStore) -> None:
     """Invoke start_run for backend-error translation coverage."""
 
     store.start_run(
-        run_id="run-1",
-        session_id="session-1",
-        prompt="hello",
-        model="gpt-5.4",
-        provider="test",
+        record=_running_record(),
     )
 
 
@@ -73,7 +73,7 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        session = store.create_session(session_id="session-1", name="First")
+        session = _create_session(store, session_id="session-1", name="First")
         started = _start_run(store)
         assert started.committed_history == ()
         finished = store.finish_run(
@@ -107,7 +107,7 @@ def test_sqlite_store_returns_defensive_typed_snapshots() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="session-1")
+        _create_session(store, session_id="session-1")
         _start_run(store)
         _persist_outcome(
             store,
@@ -130,28 +130,24 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="session-1")
+        _create_session(store, session_id="session-1")
         with pytest.raises(SessionAlreadyExistsError, match="session-1"):
-            store.create_session(session_id="session-1")
+            _create_session(store, session_id="session-1")
         with pytest.raises(SessionNotFoundError, match="missing"):
             store.get_session("missing")
         with pytest.raises(SessionNotFoundError, match="missing"):
             store.start_run(
-                run_id="run-1",
-                session_id="missing",
-                prompt="hello",
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(run_id="run-1", session_id="missing"),
             )
 
         _start_run(store)
         with pytest.raises(RunAlreadyExistsError, match="run-1"):
             store.start_run(
-                run_id="run-1",
-                session_id="session-1",
-                prompt="again",
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(
+                    run_id="run-1",
+                    session_id="session-1",
+                    prompt="again",
+                ),
                 replace_active=True,
             )
     finally:
@@ -163,16 +159,16 @@ def test_start_run_enforces_one_active_run_per_session() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="session-1")
+        _create_session(store, session_id="session-1")
         _start_run(store)
 
         with pytest.raises(ActiveRunError, match="session-1"):
             store.start_run(
-                run_id="run-2",
-                session_id="session-1",
-                prompt="again",
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(
+                    run_id="run-2",
+                    session_id="session-1",
+                    prompt="again",
+                ),
             )
 
         assert [run.run_id for run in store.list_runs("session-1")] == ["run-1"]
@@ -185,18 +181,17 @@ def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="session-1")
+        _create_session(store, session_id="session-1")
         first = _start_run(store)
         late = first.run.finish(outcome=Completed(value="late"))
 
         second = store.start_run(
-            run_id="run-2",
-            session_id="session-1",
-            prompt="replacement",
-            model="gpt-5.4",
-            provider="test",
+            record=_run_record(
+                run_id="run-2",
+                session_id="session-1",
+                prompt="replacement",
+            ),
             replace_active=True,
-            started_at=ENDED_AT,
         )
 
         assert second.replaced_run_id == first.run.run_id
@@ -218,7 +213,7 @@ def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="session-1")
+        _create_session(store, session_id="session-1")
         _start_run(store)
         completed = _persist_outcome(
             store,
@@ -227,13 +222,12 @@ def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
         )
 
         started = store.start_run(
-            run_id="run-2",
-            session_id="session-1",
-            prompt="next",
-            model="gpt-5.4",
-            provider="test",
+            record=_run_record(
+                run_id="run-2",
+                session_id="session-1",
+                prompt="next",
+            ),
             replace_active=True,
-            started_at=ENDED_AT + timedelta(seconds=1),
         )
 
         assert started.replaced_run_id is None
@@ -253,7 +247,7 @@ def test_finish_run_rolls_back_status_when_history_insert_fails(
 
     database_path = tmp_path / "failed-history-insert.db"
     seed = SQLiteStore(database_path)
-    seed.create_session(session_id="session-1")
+    _create_session(seed, session_id="session-1")
     _start_run(seed)
     seed.close()
     connection = sqlite3.connect(database_path)
@@ -291,7 +285,7 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="session-1")
+        _create_session(store, session_id="session-1")
         started = _start_run(store)
         rewritten = started.run.finish(outcome=Completed(value="rewritten"))
         _persist_outcome(
@@ -339,7 +333,7 @@ def test_fork_session_copies_all_history_with_new_envelopes() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        store.create_session(session_id="source")
+        _create_session(store, session_id="source")
         _start_run(store, session_id="source")
         _persist_outcome(
             store,
@@ -352,8 +346,7 @@ def test_fork_session_copies_all_history_with_new_envelopes() -> None:
 
         fork = store.fork_session(
             source_session_id="source",
-            target_session_id="fork",
-            name="Fork",
+            target=SessionRecord.create(session_id="fork", name="Fork"),
         )
 
         source = store.get_history("source")
@@ -377,7 +370,7 @@ def test_file_backed_store_survives_restart(tmp_path: Path) -> None:
 
     database_path = tmp_path / "tile.db"
     first = SQLiteStore(database_path)
-    first.create_session(session_id="session-1")
+    _create_session(first, session_id="session-1")
     _start_run(first)
     _persist_outcome(
         first,
@@ -401,18 +394,18 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
 
     database_path = tmp_path / "invalid-bootstrap-history.db"
     seed = SQLiteStore(database_path)
-    seed.create_session(session_id="session-1")
+    _create_session(seed, session_id="session-1")
     first = _start_run(seed)
     seed.finish_run(
         record=first.run.finish(outcome=Completed(value="done")),
         history_delta=[UserMessage(content="hello")],
     )
     active = seed.start_run(
-        run_id="run-2",
-        session_id="session-1",
-        prompt="active",
-        model="gpt-5.4",
-        provider="test",
+        record=_run_record(
+            run_id="run-2",
+            session_id="session-1",
+            prompt="active",
+        ),
     ).run
     seed.close()
     connection = sqlite3.connect(database_path)
@@ -424,11 +417,11 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
     try:
         with pytest.raises(ValidationError):
             store.start_run(
-                run_id="run-3",
-                session_id="session-1",
-                prompt="replacement",
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(
+                    run_id="run-3",
+                    session_id="session-1",
+                    prompt="replacement",
+                ),
                 replace_active=True,
             )
 
@@ -510,7 +503,7 @@ def test_unified_schema_requires_run_provider_identity(tmp_path: Path) -> None:
 
     database_path = tmp_path / "provider-constraint.db"
     store = SQLiteStore(database_path)
-    store.create_session(session_id="session-1")
+    _create_session(store, session_id="session-1")
     store.close()
     connection = sqlite3.connect(database_path)
     try:
@@ -546,7 +539,7 @@ def test_unified_schema_rejects_inconsistent_run_lifecycle_rows(
 
     database_path = tmp_path / "lifecycle-constraint.db"
     store = SQLiteStore(database_path)
-    store.create_session(session_id="session-1")
+    _create_session(store, session_id="session-1")
     store.close()
     connection = sqlite3.connect(database_path)
     try:
@@ -580,7 +573,7 @@ def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None
 
     database_path = tmp_path / "starts.db"
     seed = SQLiteStore(database_path)
-    seed.create_session(session_id="session-1")
+    _create_session(seed, session_id="session-1")
     seed.close()
     barrier = Barrier(2)
 
@@ -591,11 +584,11 @@ def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None
         try:
             barrier.wait()
             store.start_run(
-                run_id=run_id,
-                session_id="session-1",
-                prompt=run_id,
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(
+                    run_id=run_id,
+                    session_id="session-1",
+                    prompt=run_id,
+                ),
             )
             return "started"
         except ActiveRunError:
@@ -620,7 +613,7 @@ def test_concurrent_replacements_leave_one_running_successor(tmp_path: Path) -> 
 
     database_path = tmp_path / "replacements.db"
     seed = SQLiteStore(database_path)
-    seed.create_session(session_id="session-1")
+    _create_session(seed, session_id="session-1")
     _start_run(seed)
     seed.close()
     barrier = Barrier(2)
@@ -632,11 +625,11 @@ def test_concurrent_replacements_leave_one_running_successor(tmp_path: Path) -> 
         try:
             barrier.wait()
             store.start_run(
-                run_id=run_id,
-                session_id="session-1",
-                prompt=run_id,
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(
+                    run_id=run_id,
+                    session_id="session-1",
+                    prompt=run_id,
+                ),
                 replace_active=True,
             )
             return run_id
@@ -688,13 +681,12 @@ def test_finish_and_replace_race_preserves_one_valid_winner(tmp_path: Path) -> N
         try:
             barrier.wait()
             started = store.start_run(
-                run_id="run-2",
-                session_id="session-1",
-                prompt="replacement",
-                model="gpt-5.4",
-                provider="test",
+                record=_run_record(
+                    run_id="run-2",
+                    session_id="session-1",
+                    prompt="replacement",
+                ),
                 replace_active=True,
-                started_at=ENDED_AT + timedelta(seconds=1),
             )
             return started.replaced_run_id
         finally:
@@ -713,7 +705,7 @@ def _seed_running_run(database_path: Path) -> None:
 
     seed = SQLiteStore(database_path)
     try:
-        seed.create_session(session_id="session-1")
+        _create_session(seed, session_id="session-1")
         _start_run(seed)
     finally:
         seed.close()
@@ -760,15 +752,10 @@ def _start_run(
     *,
     session_id: str = "session-1",
 ) -> StartedRun:
-    """Start one deterministic run for store tests."""
+    """Start one run through the record-based Store contract."""
 
     return store.start_run(
-        run_id="run-1",
-        session_id=session_id,
-        prompt="hello",
-        model="gpt-5.4",
-        provider="test",
-        started_at=STARTED_AT,
+        record=_run_record(run_id="run-1", session_id=session_id),
     )
 
 
@@ -786,14 +773,35 @@ def _persist_outcome(
 
 
 def _running_record() -> RunRecord:
-    """Build one deterministic running record without Store access."""
+    """Build one running record without Store access."""
 
-    return RunRecord(
-        run_id="run-1",
-        session_id="session-1",
-        prompt="hello",
-        status="running",
-        started_at=STARTED_AT,
+    return _run_record(run_id="run-1", session_id="session-1")
+
+
+def _run_record(
+    *,
+    run_id: str,
+    session_id: str,
+    prompt: str = "hello",
+) -> RunRecord:
+    """Build one new run through the domain factory."""
+
+    return RunRecord.start(
+        run_id=run_id,
+        session_id=session_id,
+        prompt=prompt,
         model="gpt-5.4",
         provider="test",
     )
+
+
+def _create_session(
+    store: SQLiteStore,
+    *,
+    session_id: str,
+    name: str | None = None,
+) -> SessionRecord:
+    """Create one session through the record-based Store contract."""
+
+    record = SessionRecord.create(session_id=session_id, name=name)
+    return store.create_session(record=record)
