@@ -202,11 +202,11 @@ Replacement atomically marks the still-running predecessor as
 finished before the transaction acquired its lock, its terminal result remains
 unchanged and the new run starts normally.
 
-Forking creates a new session and copies a replayable flat history prefix into
+Forking creates a new session and copies its complete committed history into
 new history rows. Run records are not copied:
 
 ```python
-fork = session.fork(session_id="experiment", through_position=5)
+fork = session.fork(session_id="experiment")
 ```
 
 Custom `Store` implementations must provide the same atomic semantics. JSONL
@@ -262,12 +262,14 @@ whole session history at full price on each flip.
 
 ## Status and outcome
 
-`run.status` comes from the authoritative stored record. Every successfully
-persisted terminal run carries exactly one `Completed`, `Failed`, or `Aborted`
-outcome, and status is derived directly from that variant. A `Failed` outcome
-preserves whether the model declined through `AgentFailure` or execution broke
-through `ExecutionFailure`. `run.exception` retains an original in-process
-execution exception for local debugging; it is never serialized.
+`run.status` reflects the persistent record supplied when the handle starts or
+finalizes. Use `runtime.get_run(run.id)` when an immediate cross-process
+authoritative read is required. Every successfully persisted terminal run
+carries exactly one `Completed`, `Failed`, or `Aborted` outcome, and status is
+derived directly from that variant. A `Failed` outcome preserves whether the
+model declined through `AgentFailure` or execution broke through
+`ExecutionFailure`. `run.exception` retains an original in-process execution
+exception for local debugging; it is never serialized.
 
 | Run ending | `status` | `outcome` |
 |---|---|---|
@@ -402,9 +404,10 @@ tile/
 ├── prompt.py        # System prompt composition
 ├── result.py        # Typed run outcomes and the output-contract protocol
 └── runtime/         # Session runtime package
-    ├── run.py       # RunHandle: one live prompt execution
+    ├── handle.py    # RunHandle: live execution and event delivery
     ├── execution.py # Prompt programs: attempt loops and outcome derivation
-    ├── runtime.py   # AgentRuntime: configuration and orchestration
+    ├── history.py   # Provisional run-local conversation buffering
+    ├── runtime.py   # AgentRuntime: orchestration and Store lifecycle
     └── session.py   # Session facade
 tests/               # Test suite
 ```

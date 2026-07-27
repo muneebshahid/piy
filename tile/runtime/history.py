@@ -11,7 +11,7 @@ from tile.events import (
     ResultFollowUpEvent,
     ToolExecutionEndEvent,
 )
-from tile.store import HistoryItem
+from tile.store.models import HistoryItem
 from tile.types.conversation import (
     AssistantTurn,
     ConversationItem,
@@ -55,7 +55,7 @@ class _RunHistory:
         self.delta.append(local_item)
         self.working.append(local_item)
 
-    def snapshot(self) -> tuple[ConversationItem, ...]:
+    def conversation_items(self) -> tuple[ConversationItem, ...]:
         """Return defensive copies of the provisional run delta."""
 
         return tuple(item.model_copy(deep=True) for item in self.delta)

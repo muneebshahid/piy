@@ -322,11 +322,19 @@ Before persistence, prepare a typed replayable history delta:
 - heal unanswered tool calls when appropriate;
 - reject structurally invalid conversation history.
 
+`RunHandle` prepares this completion value and passes it to the
+application-owned `on_finished` callback. `AgentRuntime` owns that callback:
+it invokes `Store.finish_run()`, reconciles stale replacements, translates
+persistence failures, and returns the final record and live-log outcome.
+`RunHandle` never receives or calls a `Store`; it applies the returned
+finalization and closes its event log.
+
 Implement `Store.finish_run()` as one transaction:
 
 1. conditionally transition the run only when it remains `running`;
 2. insert the complete flat history delta;
-3. persist the terminal outcome, provider, model, and timestamps;
+3. persist the terminal outcome and timestamp without rewriting the run's
+   creation-time provider or model identity;
 4. commit everything together.
 
 The run-status condition is also the stale-writer fence:
@@ -410,18 +418,19 @@ Implement `Store.fork_session()` as one transaction:
 
 1. validate the source and target IDs;
 2. insert the target session;
-3. read the selected source history prefix;
+3. read all committed source history;
 4. insert duplicated history rows with new item IDs and the target session ID;
 5. preserve positions, typed payloads, origin run IDs, and timestamps;
 6. commit the session and copied history together.
 
 The fork does not duplicate runs. Runs listed for a session are only runs that
-originated in that session.
+originated in that session. Partial-history forks are deliberately deferred to
+the future in-session history-tree work.
 
 ### Verification
 
 - Fork gets a new session ID.
-- Fork history equals the selected source prefix.
+- Fork history equals the complete committed source history.
 - History row IDs are distinct.
 - Origin run provenance is preserved.
 - Source and fork diverge independently.

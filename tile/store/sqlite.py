@@ -19,7 +19,6 @@ from tile.store.base import (
     SessionNotFoundError,
     StaleRunError,
 )
-from tile.store.history import validate_replayable_history
 from tile.store.models import (
     HistoryItem,
     RunRecord,
@@ -119,7 +118,7 @@ class SQLiteStore:
         session_id: str,
         prompt: str,
         model: str,
-        provider: str | None,
+        provider: str,
         replace_active: bool = False,
         started_at: datetime | None = None,
     ) -> StartedRun:
@@ -141,10 +140,7 @@ class SQLiteStore:
                 replace_active=replace_active,
                 replaced_at=record.started_at,
             )
-            committed_history = self._history_prefix(
-                session_id,
-                through_position=None,
-            )
+            committed_history = self._history_for_session(session_id)
             self._insert_run(record)
         return StartedRun(
             run=record,
@@ -158,21 +154,16 @@ class SQLiteStore:
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-        provider: str | None = None,
-        model: str | None = None,
         ended_at: datetime | None = None,
     ) -> RunRecord:
         """Atomically finalize a still-running run and append its history delta."""
 
         with immediate_transaction(self._connection):
-            running = self._get_run(run_id)
-            if running.status != "running":
+            run = self._get_run(run_id)
+            if run.status != "running":
                 raise StaleRunError(f"Run is no longer active: {run_id}")
-            validate_replayable_history(history_delta)
-            finished = running.finish(
+            finished = run.finish(
                 outcome=outcome,
-                provider=provider,
-                model=model,
                 ended_at=ended_at,
             )
             self._update_running_run(finished)
@@ -218,21 +209,15 @@ class SQLiteStore:
         source_session_id: str,
         target_session_id: str,
         name: str | None = None,
-        through_position: int | None = None,
     ) -> SessionRecord:
-        """Atomically create a session with a copied flat history prefix."""
+        """Atomically create a session with all committed source history."""
 
         with immediate_transaction(self._connection):
             self._require_session(source_session_id)
             self._reject_existing_session(target_session_id)
             record = _new_session_record(target_session_id, name)
             self._insert_session(record)
-            source_items = self._history_prefix(
-                source_session_id,
-                through_position=through_position,
-            )
-            if source_items:
-                validate_replayable_history(tuple(item.item for item in source_items))
+            source_items = self._history_for_session(source_session_id)
             self._copy_history_items(source_items, target_session_id)
         return record
 
@@ -393,26 +378,18 @@ class SQLiteStore:
         ).fetchone()
         return cast("tuple[int]", row)[0]
 
-    def _history_prefix(
-        self,
-        session_id: str,
-        *,
-        through_position: int | None,
-    ) -> tuple[HistoryItem, ...]:
-        """Return all history or the inclusive prefix ending at a position."""
+    def _history_for_session(self, session_id: str) -> tuple[HistoryItem, ...]:
+        """Return all committed history for one session."""
 
-        if through_position is not None and through_position < 0:
-            raise ValueError("through_position cannot be negative.")
-        sql = """
+        rows = self._connection.execute(
+            """
             SELECT id, session_id, run_id, position, role, payload_json, created_at
             FROM history_items
             WHERE session_id = ?
-        """
-        params: tuple[str] | tuple[str, int] = (session_id,)
-        if through_position is not None:
-            sql += " AND position <= ?"
-            params = (session_id, through_position)
-        rows = self._connection.execute(sql + " ORDER BY position", params).fetchall()
+            ORDER BY position
+            """,
+            (session_id,),
+        ).fetchall()
         history_rows = cast("Sequence[HistoryRow]", rows)
         return tuple(history_from_row(row) for row in history_rows)
 
@@ -456,7 +433,7 @@ _INSERT_RUN_SQL = f"""
 """
 _FINISH_RUN_SQL = """
     UPDATE runs
-    SET status = ?, ended_at = ?, model = ?, provider = ?, outcome_json = ?
+    SET status = ?, ended_at = ?, outcome_json = ?
     WHERE id = ? AND status = 'running'
 """
 _INSERT_HISTORY_SQL = """
@@ -491,7 +468,7 @@ def _new_run_record(
     session_id: str,
     prompt: str,
     model: str,
-    provider: str | None,
+    provider: str,
     started_at: datetime | None,
 ) -> RunRecord:
     """Create one validated running run record."""

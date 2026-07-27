@@ -126,6 +126,17 @@ def test_run_record_derives_status_from_every_outcome(
     assert finished.status == expected_status
     assert finished.outcome == outcome
     assert finished.prompt == "hello"
+    assert finished.model == "gpt-5.4"
+    assert finished.provider == "openai"
+
+
+def test_run_record_requires_a_provider_at_creation() -> None:
+    """Require execution identity before a run can enter persistence."""
+
+    values = _running_record().model_dump(exclude={"provider"})
+
+    with pytest.raises(ValidationError, match="provider"):
+        RunRecord.model_validate(values)
 
 
 def test_run_record_finish_rejects_a_naive_end_timestamp() -> None:

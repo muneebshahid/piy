@@ -13,17 +13,24 @@ from pydantic import BaseModel
 
 from tile.events import StreamFn
 from tile.prompt import DEFAULT_INSTRUCTIONS
-from tile.result import COMPLETE_TOOL_NAME, FAIL_TOOL_NAME
+from tile.result import (
+    COMPLETE_TOOL_NAME,
+    FAIL_TOOL_NAME,
+    Failed,
+    PersistenceFailure,
+    RunOutcome,
+)
 from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.run import RunHandle, _RunDependencies, _RunSpec
+from tile.runtime.handle import RunHandle, _RunCompletion, _RunFinalization
 from tile.runtime.session import Session
-from tile.store import (
-    RunRecord,
+from tile.store.base import (
+    RunPersistenceError,
     SessionAlreadyExistsError,
     SessionNotFoundError,
-    SessionRecord,
+    StaleRunError,
     Store,
 )
+from tile.store.models import RunRecord, SessionRecord
 from tile.tool_executor import ToolExecutor
 from tile.tools.support.paths import normalize_cwd
 from tile.types.conversation import ConversationItem
@@ -49,16 +56,13 @@ class AgentRuntime:
         _reject_reserved_tool_names(tools)
         normalized_cwd = normalize_cwd(cwd)
         self._store = store
-        self._deps = _RunDependencies(
-            execution=_ExecutionDependencies(
-                stream_fn=stream_fn,
-                model=model,
-                instructions=instructions,
-                cwd=normalized_cwd,
-                auto_mode=auto_mode,
-                tool_executor=ToolExecutor(_bind_cwd_tools(tools, normalized_cwd)),
-            ),
-            store=store,
+        self._execution = _ExecutionDependencies(
+            stream_fn=stream_fn,
+            model=model,
+            instructions=instructions,
+            cwd=normalized_cwd,
+            auto_mode=auto_mode,
+            tool_executor=ToolExecutor(_bind_cwd_tools(tools, normalized_cwd)),
         )
         self._active_runs: dict[str, RunHandle] = {}
 
@@ -111,9 +115,8 @@ class AgentRuntime:
         source_session_id: str,
         target_session_id: str | None = None,
         name: str | None = None,
-        through_position: int | None = None,
     ) -> Session:
-        """Atomically fork a flat committed history prefix."""
+        """Atomically fork all committed history into a new session."""
 
         record = self._store.fork_session(
             source_session_id=source_session_id,
@@ -121,7 +124,6 @@ class AgentRuntime:
                 target_session_id if target_session_id is not None else str(uuid4())
             ),
             name=name,
-            through_position=through_position,
         )
         return self._build_session(record)
 
@@ -139,17 +141,17 @@ class AgentRuntime:
             run_id=str(uuid4()),
             session_id=session_id,
             prompt=content,
-            model=self._deps.execution.model,
-            provider=self._deps.execution.stream_fn.provider,
+            model=self._execution.model,
+            provider=self._execution.stream_fn.provider,
             replace_active=replace_active,
         )
         self._cancel_replaced_local_run(started.replaced_run_id)
         handle = RunHandle(
             record=started.run,
             committed_history=started.committed_history,
-            spec=_RunSpec(result=result),
-            deps=self._deps,
-            on_finished=self._release_run,
+            result=result,
+            execution=self._execution,
+            on_finished=self._finish_run,
         )
         self._active_runs[handle.id] = handle
         return handle
@@ -182,10 +184,41 @@ class AgentRuntime:
         if handle is not None:
             handle._replace()
 
-    def _release_run(self, run: RunHandle) -> None:
-        """Forget a finalized local handle."""
+    def _finish_run(self, completion: _RunCompletion) -> _RunFinalization:
+        """Persist one candidate completion and release its local handle."""
 
-        self._active_runs.pop(run.id, None)
+        try:
+            return self._persist_completion(completion)
+        finally:
+            self._active_runs.pop(completion.run_id, None)
+
+    def _persist_completion(self, completion: _RunCompletion) -> _RunFinalization:
+        """Resolve successful, stale, and failed persistence paths."""
+
+        try:
+            record = self._store.finish_run(
+                run_id=completion.run_id,
+                outcome=completion.outcome,
+                history_delta=completion.history_delta,
+            )
+        except StaleRunError:
+            return self._resolve_stale_completion(completion)
+        except BaseException as error:
+            return _persistence_failure(completion, error)
+        return _RunFinalization(record=record, outcome=completion.outcome)
+
+    def _resolve_stale_completion(
+        self,
+        completion: _RunCompletion,
+    ) -> _RunFinalization:
+        """Use the terminal record committed by another lifecycle owner."""
+
+        try:
+            record = self._store.get_run(completion.run_id)
+        except BaseException as error:
+            return _persistence_failure(completion, error)
+        outcome = cast("RunOutcome", record.outcome)
+        return _RunFinalization(record=record, outcome=outcome)
 
     def _build_session(self, record: SessionRecord) -> Session:
         """Build the application facade for one persistent session."""
@@ -194,6 +227,24 @@ class AgentRuntime:
 
 
 RESERVED_TOOL_NAMES = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
+
+
+def _persistence_failure(
+    completion: _RunCompletion,
+    error: BaseException,
+) -> _RunFinalization:
+    """Return a visible failure while retaining the last durable snapshot."""
+
+    failure = PersistenceFailure(
+        operation="finish_run",
+        exception_type=type(error).__name__,
+        message=str(error),
+    )
+    return _RunFinalization(
+        record=completion.record,
+        outcome=Failed(cause=failure),
+        wait_error=RunPersistenceError(completion.run_id, error),
+    )
 
 
 def _reject_reserved_tool_names(tools: Sequence[ToolDefinition]) -> None:

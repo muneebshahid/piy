@@ -558,8 +558,6 @@ class _FailingFinishStore(SQLiteStore):
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-        provider: str | None = None,
-        model: str | None = None,
         ended_at: datetime | None = None,
     ) -> RunRecord:
         """Fail or delegate one atomic finish operation."""
@@ -570,8 +568,6 @@ class _FailingFinishStore(SQLiteStore):
             run_id=run_id,
             outcome=outcome,
             history_delta=history_delta,
-            provider=provider,
-            model=model,
             ended_at=ended_at,
         )
 

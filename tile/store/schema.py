@@ -148,7 +148,7 @@ def _create_run_table(connection: sqlite3.Connection) -> None:
             started_at TEXT NOT NULL,
             ended_at TEXT,
             model TEXT NOT NULL,
-            provider TEXT,
+            provider TEXT NOT NULL,
             outcome_json TEXT,
             CHECK (
                 (

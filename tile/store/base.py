@@ -83,7 +83,7 @@ class Store(Protocol):
         session_id: str,
         prompt: str,
         model: str,
-        provider: str | None,
+        provider: str,
         replace_active: bool = False,
         started_at: datetime | None = None,
     ) -> StartedRun:
@@ -100,11 +100,13 @@ class Store(Protocol):
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-        provider: str | None = None,
-        model: str | None = None,
         ended_at: datetime | None = None,
     ) -> RunRecord:
-        """Atomically finalize a still-running run and commit its history delta."""
+        """Atomically finalize a run and commit its replayable history delta.
+
+        The caller owns construction of a valid history delta. Implementations
+        own stale-run fencing and all-or-nothing persistence.
+        """
         ...
 
     def get_history(self, session_id: str) -> Sequence[HistoryItem]:
@@ -125,7 +127,6 @@ class Store(Protocol):
         source_session_id: str,
         target_session_id: str,
         name: str | None = None,
-        through_position: int | None = None,
     ) -> SessionRecord:
-        """Atomically create a session with a copied flat history prefix."""
+        """Atomically create a session with all committed source history."""
         ...

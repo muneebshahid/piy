@@ -20,12 +20,12 @@ RunRow: TypeAlias = tuple[
     str,
     str | None,
     str,
-    str | None,
+    str,
     str | None,
 ]
 HistoryRow: TypeAlias = tuple[str, str, str, int, str, str, str]
 HistoryInsertRow: TypeAlias = tuple[str, str, str, int, str, str, str]
-TerminalRunValues: TypeAlias = tuple[str, str, str, str | None, str, str]
+TerminalRunValues: TypeAlias = tuple[str, str, str, str]
 
 _OUTCOME_ADAPTER = TypeAdapter(RunOutcome)
 _CONVERSATION_ITEM_ADAPTER = TypeAdapter(ConversationItem)
@@ -81,8 +81,6 @@ def terminal_run_values(record: RunRecord) -> TerminalRunValues:
     return (
         record.status,
         record.ended_at.isoformat(),
-        record.model,
-        record.provider,
         outcome_json,
         record.run_id,
     )

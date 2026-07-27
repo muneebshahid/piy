@@ -317,12 +317,13 @@ once. Hard process death is outside this contract.
 
 Rules:
 
-- The run publishes its own `RunStartEvent` before execution starts, so
+- The handle publishes its own `RunStartEvent` before execution starts, so
   every run log begins with a run start on every path, including an
   abort that lands before the first tick.
-- `RunEndEvent` is published only by the run, at finalization, exactly
+- `RunEndEvent` is published only by the handle, after runtime-owned
+  finalization, exactly
   once as the log's final event. Execution never emits it: the prompt
-  program returns a `RunOutcome`, and the run turns that outcome — or
+  program returns a `RunOutcome`, and the handle turns that outcome — or
   the exception or cancellation that replaces it — into the terminal
   event, so a duplicated or missing run end is unrepresentable. Its
   outcome variant implies how execution terminated.

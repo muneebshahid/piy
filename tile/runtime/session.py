@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from tile.runtime.run import RunHandle
-from tile.store import SessionRecord
+from tile.runtime.handle import RunHandle
+from tile.store.models import SessionRecord
 from tile.types.conversation import ConversationItem
 
 if TYPE_CHECKING:
@@ -69,18 +69,15 @@ class Session:
         *,
         session_id: str | None = None,
         name: str | None = None,
-        through_position: int | None = None,
     ) -> Session:
-        """Fork a replayable committed history prefix into a new session.
+        """Fork all committed history into a new session.
 
-        ``through_position`` is an inclusive history position. Omitting it
-        copies all committed history. Run records remain owned by their source
-        session even though copied history retains their provenance ids.
+        Run records remain owned by their source session even though copied
+        history retains their provenance ids.
         """
 
         return self._runtime.fork_session(
             source_session_id=self.id,
             target_session_id=session_id,
             name=name,
-            through_position=through_position,
         )

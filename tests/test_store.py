@@ -6,7 +6,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
-from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -17,7 +16,6 @@ from tile import (
     AgentFailure,
     Completed,
     Failed,
-    InvalidHistoryError,
     RunAlreadyExistsError,
     SessionAlreadyExistsError,
     SessionNotFoundError,
@@ -26,10 +24,6 @@ from tile import (
 from tile.store import SQLiteStore, SQLiteStoreSchemaError, StartedRun
 from tile.types import (
     AssistantTurn,
-    ConversationItem,
-    ToolCallBlock,
-    ToolResultTurn,
-    ToolTextContent,
     UserMessage,
 )
 
@@ -223,23 +217,35 @@ def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
         store.close()
 
 
-def test_finish_run_rolls_back_status_when_history_insert_fails() -> None:
+def test_finish_run_rolls_back_status_when_history_insert_fails(
+    tmp_path: Path,
+) -> None:
     """Keep the run active when any part of finalization cannot commit."""
 
-    store = SQLiteStore(in_memory=True)
-    try:
-        store.create_session(session_id="session-1")
-        _start_run(store)
-        invalid_item = cast(
-            ConversationItem,
-            {"role": "not-a-domain-object"},
-        )
+    database_path = tmp_path / "failed-history-insert.db"
+    seed = SQLiteStore(database_path)
+    seed.create_session(session_id="session-1")
+    _start_run(seed)
+    seed.close()
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        """
+        CREATE TRIGGER reject_history_insert
+        BEFORE INSERT ON history_items
+        BEGIN
+            SELECT RAISE(ABORT, 'history insert failed');
+        END
+        """
+    )
+    connection.close()
 
-        with pytest.raises(InvalidHistoryError):
+    store = SQLiteStore(database_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="history insert failed"):
             store.finish_run(
                 run_id="run-1",
                 outcome=Completed(value="done"),
-                history_delta=[invalid_item],
+                history_delta=[UserMessage(content="hello")],
                 ended_at=ENDED_AT,
             )
 
@@ -274,56 +280,8 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
         store.close()
 
 
-def test_finish_run_rejects_structurally_invalid_history() -> None:
-    """Reject unmatched tool results without changing the running record."""
-
-    store = SQLiteStore(in_memory=True)
-    try:
-        store.create_session(session_id="session-1")
-        _start_run(store)
-        orphan = ToolResultTurn(
-            call_id="missing-call",
-            tool_name="weather",
-            content=[ToolTextContent(text="sunny")],
-        )
-
-        with pytest.raises(InvalidHistoryError, match="pending call"):
-            store.finish_run(
-                run_id="run-1",
-                outcome=Completed(value="done"),
-                history_delta=[UserMessage(content="hello"), orphan],
-            )
-
-        assert store.get_run("run-1").status == "running"
-        assert store.get_history("session-1") == ()
-    finally:
-        store.close()
-
-
-def test_finish_run_rejects_an_incomplete_assistant_turn() -> None:
-    """Keep failed or aborted assistant turns out of committed replay history."""
-
-    store = SQLiteStore(in_memory=True)
-    try:
-        store.create_session(session_id="session-1")
-        _start_run(store)
-        incomplete = AssistantTurn(status="error", error_message="provider failed")
-
-        with pytest.raises(InvalidHistoryError, match="must be completed"):
-            store.finish_run(
-                run_id="run-1",
-                outcome=Completed(value="done"),
-                history_delta=[UserMessage(content="hello"), incomplete],
-            )
-
-        assert store.get_run("run-1").status == "running"
-        assert store.get_history("session-1") == ()
-    finally:
-        store.close()
-
-
-def test_fork_session_copies_a_flat_prefix_with_new_envelopes() -> None:
-    """Copy flat history while preserving payload and originating run ids."""
+def test_fork_session_copies_all_history_with_new_envelopes() -> None:
+    """Copy full history while preserving payload and originating run ids."""
 
     store = SQLiteStore(in_memory=True)
     try:
@@ -343,60 +301,20 @@ def test_fork_session_copies_a_flat_prefix_with_new_envelopes() -> None:
             source_session_id="source",
             target_session_id="fork",
             name="Fork",
-            through_position=0,
         )
 
         source = store.get_history("source")
         copied = store.get_history(fork.session_id)
-        assert len(copied) == 1
-        assert copied[0].id != source[0].id
-        assert copied[0].session_id == "fork"
-        assert copied[0].run_id == source[0].run_id
-        assert copied[0].position == source[0].position
-        assert copied[0].item == source[0].item
-        assert copied[0].created_at == source[0].created_at
+        assert len(copied) == len(source) == 2
+        assert [item.id for item in copied] != [item.id for item in source]
+        assert {item.session_id for item in copied} == {"fork"}
+        assert [item.run_id for item in copied] == [item.run_id for item in source]
+        assert [item.position for item in copied] == [item.position for item in source]
+        assert [item.item for item in copied] == [item.item for item in source]
+        assert [item.created_at for item in copied] == [
+            item.created_at for item in source
+        ]
         assert store.list_runs("fork") == ()
-    finally:
-        store.close()
-
-
-def test_fork_rejects_a_prefix_with_an_unanswered_tool_call() -> None:
-    """Roll back a fork whose selected prefix is not independently replayable."""
-
-    store = SQLiteStore(in_memory=True)
-    try:
-        store.create_session(session_id="source")
-        _start_run(store, session_id="source")
-        assistant = AssistantTurn(
-            blocks=[
-                ToolCallBlock(
-                    call_id="call-1",
-                    name="weather",
-                    arguments={},
-                )
-            ],
-            stop_reason="tool_use",
-        )
-        result = ToolResultTurn(
-            call_id="call-1",
-            tool_name="weather",
-            content=[ToolTextContent(text="sunny")],
-        )
-        store.finish_run(
-            run_id="run-1",
-            outcome=Completed(value="done"),
-            history_delta=[UserMessage(content="hello"), assistant, result],
-            ended_at=ENDED_AT,
-        )
-
-        with pytest.raises(InvalidHistoryError, match="Unanswered tool calls"):
-            store.fork_session(
-                source_session_id="source",
-                target_session_id="invalid-fork",
-                through_position=1,
-            )
-        with pytest.raises(SessionNotFoundError, match="invalid-fork"):
-            store.get_session("invalid-fork")
     finally:
         store.close()
 
@@ -535,6 +453,40 @@ def test_unified_schema_declares_required_foreign_keys(tmp_path: Path) -> None:
         ("runs", "run_id", "id"),
         ("sessions", "session_id", "id"),
     }
+
+
+def test_unified_schema_requires_run_provider_identity(tmp_path: Path) -> None:
+    """Reject a persistent run whose provider was not known at creation."""
+
+    database_path = tmp_path / "provider-constraint.db"
+    store = SQLiteStore(database_path)
+    store.create_session(session_id="session-1")
+    store.close()
+    connection = sqlite3.connect(database_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO runs (
+                    id, session_id, prompt, status, started_at,
+                    ended_at, model, provider, outcome_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "invalid",
+                    "session-1",
+                    "hello",
+                    "running",
+                    STARTED_AT.isoformat(),
+                    None,
+                    "gpt-5.4",
+                    None,
+                    None,
+                ),
+            )
+    finally:
+        connection.close()
 
 
 def test_unified_schema_rejects_inconsistent_run_lifecycle_rows(

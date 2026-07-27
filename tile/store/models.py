@@ -52,18 +52,16 @@ class RunRecord(BaseModel):
     started_at: datetime
     ended_at: datetime | None = None
     model: str
-    provider: str | None = None
+    provider: str
     outcome: RunOutcome | None = None
 
     def finish(
         self,
         *,
         outcome: RunOutcome,
-        provider: str | None = None,
-        model: str | None = None,
         ended_at: datetime | None = None,
     ) -> RunRecord:
-        """Return the terminal form of this running record.
+        """Return the terminal form while preserving execution identity.
 
         Status is derived from the outcome, and the end timestamp is clamped
         to the start so a backward clock step cannot create invalid history.
@@ -80,8 +78,8 @@ class RunRecord(BaseModel):
             status=terminal_status_for(outcome),
             started_at=self.started_at,
             ended_at=max(terminal_time, self.started_at),
-            model=model if model is not None else self.model,
-            provider=provider if provider is not None else self.provider,
+            model=self.model,
+            provider=self.provider,
             outcome=outcome,
         )
 

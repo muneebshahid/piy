@@ -1,4 +1,4 @@
-"""Live run execution over an atomic persistent lifecycle."""
+"""Persistence-free live execution handle for one accepted run."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from tile.events import (
     RunStartEvent,
 )
 from tile.result import (
+    AbortReason,
     Aborted,
     AgentFailure,
     ExecutionFailure,
@@ -31,50 +32,52 @@ from tile.runtime.execution import (
     execute_prompt,
 )
 from tile.runtime.history import _RunHistory
-from tile.store import (
-    HistoryItem,
-    RunPersistenceError,
-    RunRecord,
-    RunStatus,
-    StaleRunError,
-    Store,
-)
+from tile.store.models import HistoryItem, RunRecord, RunStatus
 from tile.types.conversation import ConversationItem
-from tile.types.stream_events import ProviderSource
 
 
 @dataclass(frozen=True)
-class _RunSpec:
-    """Execution-only options for one already-persisted run."""
+class _RunCompletion:
+    """Execution result prepared for application-owned finalization."""
 
-    result: type[BaseModel] | None
+    record: RunRecord
+    outcome: RunOutcome
+    history_delta: tuple[ConversationItem, ...]
+
+    @property
+    def run_id(self) -> str:
+        """Return the persistent run identifier."""
+
+        return self.record.run_id
 
 
 @dataclass(frozen=True)
-class _RunDependencies:
-    """Dependencies used by a live handle and its prompt program."""
+class _RunFinalization:
+    """Application resolution applied to the live handle and event log."""
 
-    execution: _ExecutionDependencies
-    store: Store
+    record: RunRecord
+    outcome: RunOutcome
+    wait_error: BaseException | None = None
+
+
+_OnFinished = Callable[[_RunCompletion], _RunFinalization]
 
 
 class RunHandle:
-    """Own one live execution while the Store owns its durable lifecycle."""
+    """Own live execution, provisional history, and event delivery."""
 
     def __init__(
         self,
         *,
         record: RunRecord,
         committed_history: Sequence[HistoryItem],
-        spec: _RunSpec,
-        deps: _RunDependencies,
-        on_finished: Callable[[RunHandle], None],
+        result: type[BaseModel] | None,
+        execution: _ExecutionDependencies,
+        on_finished: _OnFinished,
     ) -> None:
-        """Start execution from committed history and the persisted prompt."""
+        """Start execution and delegate durable finalization to the callback."""
 
         self._record = record
-        self._spec = spec
-        self._deps = deps
         self._on_finished = on_finished
         self._events: list[AgentEvent] = [RunStartEvent()]
         self._history = _RunHistory.start(
@@ -83,16 +86,16 @@ class RunHandle:
         )
         self._exception: BaseException | None = None
         self._outcome: RunOutcome | None = None
-        self._finalization_error: RunPersistenceError | None = None
-        self._abort_reason: str = "cancelled"
+        self._wait_error: BaseException | None = None
+        self._abort_reason: AbortReason | None = None
         self._changed = asyncio.Event()
         self._finalized = asyncio.Event()
         self._task = asyncio.create_task(
             execute_prompt(
                 self._publish,
-                deps=deps.execution,
+                deps=execution,
                 history=self._history.working,
-                result=spec.result,
+                result=result,
             )
         )
         self._task.add_done_callback(self._finalize)
@@ -111,15 +114,15 @@ class RunHandle:
 
     @property
     def status(self) -> RunStatus:
-        """Return the authoritative stored status."""
+        """Return the latest persistent lifecycle snapshot."""
 
         return self.record.status
 
     @property
     def record(self) -> RunRecord:
-        """Return the current authoritative persistent run record."""
+        """Return the persistent record supplied at start or finalization."""
 
-        return self._deps.store.get_run(self.id)
+        return self._record
 
     @property
     def error_message(self) -> str | None:
@@ -165,7 +168,7 @@ class RunHandle:
     def conversation_items(self) -> tuple[ConversationItem, ...]:
         """Return defensive snapshots of this run's provisional history delta."""
 
-        return self._history.snapshot()
+        return self._history.conversation_items()
 
     async def events(self) -> AsyncIterator[AgentEvent]:
         """Yield run events from the start through exactly one terminal event."""
@@ -184,8 +187,8 @@ class RunHandle:
         """Wait for finalization, raising when the atomic commit failed."""
 
         await self._finalized.wait()
-        if self._finalization_error is not None:
-            raise self._finalization_error
+        if self._wait_error is not None:
+            raise self._wait_error
         return self.status
 
     def abort(self) -> None:
@@ -198,7 +201,7 @@ class RunHandle:
 
         self._cancel(reason="replaced")
 
-    def _cancel(self, *, reason: str) -> None:
+    def _cancel(self, *, reason: AbortReason) -> None:
         """Cancel unfinished execution with its durable abort reason."""
 
         if self._task.done():
@@ -214,85 +217,82 @@ class RunHandle:
         self._changed.set()
 
     def _finalize(self, task: asyncio.Task[RunOutcome]) -> None:
-        """Commit the terminal record and history, then close the live log."""
+        """Delegate terminal persistence, then close the live event log."""
 
-        outcome, exception = _terminal_outcome(
-            task,
-            abort_reason=self._abort_reason,
-        )
-        self._exception = exception
         try:
-            self._commit(outcome)
-        except StaleRunError:
-            try:
-                self._close_from_stored_record()
-            except BaseException as error:
-                self._close_with_persistence_failure(error)
+            outcome, self._exception = _terminal_outcome(
+                task,
+                abort_reason=self._abort_reason,
+            )
+            self._history.heal()
+            finalization = self._on_finished(self._completion(outcome))
         except BaseException as error:
-            self._close_with_persistence_failure(error)
+            self._exception = self._exception or error
+            finalization = _failed_finalization(self._record, error)
         finally:
-            try:
-                self._on_finished(self)
-            finally:
-                self._finalized.set()
-                self._changed.set()
+            self._apply_finalization(finalization)
+            self._finalized.set()
+            self._changed.set()
 
-    def _commit(self, outcome: RunOutcome) -> None:
-        """Atomically persist the outcome and healed replayable history."""
+    def _completion(self, outcome: RunOutcome) -> _RunCompletion:
+        """Build the immutable value passed to application orchestration."""
 
-        source = _latest_provider_source(self._events)
-        self._history.heal()
-        self._record = self._deps.store.finish_run(
-            run_id=self.id,
+        return _RunCompletion(
+            record=self._record,
             outcome=outcome,
-            history_delta=self._history.delta,
-            provider=source.provider if source is not None else None,
-            model=source.model if source is not None else None,
+            history_delta=self._history.conversation_items(),
         )
-        self._close_log(outcome)
 
-    def _close_from_stored_record(self) -> None:
-        """Close with the terminal outcome already committed by another owner."""
+    def _apply_finalization(self, finalization: _RunFinalization) -> None:
+        """Apply the runtime's durable resolution and close exactly once."""
 
-        self._record = self._deps.store.get_run(self.id)
-        if self._record.outcome is None:
-            raise StaleRunError(f"Run is stale without a terminal outcome: {self.id}")
-        self._close_log(self._record.outcome)
-
-    def _close_with_persistence_failure(self, error: BaseException) -> None:
-        """Close visibly and retain a raising error for waiters."""
-
-        failure = PersistenceFailure(
-            operation="finish_run",
-            exception_type=type(error).__name__,
-            message=str(error),
-        )
-        self._finalization_error = RunPersistenceError(self.id, error)
-        self._close_log(Failed(cause=failure))
-
-    def _close_log(self, outcome: RunOutcome) -> None:
-        """Append the one terminal event and retain its live outcome."""
-
-        self._outcome = outcome
-        self._events.append(RunEndEvent(outcome=outcome))
+        self._record = finalization.record
+        self._outcome = finalization.outcome
+        self._wait_error = finalization.wait_error
+        self._events.append(RunEndEvent(outcome=finalization.outcome))
         self._changed.set()
 
 
 def _terminal_outcome(
     task: asyncio.Task[RunOutcome],
     *,
-    abort_reason: str,
+    abort_reason: AbortReason | None,
 ) -> tuple[RunOutcome, BaseException | None]:
     """Derive a serializable terminal outcome from task completion."""
 
     if task.cancelled():
-        reason = "replaced" if abort_reason == "replaced" else "cancelled"
-        return Aborted(reason=reason), None
+        return _aborted_outcome(abort_reason), None
     error = task.exception()
     if error is not None:
         failure = _execution_failure(error, _execution_failure_origin(error))
         return Failed(cause=failure), error
     return task.result(), None
+
+
+def _aborted_outcome(abort_reason: AbortReason | None) -> Aborted:
+    """Require cancellation to originate from an explicit lifecycle action."""
+
+    if abort_reason is None:
+        raise RuntimeError("Cancelled run is missing an abort reason")
+    return Aborted(reason=abort_reason)
+
+
+def _failed_finalization(
+    record: RunRecord,
+    error: BaseException,
+) -> _RunFinalization:
+    """Close safely when local finalization violates its no-raise contract."""
+
+    failure = ExecutionFailure(
+        origin="execution",
+        exception_type=type(error).__name__,
+        message=f"Run finalization failed: {error}",
+    )
+    return _RunFinalization(
+        record=record,
+        outcome=Failed(cause=failure),
+        wait_error=error,
+    )
 
 
 def _execution_failure_origin(error: BaseException) -> ExecutionFailureOrigin:
@@ -314,14 +314,3 @@ def _execution_failure(
         exception_type=type(error).__name__,
         message=str(error),
     )
-
-
-def _latest_provider_source(
-    events: Sequence[AgentEvent],
-) -> ProviderSource | None:
-    """Return the latest provider identity from a finalized message."""
-
-    for event in reversed(events):
-        if isinstance(event, MessageEndEvent):
-            return event.assistant_turn.source
-    return None
