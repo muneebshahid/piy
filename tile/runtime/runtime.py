@@ -101,7 +101,7 @@ class AgentRuntime:
         return self._store.get_run(run_id)
 
     def runs_for(self, session_id: str) -> Sequence[RunRecord]:
-        """Return persistent runs originating in one session."""
+        """Return persistent runs for one session in start-time order."""
 
         return self._store.list_runs(session_id)
 

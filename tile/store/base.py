@@ -124,7 +124,7 @@ class Store(Protocol):
         ...
 
     def list_runs(self, session_id: str) -> Sequence[RunRecord]:
-        """Return runs that originated in a session, in submission order."""
+        """Return runs in ascending start-time order; ties are unspecified."""
         ...
 
     def fork_session(

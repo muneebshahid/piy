@@ -171,12 +171,12 @@ class SQLiteStore:
             return self._get_run(run_id)
 
     def list_runs(self, session_id: str) -> tuple[RunRecord, ...]:
-        """Return runs originating in a session in submission order."""
+        """Return runs in ascending start-time order; ties are unspecified."""
 
         with _translate_sqlite_errors("list_runs"):
             self._require_session(session_id)
             rows = self._connection.execute(
-                _SELECT_RUNS_SQL + " WHERE session_id = ? ORDER BY started_at, id",
+                _SELECT_RUNS_SQL + " WHERE session_id = ? ORDER BY started_at",
                 (session_id,),
             ).fetchall()
         run_rows = cast("Sequence[RunRow]", rows)
