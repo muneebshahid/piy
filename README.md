@@ -364,7 +364,7 @@ fake_stream.provider = "fake"
 ```
 
 Hand `fake_stream` to `AgentRuntime` in place of the real provider and the
-entire runtime executes: history is written, events are published, and the
+entire runtime executes: history is written, events are emitted, and the
 run ends with a real outcome to assert on. Script a `tool_use` stop with a
 `ToolCallBlock` to drive the tool loop, or a `complete` call to exercise a
 typed result. A public `tile.testing` module with ready-made stream
@@ -424,11 +424,11 @@ tile/
 ├── prompt.py        # System prompt composition
 ├── result.py        # Typed run outcomes and the output-contract protocol
 └── runtime/         # Session runtime package
-    ├── handle.py    # RunHandle: live execution and event delivery
-    ├── execution.py # Prompt programs: attempt loops and outcome derivation
-    ├── history.py   # Provisional run-local conversation buffering
-    ├── runtime.py   # AgentRuntime: orchestration and Store lifecycle
-    └── session.py   # Session facade
+    ├── run_handle.py  # RunHandle: live execution and event delivery
+    ├── execution.py   # Prompt programs: attempt loops and outcome derivation
+    ├── history.py     # Provisional run-local conversation buffering
+    ├── runtime.py     # AgentRuntime: orchestration and Store lifecycle
+    └── session.py     # Session facade
 tests/               # Test suite
 ```
 

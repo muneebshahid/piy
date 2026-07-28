@@ -13,10 +13,10 @@ reasoning, and tool-call start/delta/end updates carried by
 ``MessageUpdateEvent``) are message content, not lifecycle scopes: the
 containing message's end, or the sweep, terminates their outstanding
 state. Hard process death is outside this contract — no process can
-publish an event after it has stopped.
+emit an event after it has stopped.
 """
 
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal, Protocol, TypeAlias
 
 from pydantic import BaseModel
@@ -63,10 +63,14 @@ class AgentEvent(BaseModel):
     type: str
 
 
+EmitFn: TypeAlias = Callable[[AgentEvent], None]
+"""Synchronous sink for one ordered agent event."""
+
+
 class RunStartEvent(AgentEvent):
     """Marks the start of one prompt run.
 
-    Published by the run itself before execution starts, so every
+    Emitted by the run itself before execution starts, so every
     run log begins with a run start on every path.
     """
 
@@ -126,13 +130,13 @@ class TurnEndEvent(AgentEvent):
 
     type: Literal["turn_end"] = "turn_end"
     assistant_turn: AssistantTurn
-    tool_executions: list[ToolExecutionOutcome]
+    tool_executions: tuple[ToolExecutionOutcome, ...]
 
     @property
-    def tool_result_turns(self) -> list[ToolResultTurn]:
+    def tool_result_turns(self) -> tuple[ToolResultTurn, ...]:
         """Return replayable tool result projections for this turn."""
 
-        return [execution.tool_result_turn for execution in self.tool_executions]
+        return tuple(execution.tool_result_turn for execution in self.tool_executions)
 
 
 class MessageStartEvent(AgentEvent):

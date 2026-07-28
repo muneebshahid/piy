@@ -5,7 +5,7 @@ handle owns live delivery; the runtime owns persistent start and finish.
 """
 
 from tile.runtime.execution import TurnFailedError
-from tile.runtime.handle import RunHandle
+from tile.runtime.run_handle import RunHandle
 from tile.runtime.report import RunReport
 from tile.runtime.runtime import (
     RESERVED_TOOL_NAMES,

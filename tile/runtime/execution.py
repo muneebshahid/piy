@@ -1,31 +1,22 @@
 """Prompt programs: what a prompt run emits and how it concludes.
 
-Execution pushes inner events through the run's publish callable and
-returns the ``RunOutcome``. It never publishes run lifecycle events and
-never touches persistence — its dependency contract carries no Store, so
-the boundary is structural: the run turns the returned outcome
-— or the exception or cancellation that replaces it — into the terminal
-run end event, so a duplicated or missing run end is unrepresentable
-here.
+Execution emits inner events through the run's emit callable and returns the
+``RunOutcome``. It never emits run lifecycle events and never touches
+persistence — its dependency contract carries no Store, so the boundary is
+structural: the run turns the returned outcome, exception, or cancellation
+into the terminal run end event.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from contextlib import aclosing
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import BaseModel
 
-from tile.agent import run_agent
-from tile.events import (
-    AgentEvent,
-    MessageEndEvent,
-    ResultFollowUpEvent,
-    StreamFn,
-    ToolExecutionEndEvent,
-)
+from tile.agent import AgentResult, run_agent
+from tile.events import EmitFn, ResultFollowUpEvent, StreamFn
 from tile.prompt import build_system_prompt
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
@@ -44,9 +35,7 @@ from tile.tools.fail import FailDetails
 from tile.tools.fail import tool as fail_tool
 from tile.types.conversation import AssistantTurn, ConversationItem, UserMessage
 from tile.types.stream_events import TextBlock
-from tile.types.tools import ToolDetails
-
-PublishFn = Callable[[AgentEvent], None]
+from tile.types.tool_execution import ToolExecutionOutcome
 
 
 @dataclass(frozen=True)
@@ -76,18 +65,18 @@ class TurnFailedError(RuntimeError):
 
 
 async def execute_prompt(
-    publish: PublishFn,
+    emit: EmitFn,
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
     result: type[BaseModel] | None,
 ) -> RunOutcome:
-    """Run one prompt program, publishing inner events, and return its outcome."""
+    """Run one prompt program, emitting inner events, and return its outcome."""
 
     if result is None:
-        return await _execute_plain(publish, deps=deps, history=history)
+        return await _execute_plain(emit, deps=deps, history=history)
     return await _execute_typed(
-        publish,
+        emit,
         deps=deps,
         history=history,
         result=result,
@@ -95,26 +84,24 @@ async def execute_prompt(
 
 
 async def _execute_plain(
-    publish: PublishFn,
+    emit: EmitFn,
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
 ) -> RunOutcome:
     """Run one plain agent invocation and conclude with its text outcome."""
 
-    observation = _AgentRunObservation()
-    await _run_attempt(
-        publish,
-        observation,
+    agent_result = await _run_attempt(
+        emit,
         deps=deps,
         history=history,
     )
-    turn = _require_completed_turn(observation.last_turn)
+    turn = _require_completed_turn(agent_result.last_turn)
     return Completed(value=_assistant_text(turn))
 
 
 async def _execute_typed(
-    publish: PublishFn,
+    emit: EmitFn,
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
@@ -124,40 +111,35 @@ async def _execute_typed(
 
     attempt_dependencies = _typed_attempt_dependencies(deps, result)
     for attempt in range(MAX_RESULT_FOLLOW_UPS + 1):
-        observation = _AgentRunObservation()
-        await _run_attempt(
-            publish,
-            observation,
+        agent_result = await _run_attempt(
+            emit,
             deps=attempt_dependencies,
             history=history,
         )
-        _require_completed_turn(observation.last_turn)
-        outcome = _result_outcome(observation.terminal_details)
+        _require_completed_turn(agent_result.last_turn)
+        outcome = _result_outcome(agent_result.tool_executions)
         if outcome is not None:
             return outcome
         if attempt < MAX_RESULT_FOLLOW_UPS:
-            publish(ResultFollowUpEvent(message=UserMessage(content=RESULT_FOLLOW_UP)))
+            emit(ResultFollowUpEvent(message=UserMessage(content=RESULT_FOLLOW_UP)))
     return Failed(cause=AgentFailure(reason=NO_RESULT_REASON))
 
 
 async def _run_attempt(
-    publish: PublishFn,
-    observation: _AgentRunObservation,
+    emit: EmitFn,
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
-) -> None:
-    """Drive one stateless agent attempt, publishing every event.
+) -> AgentResult:
+    """Drive one stateless agent attempt, emitting every event.
 
-    The system prompt is composed here, per attempt, so project context
-    and the environment lines stay current across attempts. The agent
-    generator is closed on every exit: a publish failure leaves it
-    suspended mid-yield, and its cleanup must not wait for garbage
-    collection.
+    The system prompt is composed here, per attempt, so project context and
+    environment lines stay current across attempts.
     """
 
-    events = run_agent(
+    return await run_agent(
         history,
+        emit=emit,
         stream_fn=deps.stream_fn,
         model=deps.model,
         tool_executor=deps.tool_executor,
@@ -167,10 +149,6 @@ async def _run_attempt(
             auto_mode=deps.auto_mode,
         ),
     )
-    async with aclosing(events):
-        async for event in events:
-            observation.observe(event)
-            publish(event)
 
 
 def _typed_attempt_dependencies(
@@ -188,33 +166,10 @@ def _typed_attempt_dependencies(
     )
 
 
-@dataclass
-class _AgentRunObservation:
-    """Result-relevant facts observed during one stateless agent run."""
-
-    last_turn: AssistantTurn | None = None
-    terminal_details: ToolDetails | None = None
-
-    def observe(self, event: AgentEvent) -> None:
-        """Record the latest assistant turn and first terminating tool details."""
-
-        if isinstance(event, MessageEndEvent):
-            self.last_turn = event.assistant_turn
-        if (
-            self.terminal_details is None
-            and isinstance(event, ToolExecutionEndEvent)
-            and event.outcome.terminate
-            and isinstance(event.outcome.details, CompleteDetails | FailDetails)
-        ):
-            self.terminal_details = event.outcome.details
-
-
 def _require_completed_turn(turn: AssistantTurn | None) -> AssistantTurn:
     """Return the run's final assistant turn, raising when it did not complete."""
 
-    if turn is None:
-        raise TurnFailedError(turn)
-    if turn.status != "completed":
+    if turn is None or turn.status != "completed":
         raise TurnFailedError(turn)
     return turn
 
@@ -227,13 +182,18 @@ def _turn_failure_message(turn: AssistantTurn | None) -> str:
     return turn.error_message or "The assistant turn failed."
 
 
-def _result_outcome(terminal_details: ToolDetails | None) -> RunOutcome | None:
+def _result_outcome(
+    tool_executions: Sequence[ToolExecutionOutcome],
+) -> RunOutcome | None:
     """Build a terminal outcome, or return None when a result remains missing."""
 
-    if isinstance(terminal_details, CompleteDetails):
-        return Completed(value=terminal_details.value)
-    if isinstance(terminal_details, FailDetails):
-        return Failed(cause=AgentFailure(reason=terminal_details.reason))
+    for execution in tool_executions:
+        if not execution.terminate:
+            continue
+        if isinstance(execution.details, CompleteDetails):
+            return Completed(value=execution.details.value)
+        if isinstance(execution.details, FailDetails):
+            return Failed(cause=AgentFailure(reason=execution.details.reason))
     return None
 
 

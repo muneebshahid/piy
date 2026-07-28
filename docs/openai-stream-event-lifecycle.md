@@ -317,10 +317,10 @@ once. Hard process death is outside this contract.
 
 Rules:
 
-- The handle publishes its own `RunStartEvent` before execution starts, so
+- The handle emits its own `RunStartEvent` before execution starts, so
   every run log begins with a run start on every path, including an
   abort that lands before the first tick.
-- `RunEndEvent` is published only by the handle, after runtime-owned
+- `RunEndEvent` is emitted only by the handle, after runtime-owned
   finalization, exactly
   once as the log's final event. Execution never emits it: the prompt
   program returns a `RunOutcome`, and the handle turns that outcome — or

@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from tile.agent import run_agent
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
     NO_RESULT_REASON,
@@ -42,6 +41,7 @@ from tests.support.agent_streams import (
     tool_call_block,
     tool_call_stream,
 )
+from tests.support.agent_runs import collect_run_events
 from tests.support.tool_definitions import CityInput, city_tool
 
 
@@ -62,31 +62,6 @@ async def _weather(params: CityInput) -> ToolResult:
     """Return a visible result for same-batch execution assertions."""
 
     return ToolResult.text(f"Weather retrieved for {params.city}.")
-
-
-def _collect_run_events(
-    history: Sequence[UserMessage],
-    *,
-    stream_fn,
-    tools: Sequence[ToolDefinition] = (),
-) -> list[AgentEvent]:
-    """Collect all events emitted by one stateless agent run."""
-
-    async def _collect() -> list[AgentEvent]:
-        """Collect run events from the async generator."""
-
-        return [
-            event
-            async for event in run_agent(
-                list(history),
-                stream_fn=stream_fn,
-                model="gpt-5.4",
-                tool_executor=ToolExecutor(tools),
-                instructions="Base prompt.",
-            )
-        ]
-
-    return asyncio.run(_collect())
 
 
 def _agent_end_event(events: Sequence[AgentEvent]) -> AgentEndEvent:
@@ -274,7 +249,7 @@ def test_agent_stops_after_terminating_tool_batch(tmp_path: Path) -> None:
         ]
     )
 
-    events = _collect_run_events(
+    events = collect_run_events(
         [UserMessage(content="Weather in Munich?")],
         stream_fn=provider.fn,
         tools=_result_tools(),
@@ -294,7 +269,7 @@ def test_agent_does_not_enforce_result_tool_usage(tmp_path: Path) -> None:
         [final_text_stream("resp_1", "The temperature is 21C.")]
     )
 
-    events = _collect_run_events(
+    events = collect_run_events(
         [UserMessage(content="Weather in Munich?")],
         stream_fn=provider.fn,
         tools=_result_tools(),
@@ -353,7 +328,7 @@ def test_agent_retries_complete_after_validation_error(tmp_path: Path) -> None:
         ]
     )
 
-    events = _collect_run_events(
+    events = collect_run_events(
         [UserMessage(content="Weather in Munich?")],
         stream_fn=provider.fn,
         tools=_result_tools(),
@@ -552,7 +527,7 @@ def test_agent_finishes_tool_batch_after_terminating_result(tmp_path: Path) -> N
         ]
     )
 
-    events = _collect_run_events(
+    events = collect_run_events(
         [UserMessage(content="Weather?")],
         stream_fn=provider.fn,
         tools=[*_result_tools(), city_tool("get_weather", "Get weather.", _weather)],

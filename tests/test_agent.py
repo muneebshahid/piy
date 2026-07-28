@@ -12,7 +12,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
-from tile.agent import run_agent
+import pytest
+
+from tile.agent import AgentResult, run_agent
 from tile.tool_executor import ToolExecutor
 from tile.events import (
     AgentEndEvent,
@@ -21,12 +23,12 @@ from tile.events import (
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
-    StreamFn,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     TurnEndEvent,
     TurnStartEvent,
 )
+from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import (
     ConversationItem,
     ToolResultTurn,
@@ -65,6 +67,7 @@ from tests.support.agent_streams import (
     tool_call_block,
     tool_call_stream,
 )
+from tests.support.agent_runs import collect_agent_run, collect_run_events
 from tests.support.conversation_assertions import (
     expect_assistant_turn,
     expect_tool_result_turn,
@@ -77,43 +80,50 @@ from tests.support.tool_results import tool_text
 TEvent = TypeVar("TEvent", bound=AgentEvent)
 
 
+class ClosingProvider:
+    """Provider fake that records deterministic stream closure."""
+
+    provider = "test"
+
+    def __init__(self) -> None:
+        """Create an open provider stream."""
+
+        self.closed = False
+
+    async def __call__(
+        self,
+        history: Sequence[ConversationItem],
+        model: str,
+        *,
+        instructions: str,
+        tools: Sequence[ToolDefinition] | None,
+    ) -> AsyncEventStream:
+        """Return a stream whose finalizer records closure."""
+
+        _ = history, model, instructions, tools
+        return self._events()
+
+    async def _events(self) -> AsyncEventStream:
+        """Emit one completed turn and record generator closure."""
+
+        try:
+            yield stream_start("resp_close")
+            yield stream_done("resp_close")
+        finally:
+            self.closed = True
+
+
 @dataclass(frozen=True)
 class ToolUseLoopRun:
     """Captured events and expected blocks for the weather tool-loop scenario."""
 
     events: list[AgentEvent]
+    result: AgentResult
     provider: ProviderStreamMock
     tools: list[ToolDefinition]
     reasoning_block: ReasoningBlock
     tool_call_block: ToolCallBlock
     text_block: TextBlock
-
-
-def _collect_run_events(
-    history: Sequence[ConversationItem],
-    *,
-    stream_fn: StreamFn,
-    model: str = "gpt-5.4",
-    tools: Sequence[ToolDefinition] = (),
-    instructions: str = "Base prompt.",
-) -> list[AgentEvent]:
-    """Collect all events emitted by one stateless agent run."""
-
-    async def _collect() -> list[AgentEvent]:
-        """Collect run events from the async generator."""
-
-        return [
-            event
-            async for event in run_agent(
-                history,
-                stream_fn=stream_fn,
-                model=model,
-                tool_executor=ToolExecutor(tools),
-                instructions=instructions,
-            )
-        ]
-
-    return asyncio.run(_collect())
 
 
 def _expect_event_type(event: AgentEvent, event_type: type[TEvent]) -> TEvent:
@@ -205,13 +215,14 @@ def _collect_weather_tool_loop_run() -> ToolUseLoopRun:
         UserMessage(content="What is the weather in Munich?")
     ]
 
-    events = _collect_run_events(
+    capture = collect_agent_run(
         history,
         stream_fn=provider.fn,
         tools=tools,
     )
     return ToolUseLoopRun(
-        events=events,
+        events=capture.events,
+        result=capture.result,
         provider=provider,
         tools=tools,
         reasoning_block=reasoning_block,
@@ -270,7 +281,7 @@ def test_run_agent_does_not_mutate_supplied_history() -> None:
     )
     history: list[ConversationItem] = [UserMessage(content="Hello, Tile")]
 
-    events = _collect_run_events(history, stream_fn=provider.fn)
+    events = collect_run_events(history, stream_fn=provider.fn)
 
     message_end = _expect_event_type(events[3], MessageEndEvent)
     _expect_event_type(events[-1], AgentEndEvent)
@@ -278,7 +289,77 @@ def test_run_agent_does_not_mutate_supplied_history() -> None:
     assert message_end.assistant_turn.response_id == "resp_done"
 
 
-def test_agent_run_yields_expected_event_sequence_for_tool_use_loop() -> None:
+def test_run_agent_returns_terminal_result() -> None:
+    """Return the last assistant turn independently from emitted events."""
+
+    provider = ProviderStreamMock([final_text_stream("resp_done", "Done")])
+
+    async def _run() -> AgentResult:
+        """Run the agent while discarding its observable events."""
+
+        return await run_agent(
+            [UserMessage(content="Hello")],
+            emit=lambda _event: None,
+            stream_fn=provider.fn,
+            model="gpt-5.4",
+            tool_executor=ToolExecutor(()),
+            instructions="Base prompt.",
+        )
+
+    result = asyncio.run(_run())
+
+    assert result.last_turn is not None
+    assert result.last_turn.response_id == "resp_done"
+    assert result.tool_executions == ()
+
+
+def test_run_agent_returns_accumulated_tool_executions() -> None:
+    """Return tool outcomes accumulated across a multi-turn tool loop."""
+
+    run = _collect_weather_tool_loop_run()
+
+    assert run.result.last_turn is not None
+    assert run.result.last_turn.response_id == "resp_follow_up"
+    assert len(run.result.tool_executions) == 1
+    tool_execution = run.result.tool_executions[0]
+    assert run.result.tool_executions == (tool_execution,)
+    assert tool_execution.tool_result_turn.call_id == "call_123"
+    assert tool_execution.tool_result_turn.tool_name == "get_weather"
+    assert tool_text(tool_execution.tool_result_turn) == (
+        '{"temperature_c": 18, "condition": "sunny", "city": "Munich"}'
+    )
+
+
+def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
+    """Close the acquired provider stream when event emission raises."""
+
+    provider = ClosingProvider()
+
+    def emit(event: AgentEvent) -> None:
+        """Fail after the provider stream has started."""
+
+        if isinstance(event, MessageStartEvent):
+            raise RuntimeError("event sink unavailable")
+
+    async def _run() -> None:
+        """Run the agent through the failing event sink."""
+
+        with pytest.raises(RuntimeError, match="event sink unavailable"):
+            await run_agent(
+                [UserMessage(content="Hello")],
+                emit=emit,
+                stream_fn=provider,
+                model="gpt-5.4",
+                tool_executor=ToolExecutor(()),
+                instructions="Base prompt.",
+            )
+
+    asyncio.run(_run())
+
+    assert provider.closed
+
+
+def test_agent_run_emits_expected_event_sequence_for_tool_use_loop() -> None:
     """Emit the expected event sequence for a tool-use loop."""
 
     run = _collect_weather_tool_loop_run()
@@ -308,7 +389,7 @@ def test_agent_run_yields_expected_event_sequence_for_tool_use_loop() -> None:
     ]
 
 
-def test_agent_run_yields_current_tool_use_stream_events() -> None:
+def test_agent_run_emits_current_tool_use_stream_events() -> None:
     """Forward first-turn reasoning and tool-call stream events."""
 
     run = _collect_weather_tool_loop_run()
@@ -354,7 +435,7 @@ def test_agent_run_yields_current_tool_use_stream_events() -> None:
     )
 
 
-def test_agent_run_yields_current_follow_up_stream_events() -> None:
+def test_agent_run_emits_current_follow_up_stream_events() -> None:
     """Forward second-turn text stream events after tool execution."""
 
     run = _collect_weather_tool_loop_run()
@@ -409,6 +490,8 @@ def test_agent_run_emits_tool_execution_outcome_for_tool_use_loop() -> None:
     assert first_turn_end.assistant_turn.stop_reason == "tool_use"
     assert first_turn_end.assistant_turn.status == "completed"
     assert first_turn_end.assistant_turn.blocks == [run.tool_call_block]
+    assert first_turn_end.tool_executions == (tool_execution_outcome,)
+    assert first_turn_end.tool_result_turns == (tool_result_turn,)
     first_turn_outcome = first_turn_end.tool_executions[0]
     assert first_turn_outcome.tool_result_turn.call_id == "call_123"
     assert first_turn_outcome.tool_result_turn.tool_name == "get_weather"
@@ -433,7 +516,7 @@ def test_agent_run_sends_tool_result_history_to_follow_up_turn() -> None:
     assert second_turn_end.assistant_turn.blocks == [
         TextBlock(text="It is sunny in Munich.")
     ]
-    assert second_turn_end.tool_executions == []
+    assert second_turn_end.tool_executions == ()
 
     assert run.provider.await_count == 2
     assert run.provider.model(0) == "gpt-5.4"
@@ -472,7 +555,7 @@ def test_agent_run_executes_registered_tool_definition() -> None:
     )
     history = [UserMessage(content="What is the weather in Munich?")]
 
-    events = _collect_run_events(
+    events = collect_run_events(
         history,
         stream_fn=provider.fn,
         tools=tools,
@@ -516,7 +599,7 @@ def test_agent_run_exposes_tool_details_outside_replay_turn() -> None:
     )
     history = [UserMessage(content="Read a file")]
 
-    events = _collect_run_events(
+    events = collect_run_events(
         history,
         stream_fn=provider.fn,
         tools=tools,
@@ -560,7 +643,7 @@ def test_agent_run_continues_after_tool_execution_error() -> None:
     )
     history = [UserMessage(content="What is the weather in Munich?")]
 
-    events = _collect_run_events(
+    events = collect_run_events(
         history,
         stream_fn=provider.fn,
         tools=[failing_tool],
@@ -609,7 +692,7 @@ def test_agent_allows_model_to_correct_invalid_tool_arguments() -> None:
     )
     history = [UserMessage(content="What is the weather in Munich?")]
 
-    events = _collect_run_events(
+    events = collect_run_events(
         history,
         stream_fn=provider.fn,
         tools=[city_tool("get_weather", "Return the weather.", weather)],
@@ -657,7 +740,7 @@ def test_agent_run_handles_multiple_tool_use_turns() -> None:
     )
     history = [UserMessage(content="Compare Munich and Berlin weather.")]
 
-    events = _collect_run_events(
+    events = collect_run_events(
         history,
         stream_fn=provider.fn,
         tools=tools,
@@ -691,7 +774,7 @@ def test_agent_sends_instructions_to_the_provider_verbatim() -> None:
     )
     history = [UserMessage(content="Hello")]
 
-    _collect_run_events(
+    collect_run_events(
         history,
         stream_fn=provider.fn,
         instructions="Resolved system prompt.",
@@ -700,7 +783,7 @@ def test_agent_sends_instructions_to_the_provider_verbatim() -> None:
     assert provider.instructions() == "Resolved system prompt."
 
 
-def test_agent_run_yields_error_turn_end_for_stream_error() -> None:
+def test_agent_run_emits_error_turn_end_for_stream_error() -> None:
     """Finalize an errored assistant stream as an error turn."""
 
     provider = ProviderStreamMock(
@@ -710,7 +793,7 @@ def test_agent_run_yields_error_turn_end_for_stream_error() -> None:
     )
     history = [UserMessage(content="Say hello")]
 
-    events = _collect_run_events(history, stream_fn=provider.fn)
+    events = collect_run_events(history, stream_fn=provider.fn)
 
     assert [event.type for event in events] == [
         "agent_start",
@@ -736,7 +819,7 @@ def test_agent_run_yields_error_turn_end_for_stream_error() -> None:
     assert turn_end.assistant_turn.stop_reason == "error"
     assert turn_end.assistant_turn.status == "error"
     assert turn_end.assistant_turn.error_message == "Socket closed"
-    assert turn_end.tool_executions == []
+    assert turn_end.tool_executions == ()
 
     provider.assert_awaited_once()
     request_history = provider.history(0)

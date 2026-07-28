@@ -9,7 +9,7 @@ import pytest
 from tile import Completed, RunHandle, RunRecord, RunReport
 from tile.events import AgentEvent, RunEndEvent
 from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.handle import (
+from tile.runtime.run_handle import (
     _RunCompletion,
     _terminal_outcome,
 )
