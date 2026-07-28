@@ -8,8 +8,6 @@ import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
 from tile.agent import run_agent
-from tile.history import InMemoryHistoryStore
-from tile.runs import InMemoryRunStore
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
     NO_RESULT_REASON,
@@ -17,9 +15,11 @@ from tile.result import (
     RESULT_FOLLOW_UP,
     AgentFailure,
     Completed,
+    ExecutionFailure,
     Failed,
 )
 from tile.runtime import AgentRuntime
+from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.tools.complete import CompleteDetails, tool as complete_tool
 from tile.tools.fail import tool as fail_tool
@@ -322,8 +322,7 @@ def test_runtime_maps_fail_tool_to_failed_outcome() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -332,8 +331,9 @@ def test_runtime_maps_fail_tool_to_failed_outcome() -> None:
         """Run one result prompt and return its outcome when failed."""
 
         run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
-        return run.outcome if isinstance(run.outcome, Failed) else None
+        report = await run.wait()
+        assert report.status == "failed"
+        return report.outcome if isinstance(report.outcome, Failed) else None
 
     outcome = asyncio.run(_run())
 
@@ -382,12 +382,11 @@ def test_runtime_nudges_text_only_agent_run_toward_result() -> None:
         ]
     )
 
-    store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=store,
-        run_store=InMemoryRunStore(),
+        store=store,
         auto_mode=False,
         cwd=Path("."),
     )
@@ -398,9 +397,11 @@ def test_runtime_nudges_text_only_agent_run_toward_result() -> None:
         run = await runtime.session(session_id="nudged").prompt(
             "Weather in Munich?", result=WeatherReport
         )
-        assert await run.wait() == "completed"
+        report = await run.wait()
+        assert report.status == "completed"
         events = [event async for event in run.events()]
-        return events, run.outcome if isinstance(run.outcome, Completed) else None
+        outcome = report.outcome
+        return events, outcome if isinstance(outcome, Completed) else None
 
     events, outcome = asyncio.run(_run())
 
@@ -411,7 +412,9 @@ def test_runtime_nudges_text_only_agent_run_toward_result() -> None:
     assert follow_ups[0].message.content == RESULT_FOLLOW_UP
     nudged_history = provider.history(1)
     assert nudged_history[-1] == UserMessage(content=RESULT_FOLLOW_UP)
-    assert UserMessage(content=RESULT_FOLLOW_UP) in store.get_history("nudged")
+    assert UserMessage(content=RESULT_FOLLOW_UP) in tuple(
+        item.item for item in store.get_history("nudged")
+    )
     assert outcome is not None
     assert outcome.value == WeatherReport(city="Munich", temp_c=21.0)
 
@@ -428,8 +431,7 @@ def test_runtime_fails_after_follow_up_cap() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -438,8 +440,9 @@ def test_runtime_fails_after_follow_up_cap() -> None:
         """Run until the output-contract follow-up limit is exhausted."""
 
         run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
-        return run.outcome if isinstance(run.outcome, Failed) else None
+        report = await run.wait()
+        assert report.status == "failed"
+        return report.outcome if isinstance(report.outcome, Failed) else None
 
     outcome = asyncio.run(_run())
 
@@ -459,8 +462,7 @@ def test_runtime_without_contract_completes_with_text() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -469,8 +471,9 @@ def test_runtime_without_contract_completes_with_text() -> None:
         """Run one plain prompt and return its completed outcome."""
 
         run = await runtime.session().prompt("Weather in Munich?")
-        assert await run.wait() == "completed"
-        return run.outcome if isinstance(run.outcome, Completed) else None
+        report = await run.wait()
+        assert report.status == "completed"
+        return report.outcome if isinstance(report.outcome, Completed) else None
 
     outcome = asyncio.run(_run())
 
@@ -487,12 +490,11 @@ def test_runtime_fails_when_nudge_attempt_hits_stream_error() -> None:
         ]
     )
 
-    store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=store,
-        run_store=InMemoryRunStore(),
+        store=store,
         auto_mode=False,
         cwd=Path("."),
     )
@@ -503,16 +505,18 @@ def test_runtime_fails_when_nudge_attempt_hits_stream_error() -> None:
         run = await runtime.session(session_id="nudged-error").prompt(
             "Weather?", result=WeatherReport
         )
-        assert await run.wait() == "failed"
-        assert run.error_message == "boom"
-        failure = run.failure
-        assert failure is not None
-        assert run.outcome == Failed(cause=failure)
+        report = await run.wait()
+        assert report.status == "failed"
+        outcome = report.outcome
+        assert isinstance(outcome, Failed)
+        assert isinstance(outcome.cause, ExecutionFailure)
+        assert outcome.cause.message == "boom"
+        assert report.execution_error is not None
 
     asyncio.run(_run())
 
     assert provider.await_count == 2
-    history = list(store.get_history("nudged-error"))
+    history = [item.item for item in store.get_history("nudged-error")]
     assert len(history) == 3
     assert history[0] == UserMessage(content="Weather?")
     first_attempt = history[1]
@@ -588,8 +592,7 @@ def test_runtime_keeps_terminal_text_separate_from_result_value() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -598,9 +601,17 @@ def test_runtime_keeps_terminal_text_separate_from_result_value() -> None:
         """Run one result prompt and return its outcome and assistant text."""
 
         run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
-        outcome = run.outcome if isinstance(run.outcome, Completed) else None
-        return outcome, run.output_text
+        report = await run.wait()
+        assert report.status == "completed"
+        outcome = report.outcome if isinstance(report.outcome, Completed) else None
+        assistant_turn = report.last_assistant_turn
+        assert assistant_turn is not None
+        output_text = "".join(
+            block.text
+            for block in assistant_turn.blocks
+            if isinstance(block, TextBlock)
+        )
+        return outcome, output_text
 
     outcome, output_text = asyncio.run(_run())
 
@@ -619,12 +630,11 @@ def test_session_prompt_composes_result_tools_and_contract() -> None:
             ),
         ]
     )
-    store = InMemoryHistoryStore()
+    store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=store,
-        run_store=InMemoryRunStore(),
+        store=store,
         auto_mode=False,
         cwd=Path("."),
     )
@@ -632,8 +642,9 @@ def test_session_prompt_composes_result_tools_and_contract() -> None:
     async def _run() -> None:
         session = runtime.session(session_id="result-session")
         run = await session.prompt("Weather in Munich?", result=WeatherReport)
-        assert await run.wait() == "completed"
-        outcome = run.outcome
+        report = await run.wait()
+        assert report.status == "completed"
+        outcome = report.outcome
         assert isinstance(outcome, Completed)
         assert outcome.value == WeatherReport(city="Munich", temp_c=21.0)
 
@@ -660,8 +671,7 @@ def test_session_mixes_contract_and_plain_prompts() -> None:
     runtime = AgentRuntime(
         stream_fn=provider.fn,
         model="gpt-5.4",
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         auto_mode=False,
         cwd=Path("."),
     )
@@ -669,13 +679,17 @@ def test_session_mixes_contract_and_plain_prompts() -> None:
     async def _run() -> None:
         session = runtime.session(session_id="mixed-session")
         contract_run = await session.prompt("Weather in Munich?", result=WeatherReport)
-        assert await contract_run.wait() == "completed"
-        assert isinstance(contract_run.outcome, Completed)
-        assert contract_run.outcome.value == WeatherReport(city="Munich", temp_c=21.0)
+        contract_report = await contract_run.wait()
+        assert contract_report.status == "completed"
+        assert isinstance(contract_report.outcome, Completed)
+        assert contract_report.outcome.value == WeatherReport(
+            city="Munich", temp_c=21.0
+        )
 
         plain_run = await session.prompt("Which city did I ask about?")
-        assert await plain_run.wait() == "completed"
-        assert plain_run.outcome == Completed(value="You asked about Munich.")
+        plain_report = await plain_run.wait()
+        assert plain_report.status == "completed"
+        assert plain_report.outcome == Completed(value="You asked about Munich.")
 
     asyncio.run(_run())
 
@@ -699,6 +713,5 @@ def test_runtime_rejects_reserved_tool_names() -> None:
             model="gpt-5.4",
             tools=[city_tool("complete", "Not the real complete.", _weather)],
             cwd=Path("."),
-            history_store=InMemoryHistoryStore(),
-            run_store=InMemoryRunStore(),
+            store=SQLiteStore(in_memory=True),
         )

@@ -50,14 +50,15 @@ class Completed(BaseModel):
     )
 
 
-ExecutionFailureOrigin: TypeAlias = Literal["submission", "turn", "execution"]
+ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
+AbortReason: TypeAlias = Literal["cancelled", "replaced"]
 
 
 class AgentFailure(BaseModel):
-    """The agent declared it could not deliver the requested result.
+    """The agent could not deliver the requested result.
 
-    Execution finished normally, so the run's status stays ``completed``;
-    this cause records the model's own verdict that the task failed.
+    This includes an explicit ``fail`` result and exhaustion of the result
+    contract after the allowed correction attempts.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -99,11 +100,12 @@ class Failed(BaseModel):
 
 
 class Aborted(BaseModel):
-    """Terminal outcome for a run cancelled before it reached a verdict."""
+    """Terminal outcome for a cancelled or atomically replaced run."""
 
     model_config = ConfigDict(frozen=True)
 
     type: Literal["aborted"] = "aborted"
+    reason: AbortReason = "cancelled"
 
 
 RunOutcome: TypeAlias = Completed | Failed | Aborted

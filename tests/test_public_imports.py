@@ -13,15 +13,14 @@ from tile import (
     ExecutionFailureOrigin,
     Failed,
     FailureCause,
-    HistoryStore,
-    InMemoryHistoryStore,
-    InMemoryRunStore,
-    Run,
+    RunHandle,
+    RunReport,
     RunRecord,
-    RunStore,
     Session,
-    SessionBusyError,
     SessionNotFoundError,
+    SQLiteStore,
+    Store,
+    StorePersistenceError,
     TurnFailedError,
 )
 from tile.events import AgentEvent, MessageEndEvent, RunEndEvent, StreamFn
@@ -46,13 +45,11 @@ from tile.types import (
 def test_documented_public_imports_run_fake_prompt() -> None:
     """Run one prompt using only documented public imports."""
 
-    store: HistoryStore = InMemoryHistoryStore()
-    run_store: RunStore = InMemoryRunStore()
+    store: Store = SQLiteStore(in_memory=True)
     runtime = AgentRuntime(
         stream_fn=_fake_stream_fn(),
         model="gpt-5.4",
-        history_store=store,
-        run_store=run_store,
+        store=store,
         tools=[_fake_tool_definition()],
         cwd=Path("."),
     )
@@ -67,12 +64,13 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     assert len(run_records) == 1
     assert isinstance(run_records[0], RunRecord)
     assert run_records[0].status == "completed"
-    assert issubclass(SessionBusyError, RuntimeError)
     assert issubclass(SessionNotFoundError, KeyError)
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
-    assert get_args(ExecutionFailureOrigin) == ("submission", "turn", "execution")
+    assert get_args(ExecutionFailureOrigin) == ("turn", "execution")
     assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
+    assert RunReport.__name__ == "RunReport"
+    assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]
     assert Aborted().type == "aborted"
     assert ToolInputValidationFailure.model_fields["issues"]
@@ -136,7 +134,7 @@ async def _stream_events(
 async def _collect_prompt_events(session: Session) -> list[AgentEvent]:
     """Collect all runtime events for one prompt."""
 
-    run: Run = await session.prompt("hello")
+    run: RunHandle = await session.prompt("hello")
     return [event async for event in run.events()]
 
 

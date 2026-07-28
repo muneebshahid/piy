@@ -18,7 +18,7 @@ sequenceDiagram
     participant Asm as assemble_stream
     participant Stream as StreamEvent
     participant Agent as run_agent
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     SDK->>SDKA: OpenAI Python SDK event object
     SDKA->>Norm: transport-independent event
@@ -191,7 +191,7 @@ sequenceDiagram
     participant Asm as assemble_stream
     participant Stream as StreamEvent
     participant Agent as run_agent
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     SDK->>Adapter: ResponseCompletedEvent
     Adapter->>Norm: COMPLETED(stop_reason=stop)
@@ -215,7 +215,7 @@ sequenceDiagram
     participant Stream as StreamEvent
     participant Agent as run_agent
     participant Tool as Tool execution
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     Adapter->>Norm: COMPLETED(stop_reason=tool_use)
     Norm->>Asm: COMPLETED
@@ -243,7 +243,7 @@ sequenceDiagram
     participant Asm as assemble_stream
     participant Stream as StreamEvent
     participant Agent as run_agent
-    participant Hist as Local run history
+    participant Hist as Agent attempt history
 
     SDK->>Adapter: ResponseIncompleteEvent(max_output_tokens)
     Adapter->>Norm: INCOMPLETE(stop_reason=length)
@@ -317,12 +317,13 @@ once. Hard process death is outside this contract.
 
 Rules:
 
-- The run publishes its own `RunStartEvent` before execution starts, so
+- The handle publishes its own `RunStartEvent` before execution starts, so
   every run log begins with a run start on every path, including an
   abort that lands before the first tick.
-- `RunEndEvent` is published only by the run, at finalization, exactly
+- `RunEndEvent` is published only by the handle, after runtime-owned
+  finalization, exactly
   once as the log's final event. Execution never emits it: the prompt
-  program returns a `RunOutcome`, and the run turns that outcome — or
+  program returns a `RunOutcome`, and the handle turns that outcome — or
   the exception or cancellation that replaces it — into the terminal
   event, so a duplicated or missing run end is unrepresentable. Its
   outcome variant implies how execution terminated.
@@ -338,17 +339,17 @@ Rules:
   Agent events carry no attempt label: attempts are strictly sequential,
   so position in the log identifies them, with `ResultFollowUpEvent`
   separating retries.
-- Terminal record persistence happens after the run end is committed;
-  `Run.wait()` returns only after finalization, so waiters always observe
-  a closed log.
+- The terminal run record and replayable history are committed atomically
+  before `RunEndEvent` closes the live log. If that transaction fails, the
+  run end preserves the execution outcome and `RunHandle.wait()` returns a
+  `RunReport` whose `finalization_error` carries the Store failure. A stale
+  writer is reported the same way with `StaleRunError`; its report retains the
+  local outcome and history delta while an explicit Store read reveals the
+  winning durable outcome.
 - Provider stream fragments (`TextStart/End`, `ReasoningStart/End`,
   `ToolCallStart/Delta/End`, and the provider `StreamStart/Done/Error`
   events) are message content, not lifecycle scopes; the containing
   message's end, or the sweep, terminates their outstanding state.
-- A producer that completes without committing a run end fails the run
-  with an explicit "ended without a committed run end event" execution
-  failure.
-
 Abort ordering during a tool call — the open scopes are simply left open
 and the run end sweeps them:
 

@@ -2,8 +2,8 @@
 
 Execution pushes inner events through the run's publish callable and
 returns the ``RunOutcome``. It never publishes run lifecycle events and
-never touches the run store — its dependency contract carries no run
-store, so the boundary is structural: the run turns the returned outcome
+never touches persistence — its dependency contract carries no Store, so
+the boundary is structural: the run turns the returned outcome
 — or the exception or cancellation that replaces it — into the terminal
 run end event, so a duplicated or missing run end is unrepresentable
 here.
@@ -11,15 +11,14 @@ here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import BaseModel
 
 from tile.agent import run_agent
-from tile.history import HistoryStore
 from tile.events import (
     AgentEvent,
     MessageEndEvent,
@@ -43,7 +42,7 @@ from tile.tools.complete import CompleteDetails
 from tile.tools.complete import tool as complete_tool
 from tile.tools.fail import FailDetails
 from tile.tools.fail import tool as fail_tool
-from tile.types.conversation import AssistantTurn, UserMessage
+from tile.types.conversation import AssistantTurn, ConversationItem, UserMessage
 from tile.types.stream_events import TextBlock
 from tile.types.tools import ToolDetails
 
@@ -54,9 +53,8 @@ PublishFn = Callable[[AgentEvent], None]
 class _ExecutionDependencies:
     """Caller-constructed dependencies a prompt program may touch.
 
-    Deliberately excludes the run store: execution reads history and
-    drives the provider and tools; run-scoped persistence belongs to the
-    run.
+    Deliberately excludes persistence. Execution receives one run-local
+    history snapshot and drives only the provider and tools.
     """
 
     stream_fn: StreamFn
@@ -65,7 +63,6 @@ class _ExecutionDependencies:
     cwd: Path
     auto_mode: bool
     tool_executor: ToolExecutor
-    history_store: HistoryStore
 
 
 class TurnFailedError(RuntimeError):
@@ -82,15 +79,18 @@ async def execute_prompt(
     publish: PublishFn,
     *,
     deps: _ExecutionDependencies,
-    session_id: str,
+    history: Sequence[ConversationItem],
     result: type[BaseModel] | None,
 ) -> RunOutcome:
     """Run one prompt program, publishing inner events, and return its outcome."""
 
     if result is None:
-        return await _execute_plain(publish, deps=deps, session_id=session_id)
+        return await _execute_plain(publish, deps=deps, history=history)
     return await _execute_typed(
-        publish, deps=deps, session_id=session_id, result=result
+        publish,
+        deps=deps,
+        history=history,
+        result=result,
     )
 
 
@@ -98,7 +98,7 @@ async def _execute_plain(
     publish: PublishFn,
     *,
     deps: _ExecutionDependencies,
-    session_id: str,
+    history: Sequence[ConversationItem],
 ) -> RunOutcome:
     """Run one plain agent invocation and conclude with its text outcome."""
 
@@ -107,9 +107,7 @@ async def _execute_plain(
         publish,
         observation,
         deps=deps,
-        session_id=session_id,
-        tool_executor=deps.tool_executor,
-        instructions=deps.instructions,
+        history=history,
     )
     turn = _require_completed_turn(observation.last_turn)
     return Completed(value=_assistant_text(turn))
@@ -119,24 +117,19 @@ async def _execute_typed(
     publish: PublishFn,
     *,
     deps: _ExecutionDependencies,
-    session_id: str,
+    history: Sequence[ConversationItem],
     result: type[BaseModel],
 ) -> RunOutcome:
     """Run agent attempts until the required result is produced or exhausted."""
 
-    tool_executor = ToolExecutor(
-        (*deps.tool_executor.tools, complete_tool(result), fail_tool)
-    )
-    instructions = f"{deps.instructions}\n\n{RESULT_CONTRACT}"
+    attempt_dependencies = _typed_attempt_dependencies(deps, result)
     for attempt in range(MAX_RESULT_FOLLOW_UPS + 1):
         observation = _AgentRunObservation()
         await _run_attempt(
             publish,
             observation,
-            deps=deps,
-            session_id=session_id,
-            tool_executor=tool_executor,
-            instructions=instructions,
+            deps=attempt_dependencies,
+            history=history,
         )
         _require_completed_turn(observation.last_turn)
         outcome = _result_outcome(observation.terminal_details)
@@ -152,9 +145,7 @@ async def _run_attempt(
     observation: _AgentRunObservation,
     *,
     deps: _ExecutionDependencies,
-    session_id: str,
-    tool_executor: ToolExecutor,
-    instructions: str,
+    history: Sequence[ConversationItem],
 ) -> None:
     """Drive one stateless agent attempt, publishing every event.
 
@@ -166,12 +157,12 @@ async def _run_attempt(
     """
 
     events = run_agent(
-        deps.history_store.get_history(session_id),
+        history,
         stream_fn=deps.stream_fn,
         model=deps.model,
-        tool_executor=tool_executor,
+        tool_executor=deps.tool_executor,
         instructions=build_system_prompt(
-            instructions,
+            deps.instructions,
             deps.cwd,
             auto_mode=deps.auto_mode,
         ),
@@ -180,6 +171,21 @@ async def _run_attempt(
         async for event in events:
             observation.observe(event)
             publish(event)
+
+
+def _typed_attempt_dependencies(
+    deps: _ExecutionDependencies,
+    result: type[BaseModel],
+) -> _ExecutionDependencies:
+    """Resolve one typed prompt's shared attempt dependencies."""
+
+    return replace(
+        deps,
+        instructions=f"{deps.instructions}\n\n{RESULT_CONTRACT}",
+        tool_executor=ToolExecutor(
+            (*deps.tool_executor.tools, complete_tool(result), fail_tool)
+        ),
+    )
 
 
 @dataclass

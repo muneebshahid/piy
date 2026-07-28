@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from tile.history import SessionRecord
-from tile.runtime.run import Run
+from tile.runtime.handle import RunHandle
+from tile.store.models import SessionRecord
 from tile.types.conversation import ConversationItem
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ class Session:
 
     @property
     def history(self) -> Sequence[ConversationItem]:
-        """Return completed conversation history for this session."""
+        """Return the session's committed replayable conversation history."""
 
         return self._runtime.history_for(self.id)
 
@@ -46,15 +46,23 @@ class Session:
         content: str,
         *,
         result: type[BaseModel] | None = None,
-    ) -> Run:
+        replace_active: bool = False,
+    ) -> RunHandle:
         """Submit one prompt to this session and return its run handle.
 
         When ``result`` is set, the run must end through the output contract:
         the runtime adds the `complete` and `fail` tools for this run and the
-        outcome carries the schema-validated result.
+        outcome carries the schema-validated result. ``replace_active`` asks
+        the Store to atomically abort a still-running predecessor before
+        inserting this run.
         """
 
-        return self._runtime._submit_prompt(self.id, content, result=result)
+        return self._runtime._submit_prompt(
+            self.id,
+            content,
+            result=result,
+            replace_active=replace_active,
+        )
 
     def fork(
         self,
@@ -62,7 +70,11 @@ class Session:
         session_id: str | None = None,
         name: str | None = None,
     ) -> Session:
-        """Fork this session into a new independently diverging session."""
+        """Fork all committed history into a new session.
+
+        Run records remain owned by their source session even though copied
+        history retains their provenance ids.
+        """
 
         return self._runtime.fork_session(
             source_session_id=self.id,

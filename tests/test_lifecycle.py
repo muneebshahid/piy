@@ -17,14 +17,11 @@ from tile.events import (
     RunEndEvent,
     RunStartEvent,
     StreamFn,
-    ToolExecutionEndEvent,
     ToolExecutionStartEvent,
 )
-from tile.history import InMemoryHistoryStore
 from tile.result import Aborted, Completed, ExecutionFailure, Failed
-from tile.runs import InMemoryRunStore
 from tile.runtime import AgentRuntime
-from tile.types.conversation import ConversationItem, ToolResultTurn
+from tile.store import SQLiteStore
 from tile.types.stream_events import ProviderStreamEvent
 from tile.types.tools import ToolDefinition, ToolFunction, ToolResult
 from tests.support.agent_streams import (
@@ -72,7 +69,7 @@ def test_provider_raise_before_stream_fails_the_run() -> None:
         """Fail the run and collect its complete log."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
+        assert (await run.wait()).status == "failed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -105,7 +102,7 @@ def test_provider_raise_mid_stream_leaves_message_and_turn_open() -> None:
         """Fail the run mid-message and collect its complete log."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
+        assert (await run.wait()).status == "failed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -141,8 +138,12 @@ def test_stream_exhausted_without_terminal_event_fails_the_run() -> None:
         """Fail the run on a stream that ends without a terminal event."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
-        return [event async for event in run.events()], run.error_message
+        report = await run.wait()
+        assert report.status == "failed"
+        outcome = report.outcome
+        assert isinstance(outcome, Failed)
+        assert isinstance(outcome.cause, ExecutionFailure)
+        return [event async for event in run.events()], outcome.cause.message
 
     events, error_message = asyncio.run(_run())
 
@@ -172,7 +173,7 @@ def test_in_band_stream_error_keeps_producer_ends_and_fails_the_run() -> None:
         """Fail the run through an in-band stream error event."""
 
         run = await session.prompt("hello")
-        assert await run.wait() == "failed"
+        assert (await run.wait()).status == "failed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -217,7 +218,7 @@ def test_abort_during_tool_execution_leaves_the_tool_open() -> None:
             if isinstance(event, ToolExecutionStartEvent):
                 break
         run.abort()
-        assert await run.wait() == "aborted"
+        assert (await run.wait()).status == "aborted"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -260,7 +261,7 @@ def test_abort_during_provider_stream_leaves_the_message_open() -> None:
             if isinstance(event, MessageStartEvent):
                 break
         run.abort()
-        assert await run.wait() == "aborted"
+        assert (await run.wait()).status == "aborted"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -288,88 +289,12 @@ def test_abort_before_first_tick_still_yields_a_closed_log() -> None:
 
         run = await session.prompt("hello")
         run.abort()
-        assert await run.wait() == "aborted"
+        assert (await run.wait()).status == "aborted"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
 
     assert events == [RunStartEvent(), RunEndEvent(outcome=Aborted())]
-
-
-def test_history_observer_failure_fails_the_run_without_suppressing_events() -> None:
-    """Keep an event visible in the log when persisting it fails."""
-
-    history_store = _FailingHistoryStore()
-    provider = ProviderStreamMock([final_text_stream("resp_1", "hello back")])
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        cwd=Path("."),
-        history_store=history_store,
-        run_store=InMemoryRunStore(),
-    )
-    session = runtime.session(session_id="observer-failure")
-
-    async def _run() -> list[AgentEvent]:
-        """Fail history projection for every event after submission."""
-
-        run = await session.prompt("hello")
-        history_store.fail_appends = True
-        assert await run.wait() == "failed"
-        assert isinstance(run.exception, RuntimeError)
-        return [event async for event in run.events()]
-
-    events = asyncio.run(_run())
-
-    assert_run_lifecycle(events)
-    _single(events, MessageEndEvent)
-    run_outcome = _single(events, RunEndEvent).outcome
-    assert isinstance(run_outcome, Failed)
-    assert isinstance(run_outcome.cause, ExecutionFailure)
-    assert run_outcome.cause.message == "history unavailable"
-
-
-def test_healing_reads_durable_history_after_observer_failure() -> None:
-    """Heal a tool call whose result reached the log but not the store."""
-
-    history_store = _FlakyToolResultStore()
-    provider = ProviderStreamMock(
-        [
-            tool_call_stream(
-                response_id="resp_1",
-                call_id="call_1",
-                tool_name="get_weather",
-                arguments={"city": "Munich"},
-            )
-        ]
-    )
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        cwd=Path("."),
-        history_store=history_store,
-        run_store=InMemoryRunStore(),
-        tools=[_weather_tool(_quick_weather)],
-    )
-    session = runtime.session(session_id="heal-durable")
-
-    async def _run() -> None:
-        """Drop one tool-result write, then verify durable history healed."""
-
-        run = await session.prompt("check weather")
-        history_store.fail_next_tool_result = True
-        assert await run.wait() == "failed"
-
-        events = [event async for event in run.events()]
-        assert any(isinstance(event, ToolExecutionEndEvent) for event in events)
-
-        history = history_store.get_history(session.id)
-        healed = history[-1]
-        assert isinstance(healed, ToolResultTurn)
-        assert healed.call_id == "call_1"
-        assert healed.is_error
-
-    asyncio.run(_run())
 
 
 def test_typed_result_attempts_each_close_before_the_next_starts() -> None:
@@ -393,8 +318,9 @@ def test_typed_result_attempts_each_close_before_the_next_starts() -> None:
         """Complete the typed result on the nudged second attempt."""
 
         run = await session.prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
-        assert isinstance(run.outcome, Completed)
+        report = await run.wait()
+        assert report.status == "completed"
+        assert isinstance(report.outcome, Completed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -434,7 +360,7 @@ def test_tool_loop_prompt_yields_the_full_expected_event_order() -> None:
         """Complete one tool-loop prompt and collect its full log."""
 
         run = await session.prompt("check weather")
-        assert await run.wait() == "completed"
+        assert (await run.wait()).status == "completed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -478,7 +404,7 @@ def test_typed_result_prompt_yields_the_full_expected_event_order() -> None:
         """Complete the typed result on the nudged second attempt."""
 
         run = await session.prompt("Weather?", result=WeatherReport)
-        assert await run.wait() == "completed"
+        assert (await run.wait()).status == "completed"
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -515,8 +441,7 @@ def _runtime(
         stream_fn=stream_fn,
         model="gpt-5.4",
         cwd=Path("."),
-        history_store=InMemoryHistoryStore(),
-        run_store=InMemoryRunStore(),
+        store=SQLiteStore(in_memory=True),
         tools=tools,
     )
 
@@ -542,39 +467,3 @@ def _single(events: Sequence[AgentEvent], event_type: type[_EventT]) -> _EventT:
     matches = [event for event in events if isinstance(event, event_type)]
     assert len(matches) == 1, f"expected one {event_type.__name__}, got {len(matches)}"
     return matches[0]
-
-
-class _FailingHistoryStore(InMemoryHistoryStore):
-    """History store with a switchable append failure."""
-
-    fail_appends: bool = False
-
-    def append_history(
-        self,
-        session_id: str,
-        items: Sequence[ConversationItem],
-    ) -> None:
-        """Append history unless the test has enabled deterministic failure."""
-
-        if self.fail_appends:
-            raise RuntimeError("history unavailable")
-        super().append_history(session_id, items)
-
-
-class _FlakyToolResultStore(InMemoryHistoryStore):
-    """History store that drops exactly one tool-result append."""
-
-    fail_next_tool_result: bool = False
-
-    def append_history(
-        self,
-        session_id: str,
-        items: Sequence[ConversationItem],
-    ) -> None:
-        """Fail the next append carrying a tool result, then recover."""
-
-        carries_tool_result = any(isinstance(item, ToolResultTurn) for item in items)
-        if self.fail_next_tool_result and carries_tool_result:
-            self.fail_next_tool_result = False
-            raise RuntimeError("history unavailable")
-        super().append_history(session_id, items)

@@ -1,10 +1,4 @@
-"""AgentRuntime: configuration and orchestration for many sessions.
-
-The runtime constructs shared dependencies, manages sessions and the
-per-session prompt reservation, and starts runs. Everything run-scoped —
-persistence, events, healing — belongs to ``Run``; the runtime keeps
-store references only for its query facade.
-"""
+"""Application service for persistent sessions and live prompt execution."""
 
 from __future__ import annotations
 
@@ -18,25 +12,29 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from tile.events import StreamFn
-from tile.history import HistoryStore, SessionRecord
 from tile.prompt import DEFAULT_INSTRUCTIONS
-from tile.result import COMPLETE_TOOL_NAME, FAIL_TOOL_NAME
-from tile.runs import RunRecord, RunStore
+from tile.result import (
+    COMPLETE_TOOL_NAME,
+    FAIL_TOOL_NAME,
+    RunOutcome,
+)
 from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.run import Run, _RunDependencies, _RunSpec
+from tile.runtime.handle import RunHandle, _RunCompletion
 from tile.runtime.session import Session
+from tile.store.base import (
+    SessionAlreadyExistsError,
+    SessionNotFoundError,
+    Store,
+)
+from tile.store.models import RunRecord, SessionRecord
 from tile.tool_executor import ToolExecutor
 from tile.tools.support.paths import normalize_cwd
 from tile.types.conversation import ConversationItem
 from tile.types.tools import ToolDefinition, ToolFunction
 
 
-class SessionBusyError(RuntimeError):
-    """Raised when a prompt is submitted while the same session is already active."""
-
-
 class AgentRuntime:
-    """Configured runtime container for many sessions."""
+    """Configure prompt execution over one authoritative Store."""
 
     def __init__(
         self,
@@ -44,48 +42,32 @@ class AgentRuntime:
         stream_fn: StreamFn,
         model: str,
         cwd: Path | str,
-        history_store: HistoryStore,
-        run_store: RunStore,
+        store: Store,
         tools: Sequence[ToolDefinition] = (),
         instructions: str = DEFAULT_INSTRUCTIONS,
         auto_mode: bool = True,
     ) -> None:
-        """Create a runtime with shared agent dependencies.
-
-        ``cwd`` is the runtime's single working directory: it is announced in
-        the system prompt and injected into every tool whose function declares
-        a ``cwd`` parameter. Pass tools unbound; the runtime binds them. The
-        stores are required so the caller decides where records live; pass
-        the in-memory stores for process-lifetime state.
-        """
+        """Create a runtime whose persistent mutations flow through one Store."""
 
         _reject_reserved_tool_names(tools)
         normalized_cwd = normalize_cwd(cwd)
-        self._history_store = history_store
-        self._run_store = run_store
-        self._deps = _RunDependencies(
-            execution=_ExecutionDependencies(
-                stream_fn=stream_fn,
-                model=model,
-                instructions=instructions,
-                cwd=normalized_cwd,
-                auto_mode=auto_mode,
-                tool_executor=ToolExecutor(_bind_cwd_tools(tools, normalized_cwd)),
-                history_store=history_store,
-            ),
-            history_store=history_store,
-            run_store=run_store,
+        self._store = store
+        self._execution = _ExecutionDependencies(
+            stream_fn=stream_fn,
+            model=model,
+            instructions=instructions,
+            cwd=normalized_cwd,
+            auto_mode=auto_mode,
+            tool_executor=ToolExecutor(_bind_cwd_tools(tools, normalized_cwd)),
         )
-        self._active_prompt_session_ids: set[str] = set()
-        self._active_runs: set[Run] = set()
+        self._active_runs: dict[str, RunHandle] = {}
 
     @property
     def sessions(self) -> tuple[Session, ...]:
-        """Return handles for known sessions."""
+        """Return handles for every persistent session."""
 
         return tuple(
-            self._build_session(record)
-            for record in self._history_store.list_sessions()
+            self._build_session(record) for record in self._store.list_sessions()
         )
 
     def session(
@@ -94,33 +76,34 @@ class AgentRuntime:
         session_id: str | None = None,
         name: str | None = None,
     ) -> Session:
-        """Create or return a session handle."""
+        """Create a session, or return the named existing session."""
 
-        record = self._history_store.ensure_session(
-            session_id=self._resolve_session_id(session_id),
-            name=name,
-        )
+        resolved_id = session_id if session_id is not None else str(uuid4())
+        record = self._create_or_get_session(resolved_id, name=name)
         return self._build_session(record)
 
     def get_session(self, session_id: str) -> Session:
-        """Return a handle for an existing session."""
+        """Return a handle for an existing persistent session."""
 
-        return self._build_session(self._history_store.get_session(session_id))
+        return self._build_session(self._store.get_session(session_id))
 
-    def history_for(self, session_id: str) -> Sequence[ConversationItem]:
-        """Return completed conversation history for a session."""
+    def history_for(self, session_id: str) -> tuple[ConversationItem, ...]:
+        """Return defensive typed items from committed session history."""
 
-        return self._history_store.get_history(session_id)
+        return tuple(
+            envelope.item.model_copy(deep=True)
+            for envelope in self._store.get_history(session_id)
+        )
 
     def get_run(self, run_id: str) -> RunRecord:
-        """Return a durable run summary by its stable id."""
+        """Return an authoritative persistent run record."""
 
-        return self._run_store.get_run(run_id)
+        return self._store.get_run(run_id)
 
     def runs_for(self, session_id: str) -> Sequence[RunRecord]:
-        """Return durable run summaries for one session."""
+        """Return persistent runs for one session in start-time order."""
 
-        return self._run_store.list_runs(session_id)
+        return self._store.list_runs(session_id)
 
     def fork_session(
         self,
@@ -129,12 +112,17 @@ class AgentRuntime:
         target_session_id: str | None = None,
         name: str | None = None,
     ) -> Session:
-        """Fork an existing session into a new session handle."""
+        """Atomically fork all committed history into a new session."""
 
-        record = self._history_store.copy_history(
+        target = SessionRecord.create(
+            session_id=(
+                target_session_id if target_session_id is not None else str(uuid4())
+            ),
+            name=name,
+        )
+        record = self._store.fork_session(
             source_session_id=source_session_id,
-            target_session_id=self._resolve_session_id(target_session_id),
-            target_name=name,
+            target=target,
         )
         return self._build_session(record)
 
@@ -144,58 +132,78 @@ class AgentRuntime:
         content: str,
         *,
         result: type[BaseModel] | None = None,
-    ) -> Run:
-        """Reserve the session, then start one run that owns the prompt.
+        replace_active: bool = False,
+    ) -> RunHandle:
+        """Persist a running record, then start its in-memory execution."""
 
-        The run performs its own submission persistence and unwinding;
-        the runtime's only cleanup on a failed construction is releasing
-        the reservation it took.
-        """
+        record = RunRecord.start(
+            run_id=str(uuid4()),
+            session_id=session_id,
+            prompt=content,
+            model=self._execution.model,
+            provider=self._execution.stream_fn.provider,
+        )
+        started = self._store.start_run(
+            record=record,
+            replace_active=replace_active,
+        )
+        self._cancel_replaced_local_run(started.replaced_run_id)
+        handle = RunHandle(
+            record=started.run,
+            committed_history=started.committed_history,
+            result=result,
+            execution=self._execution,
+            on_finished=self._finish_run,
+        )
+        self._active_runs[handle.id] = handle
+        return handle
 
-        self._start_prompt(session_id)
+    def _create_or_get_session(
+        self,
+        session_id: str,
+        *,
+        name: str | None,
+    ) -> SessionRecord:
+        """Create one session while tolerating an existing caller-selected id."""
+
         try:
-            run = Run(
-                spec=_RunSpec(session_id=session_id, content=content, result=result),
-                deps=self._deps,
-                on_finished=self._release_run,
+            return self._store.get_session(session_id)
+        except SessionNotFoundError:
+            try:
+                return self._store.create_session(
+                    record=SessionRecord.create(
+                        session_id=session_id,
+                        name=name,
+                    ),
+                )
+            except SessionAlreadyExistsError:
+                return self._store.get_session(session_id)
+
+    def _cancel_replaced_local_run(self, run_id: str | None) -> None:
+        """Cancel a replaced handle when this runtime owns its task."""
+
+        if run_id is None:
+            return
+        handle = self._active_runs.get(run_id)
+        if handle is not None:
+            handle._replace()
+
+    def _finish_run(self, completion: _RunCompletion) -> RunRecord:
+        """Persist one candidate completion and release its local handle."""
+
+        try:
+            return self._store.finish_run(
+                run_id=completion.record.run_id,
+                outcome=cast("RunOutcome", completion.record.outcome),
+                history_delta=completion.history_delta,
             )
-        except BaseException:
-            self._finish_prompt(session_id)
-            raise
-        self._active_runs.add(run)
-        return run
-
-    def _release_run(self, run: Run) -> None:
-        """Release the session reservation and forget the finished run."""
-
-        self._finish_prompt(run.session_id)
-        self._active_runs.discard(run)
-
-    def _start_prompt(self, session_id: str) -> None:
-        """Mark a session prompt active or reject overlapping prompt work."""
-
-        if session_id in self._active_prompt_session_ids:
-            raise SessionBusyError(
-                f"Session already has an active prompt: {session_id}"
-            )
-        self._active_prompt_session_ids.add(session_id)
-
-    def _finish_prompt(self, session_id: str) -> None:
-        """Clear the active prompt marker for a session."""
-
-        self._active_prompt_session_ids.discard(session_id)
+        finally:
+            self._active_runs.pop(completion.record.run_id, None)
 
     def _build_session(self, record: SessionRecord) -> Session:
-        """Build a session handle from a stored record."""
+        """Build the application facade for one persistent session."""
 
         return Session(_record=record, _runtime=self)
-
-    def _resolve_session_id(self, session_id: str | None) -> str:
-        """Return the provided session id or generate a new one."""
-
-        if session_id is not None:
-            return session_id
-        return str(uuid4())
 
 
 RESERVED_TOOL_NAMES = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
@@ -224,7 +232,7 @@ def _bind_cwd_tools(
 
 
 def _bind_cwd(tool: ToolDefinition, cwd: Path) -> ToolDefinition:
-    """Return a copy of a tool whose function receives the runtime cwd."""
+    """Return a tool copy whose function receives the runtime cwd."""
 
     _reject_cwd_schema_property(tool)
     fn = cast(ToolFunction, partial(tool.fn, cwd=cwd))
@@ -242,12 +250,11 @@ def _expects_cwd(fn: ToolFunction) -> bool:
 
 
 def _reject_cwd_schema_property(tool: ToolDefinition) -> None:
-    """Reject tools that expose the runtime-injected cwd to the model."""
+    """Reject a schema that would expose the runtime-injected cwd."""
 
-    properties = tool.input_schema.get("properties")
-    if isinstance(properties, dict) and "cwd" in properties:
+    properties = tool.input_model.model_json_schema().get("properties", {})
+    if "cwd" in properties:
         raise ValueError(
-            f"Tool '{tool.name}' declares a `cwd` parameter for runtime "
-            "injection but also exposes 'cwd' in its input schema; remove "
-            "the schema property."
+            f"Tool '{tool.name}' declares cwd in its input schema; cwd is "
+            "runtime-injected and must not be model-visible."
         )

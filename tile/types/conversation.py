@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
@@ -79,4 +79,7 @@ class ToolResultTurn(BaseModel):
     is_error: bool = False
 
 
-ConversationItem: TypeAlias = UserMessage | AssistantTurn | ToolResultTurn
+ConversationItem: TypeAlias = Annotated[
+    UserMessage | AssistantTurn | ToolResultTurn,
+    Field(discriminator="role"),
+]
