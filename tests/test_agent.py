@@ -15,7 +15,10 @@ from typing import TypeVar
 import pytest
 
 from tile.agent import AgentResult, run_agent
-from tile.tool_executor import ToolExecutor
+from tile.exceptions import (
+    ProviderStreamProtocolError,
+    TurnFailedError,
+)
 from tile.events import (
     AgentEndEvent,
     AgentEvent,
@@ -28,6 +31,7 @@ from tile.events import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from tile.tool_executor import ToolExecutor
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import (
     ConversationItem,
@@ -308,7 +312,6 @@ def test_run_agent_returns_terminal_result() -> None:
 
     result = asyncio.run(_run())
 
-    assert result.last_turn is not None
     assert result.last_turn.response_id == "resp_done"
     assert result.tool_executions == ()
 
@@ -318,7 +321,6 @@ def test_run_agent_returns_accumulated_tool_executions() -> None:
 
     run = _collect_weather_tool_loop_run()
 
-    assert run.result.last_turn is not None
     assert run.result.last_turn.response_id == "resp_follow_up"
     assert len(run.result.tool_executions) == 1
     tool_execution = run.result.tool_executions[0]
@@ -357,6 +359,61 @@ def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
     asyncio.run(_run())
 
     assert provider.closed
+
+
+def test_empty_provider_stream_fails_after_agent_start() -> None:
+    """Reject an empty provider stream before opening a turn or message."""
+
+    provider = ProviderStreamMock([[]])
+    events: list[AgentEvent] = []
+
+    async def _run() -> None:
+        """Run one empty provider stream."""
+
+        with pytest.raises(
+            ProviderStreamProtocolError,
+            match="ended without StreamDoneEvent or StreamErrorEvent",
+        ):
+            await run_agent(
+                [UserMessage(content="Hello")],
+                emit=events.append,
+                stream_fn=provider.fn,
+                model="gpt-5.4",
+                tool_executor=ToolExecutor(()),
+                instructions="Base prompt.",
+            )
+
+    asyncio.run(_run())
+
+    assert [event.type for event in events] == ["agent_start"]
+
+
+def test_stream_exhaustion_leaves_message_and_turn_open() -> None:
+    """Reject a started provider stream that omits its terminal event."""
+
+    provider = ProviderStreamMock([[stream_start("resp_quiet")]])
+    events: list[AgentEvent] = []
+
+    async def _run() -> None:
+        """Run one unterminated provider stream."""
+
+        with pytest.raises(ProviderStreamProtocolError):
+            await run_agent(
+                [UserMessage(content="Hello")],
+                emit=events.append,
+                stream_fn=provider.fn,
+                model="gpt-5.4",
+                tool_executor=ToolExecutor(()),
+                instructions="Base prompt.",
+            )
+
+    asyncio.run(_run())
+
+    assert [event.type for event in events] == [
+        "agent_start",
+        "turn_start",
+        "message_start",
+    ]
 
 
 def test_agent_run_emits_expected_event_sequence_for_tool_use_loop() -> None:
@@ -783,8 +840,8 @@ def test_agent_sends_instructions_to_the_provider_verbatim() -> None:
     assert provider.instructions() == "Resolved system prompt."
 
 
-def test_agent_run_emits_error_turn_end_for_stream_error() -> None:
-    """Finalize an errored assistant stream as an error turn."""
+def test_stream_error_ends_message_then_raises_turn_failure() -> None:
+    """Retain the provider-finalized error message before failing the turn."""
 
     provider = ProviderStreamMock(
         [
@@ -793,21 +850,33 @@ def test_agent_run_emits_error_turn_end_for_stream_error() -> None:
     )
     history = [UserMessage(content="Say hello")]
 
-    events = collect_run_events(history, stream_fn=provider.fn)
+    events: list[AgentEvent] = []
+
+    async def _run() -> TurnFailedError:
+        """Run until the provider-finalized turn fails."""
+
+        with pytest.raises(TurnFailedError, match="Socket closed") as captured:
+            await run_agent(
+                history,
+                emit=events.append,
+                stream_fn=provider.fn,
+                model="gpt-5.4",
+                tool_executor=ToolExecutor(()),
+                instructions="Base prompt.",
+            )
+        return captured.value
+
+    error = asyncio.run(_run())
 
     assert [event.type for event in events] == [
         "agent_start",
         "turn_start",
         "message_start",
         "message_end",
-        "turn_end",
-        "agent_end",
     ]
 
     message_start = _expect_event_type(events[2], MessageStartEvent)
     message_end = _expect_event_type(events[3], MessageEndEvent)
-    turn_end = _expect_event_type(events[4], TurnEndEvent)
-    _expect_event_type(events[5], AgentEndEvent)
     final_message = message_end.assistant_turn
 
     assert isinstance(events[0], AgentStartEvent)
@@ -815,11 +884,7 @@ def test_agent_run_emits_error_turn_end_for_stream_error() -> None:
     assert message_start.response_id == "resp_error"
     assert final_message.response_id == "resp_error"
     assert final_message.status == "error"
-    assert turn_end.assistant_turn.response_id == "resp_error"
-    assert turn_end.assistant_turn.stop_reason == "error"
-    assert turn_end.assistant_turn.status == "error"
-    assert turn_end.assistant_turn.error_message == "Socket closed"
-    assert turn_end.tool_executions == ()
+    assert error.turn == final_message
 
     provider.assert_awaited_once()
     request_history = provider.history(0)

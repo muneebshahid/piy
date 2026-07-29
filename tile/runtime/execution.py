@@ -54,16 +54,6 @@ class _ExecutionDependencies:
     tool_executor: ToolExecutor
 
 
-class TurnFailedError(RuntimeError):
-    """Raised when an agent run ends without a completed assistant turn."""
-
-    def __init__(self, turn: AssistantTurn | None) -> None:
-        """Preserve the failed turn while exposing a concise exception message."""
-
-        self.turn = turn
-        super().__init__(_turn_failure_message(turn))
-
-
 async def execute_prompt(
     emit: EmitFn,
     *,
@@ -96,8 +86,7 @@ async def _execute_plain(
         deps=deps,
         history=history,
     )
-    turn = _require_completed_turn(agent_result.last_turn)
-    return Completed(value=_assistant_text(turn))
+    return Completed(value=_assistant_text(agent_result.last_turn))
 
 
 async def _execute_typed(
@@ -116,7 +105,6 @@ async def _execute_typed(
             deps=attempt_dependencies,
             history=history,
         )
-        _require_completed_turn(agent_result.last_turn)
         outcome = _result_outcome(agent_result.tool_executions)
         if outcome is not None:
             return outcome
@@ -164,22 +152,6 @@ def _typed_attempt_dependencies(
             (*deps.tool_executor.tools, complete_tool(result), fail_tool)
         ),
     )
-
-
-def _require_completed_turn(turn: AssistantTurn | None) -> AssistantTurn:
-    """Return the run's final assistant turn, raising when it did not complete."""
-
-    if turn is None or turn.status != "completed":
-        raise TurnFailedError(turn)
-    return turn
-
-
-def _turn_failure_message(turn: AssistantTurn | None) -> str:
-    """Return the public message for an unsuccessful assistant turn."""
-
-    if turn is None:
-        return "The agent run ended without an assistant turn."
-    return turn.error_message or "The assistant turn failed."
 
 
 def _result_outcome(

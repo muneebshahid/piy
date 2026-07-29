@@ -22,6 +22,8 @@ from tile.events import (
 from tile.result import Aborted, Completed, ExecutionFailure, Failed
 from tile.runtime import AgentRuntime
 from tile.store import SQLiteStore
+from tile.types.contracts import AsyncEventStream
+from tile.types.conversation import ConversationItem
 from tile.types.stream_events import ProviderStreamEvent
 from tile.types.tools import ToolDefinition, ToolFunction, ToolResult
 from tests.support.agent_streams import (
@@ -37,11 +39,7 @@ from tests.support.tool_definitions import CityInput, city_tool
 
 
 def assert_run_lifecycle(events: Sequence[AgentEvent]) -> None:
-    """Assert the guaranteed run shape: one run start first, one run end last.
-
-    Inner events carry no guarantee — a failure or abort can leave inner
-    starts without ends; consumers sweep them on the run end.
-    """
+    """Assert the guaranteed run start and terminal run end."""
 
     assert events, "empty run log"
     assert events[0].type == "run_start"
@@ -86,8 +84,51 @@ def test_provider_raise_before_stream_fails_the_run() -> None:
     assert run_outcome.cause.message == "connection refused"
 
 
-def test_provider_raise_mid_stream_leaves_message_and_turn_open() -> None:
-    """Close the run with the torn-down message and turn left open."""
+def test_abort_during_provider_acquisition_closes_the_run() -> None:
+    """Close the run when cancellation lands before a stream is acquired."""
+
+    async def _run() -> list[AgentEvent]:
+        """Start a blocked provider acquisition, cancel it, and collect events."""
+
+        entered = asyncio.Event()
+
+        async def _blocked_provider(
+            history: Sequence[ConversationItem],
+            model: str,
+            *,
+            instructions: str,
+            tools: Sequence[ToolDefinition] | None,
+        ) -> AsyncEventStream:
+            """Signal provider entry and block until cancellation."""
+
+            _ = history, model, instructions, tools
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("Blocked provider unexpectedly resumed.")
+
+        blocked_mock = AsyncMock(side_effect=_blocked_provider)
+        blocked_mock.provider = TEST_PROVIDER
+        runtime = _runtime(cast("StreamFn", blocked_mock))
+        session = runtime.session(session_id="abort-during-acquisition")
+        run = await session.prompt("hello")
+        await entered.wait()
+        run.abort()
+        assert (await run.wait()).status == "aborted"
+        return [event async for event in run.events()]
+
+    events = asyncio.run(_run())
+
+    assert_run_lifecycle(events)
+    assert [event.type for event in events] == [
+        "run_start",
+        "agent_start",
+        "run_end",
+    ]
+    assert _single(events, RunEndEvent).outcome == Aborted()
+
+
+def test_provider_raise_mid_stream_leaves_inner_lifecycles_open() -> None:
+    """Let the run end terminate inner lifecycles after a provider failure."""
 
     interrupted_mock = AsyncMock(
         return_value=async_stream(
@@ -126,8 +167,8 @@ def test_provider_raise_mid_stream_leaves_message_and_turn_open() -> None:
     )
 
 
-def test_stream_exhausted_without_terminal_event_fails_the_run() -> None:
-    """End the agent over its abandoned message and turn, then fail."""
+def test_stream_exhausted_without_terminal_event_leaves_inner_scopes_open() -> None:
+    """Let the run end terminate scopes when a provider omits its terminal."""
 
     quiet_mock = AsyncMock(return_value=async_stream([stream_start("resp_1")]))
     quiet_mock.provider = TEST_PROVIDER
@@ -153,18 +194,19 @@ def test_stream_exhausted_without_terminal_event_fails_the_run() -> None:
         "agent_start",
         "turn_start",
         "message_start",
-        "agent_end",
         "run_end",
     ]
     run_outcome = _single(events, RunEndEvent).outcome
     assert isinstance(run_outcome, Failed)
     assert isinstance(run_outcome.cause, ExecutionFailure)
-    assert run_outcome.cause.origin == "turn"
-    assert error_message == "The agent run ended without an assistant turn."
+    assert run_outcome.cause.origin == "execution"
+    assert error_message == (
+        "Provider stream ended without StreamDoneEvent or StreamErrorEvent."
+    )
 
 
-def test_in_band_stream_error_keeps_producer_ends_and_fails_the_run() -> None:
-    """Keep the producer's own ends for an error the provider finalized."""
+def test_in_band_stream_error_ends_message_before_run_end() -> None:
+    """Keep the provider-finalized message before the failed run ends."""
 
     runtime = _runtime(ProviderStreamMock([error_stream("resp_1", "boom")]).fn)
     session = runtime.session(session_id="in-band-error")
@@ -180,15 +222,14 @@ def test_in_band_stream_error_keeps_producer_ends_and_fails_the_run() -> None:
 
     assert_run_lifecycle(events)
     assert _single(events, MessageEndEvent).assistant_turn.status == "error"
-    _single(events, AgentEndEvent)
     run_outcome = _single(events, RunEndEvent).outcome
     assert isinstance(run_outcome, Failed)
     assert isinstance(run_outcome.cause, ExecutionFailure)
     assert run_outcome.cause.origin == "turn"
 
 
-def test_abort_during_tool_execution_leaves_the_tool_open() -> None:
-    """Close the run directly over an aborted in-flight tool execution."""
+def test_abort_during_tool_execution_leaves_inner_lifecycles_open() -> None:
+    """Let the run end terminate an active tool and its outer lifecycles."""
 
     async def _blocked(params: CityInput) -> ToolResult:
         """Block forever so the abort lands inside the tool."""
@@ -236,8 +277,8 @@ def test_abort_during_tool_execution_leaves_the_tool_open() -> None:
     assert _single(events, RunEndEvent).outcome == Aborted()
 
 
-def test_abort_during_provider_stream_leaves_the_message_open() -> None:
-    """Close the run directly over an aborted in-flight message."""
+def test_abort_during_provider_stream_leaves_inner_lifecycles_open() -> None:
+    """Let the run end terminate an active message and its outer lifecycles."""
 
     async def _stalled(
         events: Sequence[ProviderStreamEvent],

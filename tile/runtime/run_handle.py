@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
+from tile.exceptions import TurnFailedError
 from tile.events import (
     AgentEvent,
     RunEndEvent,
@@ -21,11 +22,7 @@ from tile.result import (
     Failed,
     RunOutcome,
 )
-from tile.runtime.execution import (
-    TurnFailedError,
-    _ExecutionDependencies,
-    execute_prompt,
-)
+from tile.runtime.execution import _ExecutionDependencies, execute_prompt
 from tile.runtime.history import _RunHistory
 from tile.runtime.report import RunReport
 from tile.store.models import HistoryItem, RunRecord
@@ -132,8 +129,8 @@ class RunHandle:
     def _emit(self, event: AgentEvent) -> None:
         """Emit an event and project its replayable item into local history."""
 
-        self._events.append(event)
         self._history.observe(event)
+        self._events.append(event)
         self._changed.set()
 
     def _finalize(self, task: asyncio.Task[RunOutcome]) -> None:

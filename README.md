@@ -137,10 +137,9 @@ status = report.status  # "completed" | "failed" | "aborted"
 Every run's log begins with `RunStartEvent` and ends with exactly one
 `RunEndEvent` carrying the run's terminal outcome, on every in-process
 termination path. Inner events carry no such guarantee: a failure or
-abort can tear the run down with inner scopes still open, and the run
-end sweeps them — its outcome names why, exactly once. `run.wait()`
-returns only after that closure, so waiters always observe a closed
-log.
+abort can leave inner scopes open, and `RunEndEvent` terminates them.
+Its outcome names why the run stopped. `run.wait()` returns only after
+that closure, so waiters always observe a closed log.
 
 Run events are currently replayable in process while the `RunHandle` exists.
 Conversation history and run records share one atomic SQLite store.

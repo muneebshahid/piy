@@ -4,6 +4,10 @@ from collections.abc import Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 
+from tile.exceptions import (
+    ProviderStreamProtocolError,
+    TurnFailedError,
+)
 from tile.events import (
     AgentEndEvent,
     AgentStartEvent,
@@ -54,14 +58,14 @@ ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES = (
 
 @dataclass(frozen=True)
 class AgentResult:
-    """Terminal facts produced by one stateless agent invocation.
+    """Terminal facts produced by one successful stateless agent invocation.
 
-    ``last_turn`` is the final finalized assistant turn, or ``None`` when no
-    provider stream finalized. ``tool_executions`` contains every tool outcome
-    produced across the invocation's provider turns.
+    ``last_turn`` is the final completed assistant turn. ``tool_executions``
+    contains every tool outcome produced across the invocation's provider
+    turns.
     """
 
-    last_turn: AssistantTurn | None
+    last_turn: AssistantTurn
     tool_executions: tuple[ToolExecutionOutcome, ...]
 
 
@@ -85,8 +89,6 @@ class _TurnResult:
     def should_continue(self) -> bool:
         """Return whether this turn requires another provider turn."""
 
-        if self.assistant_turn.status != "completed":
-            return False
         return bool(self.tool_executions) and not any(
             execution.terminate for execution in self.tool_executions
         )
@@ -131,13 +133,11 @@ async def _run_agent_loop(
     instructions: str,
     tool_executor: ToolExecutor,
 ) -> AgentResult:
-    """Call the provider until a turn errors, terminates, or stops using tools."""
+    """Call the provider until a turn terminates or stops requesting tools."""
 
-    last_turn: AssistantTurn | None = None
     tool_executions: list[ToolExecutionOutcome] = []
-
     while True:
-        turn_result = await _run_provider_turn(
+        result = await _run_provider_turn(
             run_history=run_history,
             emit=emit,
             stream_fn=stream_fn,
@@ -145,29 +145,24 @@ async def _run_agent_loop(
             instructions=instructions,
             tool_executor=tool_executor,
         )
-        if turn_result is None:
-            break
-
-        last_turn = turn_result.assistant_turn
-        tool_executions.extend(turn_result.tool_executions)
-        if not turn_result.should_continue:
-            break
-
-    return AgentResult(
-        last_turn=last_turn,
-        tool_executions=tuple(tool_executions),
-    )
+        run_history.extend(result.conversation_items)
+        tool_executions.extend(result.tool_executions)
+        if not result.should_continue:
+            return AgentResult(
+                last_turn=result.assistant_turn,
+                tool_executions=tuple(tool_executions),
+            )
 
 
 async def _run_provider_turn(
     *,
-    run_history: list[ConversationItem],
+    run_history: Sequence[ConversationItem],
     emit: EmitFn,
     stream_fn: StreamFn,
     model: str,
     instructions: str,
     tool_executor: ToolExecutor,
-) -> _TurnResult | None:
+) -> _TurnResult:
     """Run one provider stream and return its terminal turn facts.
 
     The provider stream is closed on every exit so the transport does not
@@ -180,7 +175,6 @@ async def _run_provider_turn(
         instructions=instructions,
         tools=tool_executor.tools,
     )
-    turn_result: _TurnResult | None = None
     async with aclosing(stream):
         async for event in stream:
             result = await _handle_stream_event(
@@ -189,9 +183,10 @@ async def _run_provider_turn(
                 tool_executor=tool_executor,
             )
             if result is not None:
-                run_history.extend(result.conversation_items)
-                turn_result = result
-    return turn_result
+                return result
+    raise ProviderStreamProtocolError(
+        "Provider stream ended without StreamDoneEvent or StreamErrorEvent."
+    )
 
 
 async def _handle_stream_event(
@@ -212,7 +207,7 @@ async def _handle_stream_event(
                 tool_executor=tool_executor,
             )
         case StreamErrorEvent():
-            return _handle_stream_error_event(
+            _handle_stream_error_event(
                 event,
                 emit=emit,
             )
@@ -259,13 +254,12 @@ def _handle_stream_error_event(
     event: StreamErrorEvent,
     *,
     emit: EmitFn,
-) -> _TurnResult:
+) -> None:
     """Finalize a failed assistant message."""
 
     turn = AssistantTurn.from_stream_error(event)
     emit(MessageEndEvent(assistant_turn=turn))
-    emit(TurnEndEvent(assistant_turn=turn, tool_executions=()))
-    return _TurnResult(assistant_turn=turn, tool_executions=())
+    raise TurnFailedError(turn=turn)
 
 
 async def _execute_tools(

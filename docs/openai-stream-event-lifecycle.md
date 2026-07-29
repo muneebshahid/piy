@@ -293,21 +293,19 @@ sequenceDiagram
 | `ResponseOutputItemDoneEvent` with function-call item | `TOOL_CALL_DONE` | `ToolCallEndEvent` | `MessageUpdateEvent` |
 | `ResponseCompletedEvent` | `COMPLETED` | `StreamDoneEvent` | `MessageEndEvent`, `TurnEndEvent`, optional tool execution |
 | `ResponseIncompleteEvent` with length stop | `INCOMPLETE(length)` | `StreamDoneEvent` | `MessageEndEvent`, `TurnEndEvent` |
-| `ResponseIncompleteEvent` with content-filter stop | `INCOMPLETE(error)` | `StreamErrorEvent` | `MessageEndEvent`, `TurnEndEvent` with error assistant turn |
-| `ResponseFailedEvent` or `ResponseErrorEvent` | `FAILED` | `StreamErrorEvent` | `MessageEndEvent`, `TurnEndEvent` with error assistant turn |
+| `ResponseIncompleteEvent` with content-filter stop | `INCOMPLETE(error)` | `StreamErrorEvent` | Error-bearing `MessageEndEvent`; `RunEndEvent` terminates the open turn and agent |
+| `ResponseFailedEvent` or `ResponseErrorEvent` | `FAILED` | `StreamErrorEvent` | Error-bearing `MessageEndEvent`; `RunEndEvent` terminates the open turn and agent |
 
 ## Run Lifecycle
 
-Two events are guaranteed on every in-process termination path: every run
-log begins with `RunStartEvent` and ends with exactly one
-`RunEndEvent(outcome)`. Inner events are producer-emitted and carry no
-such guarantee — a failure or abort can tear the run down with inner
-scopes still open, so an inner start may lack its end. Consumers apply
-one sweep rule: an end event ends anything still open inside its scope,
-and the run end ends everything, with its outcome naming why exactly
-once. Hard process death is outside this contract.
+Every run log begins with `RunStartEvent` and ends with exactly one
+`RunEndEvent(outcome)` on every in-process termination path. Inner events
+carry no such guarantee. A failure or cancellation can leave inner starts
+without their normal ends; `RunEndEvent` terminates every scope still open
+and its outcome explains why the run stopped. Hard process death is outside
+this contract.
 
-| Scope | Start | End |
+| Scope | Start | Normal end |
 | --- | --- | --- |
 | run | `RunStartEvent` (guaranteed first) | `RunEndEvent(outcome)` (guaranteed last) |
 | agent attempt | `AgentStartEvent` | `AgentEndEvent` |
@@ -329,11 +327,11 @@ Rules:
   outcome variant implies how execution terminated.
 - A tool execution that *fails* still gets its `ToolExecutionEndEvent`:
   the executor boundary wraps every tool failure into an error outcome.
-  Only teardown — abort or a run failure while the tool is in flight —
-  leaves a tool start without its end, and the run end follows it.
-- An attempt whose turn errored in-band still ends normally with its
-  producer events; the failure story lives on the errored assistant turn
-  and the run end's outcome.
+  Cancellation or infrastructure failure while the tool is active leaves
+  the tool scope open until `RunEndEvent`.
+- An in-band provider `StreamErrorEvent` is a terminal message, so its
+  partial error-bearing assistant turn is retained in `MessageEndEvent`.
+  The failed turn and agent remain open until the failed `RunEndEvent`.
 - Typed-result runs close each agent attempt before the follow-up message
   or next attempt starts; the final `AgentEndEvent` precedes `RunEndEvent`.
   Agent events carry no attempt label: attempts are strictly sequential,
@@ -349,9 +347,8 @@ Rules:
 - Provider stream fragments (`TextStart/End`, `ReasoningStart/End`,
   `ToolCallStart/Delta/End`, and the provider `StreamStart/Done/Error`
   events) are message content, not lifecycle scopes; the containing
-  message's end, or the sweep, terminates their outstanding state.
-Abort ordering during a tool call — the open scopes are simply left open
-and the run end sweeps them:
+  message end or terminal run end ends their outstanding state.
+Abort ordering during a tool call leaves inner scopes open for the run end:
 
 ```text
 ...
