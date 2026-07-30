@@ -1,15 +1,34 @@
-"""Stateless agent run loop for provider streams and tool execution."""
+"""Stateless agent run loop that emits events and returns its result."""
 
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from collections.abc import Sequence
 from contextlib import aclosing
+from dataclasses import dataclass
 
+from tile.exceptions import (
+    ProviderStreamProtocolError,
+    TurnFailedError,
+)
+from tile.events import (
+    AgentEndEvent,
+    AgentStartEvent,
+    EmitFn,
+    MessageEndEvent,
+    MessageStartEvent,
+    MessageUpdateEvent,
+    StreamFn,
+    ToolExecutionEndEvent,
+    ToolExecutionStartEvent,
+    TurnEndEvent,
+    TurnStartEvent,
+)
+from tile.tool_executor import ToolExecutor
 from tile.types.conversation import AssistantTurn, ConversationItem
 from tile.types.stream_events import (
     AssistantBlock,
+    ProviderStreamEvent,
     ReasoningDeltaEvent,
     ReasoningEndEvent,
     ReasoningStartEvent,
-    ProviderStreamEvent,
     StreamDoneEvent,
     StreamErrorEvent,
     StreamStartEvent,
@@ -22,21 +41,6 @@ from tile.types.stream_events import (
     ToolCallStartEvent,
 )
 from tile.types.tool_execution import ToolExecutionOutcome
-from tile.types.tools import JsonObject
-from tile.tool_executor import ToolExecutor
-from tile.events import (
-    AgentEndEvent,
-    AgentEvent,
-    AgentStartEvent,
-    MessageEndEvent,
-    MessageStartEvent,
-    MessageUpdateEvent,
-    StreamFn,
-    ToolExecutionEndEvent,
-    ToolExecutionStartEvent,
-    TurnEndEvent,
-    TurnStartEvent,
-)
 
 ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES = (
     ReasoningStartEvent,
@@ -49,17 +53,57 @@ ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES = (
     ToolCallDeltaEvent,
     ToolCallEndEvent,
 )
+"""Provider event types forwarded as assistant message updates."""
+
+
+@dataclass(frozen=True)
+class AgentResult:
+    """Terminal facts produced by one successful stateless agent invocation.
+
+    ``last_turn`` is the final completed assistant turn. ``tool_executions``
+    contains every tool outcome produced across the invocation's provider
+    turns.
+    """
+
+    last_turn: AssistantTurn
+    tool_executions: tuple[ToolExecutionOutcome, ...]
+
+
+@dataclass(frozen=True)
+class _TurnResult:
+    """Final assistant turn and tool executions produced by one provider stream."""
+
+    assistant_turn: AssistantTurn
+    tool_executions: tuple[ToolExecutionOutcome, ...]
+
+    @property
+    def conversation_items(self) -> tuple[ConversationItem, ...]:
+        """Return the assistant turn followed by its tool result turns."""
+
+        return (
+            self.assistant_turn,
+            *(execution.tool_result_turn for execution in self.tool_executions),
+        )
+
+    @property
+    def should_continue(self) -> bool:
+        """Return whether this turn requires another provider turn."""
+
+        return bool(self.tool_executions) and not any(
+            execution.terminate for execution in self.tool_executions
+        )
 
 
 async def run_agent(
     history: Sequence[ConversationItem],
     *,
+    emit: EmitFn,
     stream_fn: StreamFn,
     model: str,
     tool_executor: ToolExecutor,
     instructions: str,
-) -> AsyncGenerator[AgentEvent, None]:
-    """Run one stateless agent turn from supplied model-visible history.
+) -> AgentResult:
+    """Run one stateless agent invocation and return its terminal facts.
 
     A successful tool result with ``terminate=True`` ends the loop after the
     current tool batch without another provider call. ``instructions`` is the
@@ -67,164 +111,198 @@ async def run_agent(
     its composition.
     """
 
-    run_history = list(history)
-    loop_events = _run_agent_loop(
-        run_history=run_history,
+    emit(AgentStartEvent())
+    result = await _run_agent_loop(
+        run_history=list(history),
+        emit=emit,
         stream_fn=stream_fn,
         model=model,
         instructions=instructions,
         tool_executor=tool_executor,
     )
-
-    yield AgentStartEvent()
-    async with aclosing(loop_events):
-        async for event in loop_events:
-            yield event
-    yield AgentEndEvent()
+    emit(AgentEndEvent())
+    return result
 
 
 async def _run_agent_loop(
     *,
     run_history: list[ConversationItem],
+    emit: EmitFn,
     stream_fn: StreamFn,
     model: str,
     instructions: str,
     tool_executor: ToolExecutor,
-) -> AsyncGenerator[AgentEvent, None]:
-    """Call the provider until a turn errors, terminates, or stops using tools.
+) -> AgentResult:
+    """Call the provider until a turn terminates or stops requesting tools."""
 
-    Each provider stream is closed on every exit — closure does not
-    cascade through generator chains on its own, so every layer forwards
-    it down to the transport.
+    tool_executions: list[ToolExecutionOutcome] = []
+    while True:
+        result = await _run_provider_turn(
+            run_history=run_history,
+            emit=emit,
+            stream_fn=stream_fn,
+            model=model,
+            instructions=instructions,
+            tool_executor=tool_executor,
+        )
+        run_history.extend(result.conversation_items)
+        tool_executions.extend(result.tool_executions)
+        if not result.should_continue:
+            return AgentResult(
+                last_turn=result.assistant_turn,
+                tool_executions=tuple(tool_executions),
+            )
+
+
+async def _run_provider_turn(
+    *,
+    run_history: Sequence[ConversationItem],
+    emit: EmitFn,
+    stream_fn: StreamFn,
+    model: str,
+    instructions: str,
+    tool_executor: ToolExecutor,
+) -> _TurnResult:
+    """Run one provider stream and return its terminal turn facts.
+
+    The provider stream is closed on every exit so the transport does not
+    depend on garbage collection for cleanup.
     """
 
-    while True:
-        has_tool_executions = False
-        should_terminate = False
-        turn_errored = False
-        stream = await stream_fn(
-            tuple(run_history),
-            model,
-            instructions=instructions,
-            tools=tool_executor.tools,
-        )
-
-        async with aclosing(stream):
-            async for event in stream:
-                async for agent_event in _handle_stream_event(
-                    event,
-                    run_history=run_history,
-                    tool_executor=tool_executor,
-                ):
-                    if (
-                        isinstance(agent_event, ToolExecutionEndEvent)
-                        and agent_event.outcome.terminate
-                    ):
-                        should_terminate = True
-                    if isinstance(agent_event, TurnEndEvent):
-                        if agent_event.tool_executions:
-                            has_tool_executions = True
-                        if agent_event.assistant_turn.status != "completed":
-                            turn_errored = True
-                    yield agent_event
-
-        if should_terminate or turn_errored or not has_tool_executions:
-            return
+    stream = await stream_fn(
+        tuple(run_history),
+        model,
+        instructions=instructions,
+        tools=tool_executor.tools,
+    )
+    async with aclosing(stream):
+        async for event in stream:
+            result = await _handle_stream_event(
+                event,
+                emit=emit,
+                tool_executor=tool_executor,
+            )
+            if result is not None:
+                return result
+    raise ProviderStreamProtocolError(
+        "Provider stream ended without StreamDoneEvent or StreamErrorEvent."
+    )
 
 
 async def _handle_stream_event(
     event: ProviderStreamEvent,
     *,
-    run_history: list[ConversationItem],
+    emit: EmitFn,
     tool_executor: ToolExecutor,
-) -> AsyncIterator[AgentEvent]:
-    """Route one provider stream event into agent-level events."""
+) -> _TurnResult | None:
+    """Route one provider stream event and return terminal turn facts."""
 
     match event:
         case StreamStartEvent():
-            yield TurnStartEvent()
-            yield MessageStartEvent(response_id=event.response_id)
+            _emit_turn_start(event, emit=emit)
         case StreamDoneEvent():
-            async for agent_event in _handle_stream_done_event(
+            return await _handle_stream_done_event(
                 event,
-                run_history=run_history,
+                emit=emit,
                 tool_executor=tool_executor,
-            ):
-                yield agent_event
+            )
         case StreamErrorEvent():
-            async for agent_event in _handle_stream_error_event(
+            _handle_stream_error_event(
                 event,
-                run_history=run_history,
-            ):
-                yield agent_event
+                emit=emit,
+            )
         case _ if isinstance(event, ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES):
-            yield MessageUpdateEvent(stream_event=event)
+            emit(MessageUpdateEvent(stream_event=event))
+    return None
+
+
+def _emit_turn_start(event: StreamStartEvent, *, emit: EmitFn) -> None:
+    """Emit the opening lifecycle events for one provider turn."""
+
+    emit(TurnStartEvent())
+    emit(MessageStartEvent(response_id=event.response_id))
 
 
 async def _handle_stream_done_event(
     event: StreamDoneEvent,
     *,
-    run_history: list[ConversationItem],
+    emit: EmitFn,
     tool_executor: ToolExecutor,
-) -> AsyncIterator[AgentEvent]:
-    """Finalize an assistant message and execute requested tools."""
+) -> _TurnResult:
+    """Finalize a completed assistant message and execute requested tools."""
 
     turn = AssistantTurn.from_stream_done(event)
-    run_history.append(turn)
-    yield MessageEndEvent(assistant_turn=turn)
-    tool_executions: list[ToolExecutionOutcome] = []
-
-    for tool_call in _collect_tool_calls(turn.blocks):
-        async for agent_event in _execute_tool(
-            call_id=tool_call.call_id,
-            tool_name=tool_call.name,
-            arguments=tool_call.arguments,
-            tool_executor=tool_executor,
-        ):
-            if isinstance(agent_event, ToolExecutionEndEvent):
-                outcome = agent_event.outcome
-                run_history.append(outcome.tool_result_turn)
-                tool_executions.append(outcome)
-
-            yield agent_event
-
-    yield TurnEndEvent(assistant_turn=turn, tool_executions=tool_executions)
+    emit(MessageEndEvent(assistant_turn=turn))
+    tool_executions = await _execute_tools(
+        turn.blocks,
+        emit=emit,
+        tool_executor=tool_executor,
+    )
+    emit(
+        TurnEndEvent(
+            assistant_turn=turn,
+            tool_executions=tuple(tool_executions),
+        )
+    )
+    return _TurnResult(
+        assistant_turn=turn,
+        tool_executions=tuple(tool_executions),
+    )
 
 
-async def _handle_stream_error_event(
+def _handle_stream_error_event(
     event: StreamErrorEvent,
     *,
-    run_history: list[ConversationItem],
-) -> AsyncIterator[AgentEvent]:
+    emit: EmitFn,
+) -> None:
     """Finalize a failed assistant message."""
 
     turn = AssistantTurn.from_stream_error(event)
-    run_history.append(turn)
-    yield MessageEndEvent(assistant_turn=turn)
-    yield TurnEndEvent(assistant_turn=turn, tool_executions=[])
+    emit(MessageEndEvent(assistant_turn=turn))
+    raise TurnFailedError(turn=turn)
+
+
+async def _execute_tools(
+    blocks: Sequence[AssistantBlock],
+    *,
+    emit: EmitFn,
+    tool_executor: ToolExecutor,
+) -> list[ToolExecutionOutcome]:
+    """Execute every tool call and return its outcome."""
+
+    outcomes: list[ToolExecutionOutcome] = []
+    for tool_call in _collect_tool_calls(blocks):
+        outcome = await _execute_tool(
+            tool_call,
+            emit=emit,
+            tool_executor=tool_executor,
+        )
+        outcomes.append(outcome)
+    return outcomes
 
 
 async def _execute_tool(
+    tool_call: ToolCallBlock,
     *,
-    call_id: str,
-    tool_name: str,
-    arguments: JsonObject,
+    emit: EmitFn,
     tool_executor: ToolExecutor,
-) -> AsyncIterator[AgentEvent]:
-    """Emit the full lifecycle for one tool execution."""
+) -> ToolExecutionOutcome:
+    """Emit the full lifecycle for one tool execution and return its outcome."""
 
-    yield ToolExecutionStartEvent(
-        call_id=call_id,
-        tool_name=tool_name,
-        arguments=arguments,
+    emit(
+        ToolExecutionStartEvent(
+            call_id=tool_call.call_id,
+            tool_name=tool_call.name,
+            arguments=tool_call.arguments,
+        )
     )
-
     outcome = await tool_executor.execute(
-        call_id=call_id,
-        tool_name=tool_name,
-        arguments=arguments,
+        call_id=tool_call.call_id,
+        tool_name=tool_call.name,
+        arguments=tool_call.arguments,
     )
-    yield ToolExecutionEndEvent(outcome=outcome)
+    emit(ToolExecutionEndEvent(outcome=outcome))
+    return outcome
 
 
 def _collect_tool_calls(blocks: Sequence[AssistantBlock]) -> list[ToolCallBlock]:

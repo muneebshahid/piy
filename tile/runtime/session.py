@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from tile.runtime.handle import RunHandle
+from tile.runtime.run_handle import RunHandle
 from tile.store.models import SessionRecord
 from tile.types.conversation import ConversationItem
 

@@ -19,7 +19,7 @@ from tile.result import (
     RunOutcome,
 )
 from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.handle import RunHandle, _RunCompletion
+from tile.runtime.run_handle import RunHandle, _RunCompletion
 from tile.runtime.session import Session
 from tile.store.base import (
     SessionAlreadyExistsError,

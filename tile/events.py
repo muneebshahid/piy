@@ -3,20 +3,17 @@
 Run lifecycle contract: every run log begins with ``RunStartEvent`` and
 ends with exactly one ``RunEndEvent`` committing the terminal outcome,
 for every in-process termination path. Only those two events are
-guaranteed. The inner events are producer-emitted and nest as
-``run ⊃ agent attempt ⊃ turn ⊃ message / tool executions``; a failure or
-abort can tear a run down with inner scopes still open, so an inner start
-may lack its end. Consumers apply one sweep rule: an end event ends
-anything still open inside its scope, and ``RunEndEvent`` ends everything
-— its outcome names why, exactly once. Provider stream fragments (text,
-reasoning, and tool-call start/delta/end updates carried by
-``MessageUpdateEvent``) are message content, not lifecycle scopes: the
-containing message's end, or the sweep, terminates their outstanding
-state. Hard process death is outside this contract — no process can
-publish an event after it has stopped.
+guaranteed. Inner events nest as
+``run ⊃ agent attempt ⊃ turn ⊃ message / tool executions``; failures and
+cancellation can leave inner starts without their normal ends.
+``RunEndEvent`` terminates anything still open and its outcome explains
+why the run stopped. Provider stream fragments carried by
+``MessageUpdateEvent`` are message content rather than lifecycle scopes.
+Hard process death is outside this contract because no process can emit
+after it has stopped.
 """
 
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal, Protocol, TypeAlias
 
 from pydantic import BaseModel
@@ -63,10 +60,14 @@ class AgentEvent(BaseModel):
     type: str
 
 
+EmitFn: TypeAlias = Callable[[AgentEvent], None]
+"""Synchronous all-or-raise sink for one ordered agent event."""
+
+
 class RunStartEvent(AgentEvent):
     """Marks the start of one prompt run.
 
-    Published by the run itself before execution starts, so every
+    Emitted by the run itself before execution starts, so every
     run log begins with a run start on every path.
     """
 
@@ -76,11 +77,9 @@ class RunStartEvent(AgentEvent):
 class RunEndEvent(AgentEvent):
     """Marks the end of one prompt run and commits its terminal outcome.
 
-    Exactly one run end closes every run, as its final event, ending
-    every scope still open in the log. The outcome is the same
-    discriminated value recorded on the durable run summary; its variant
-    implies how execution terminated and names the cause of any scopes
-    the run tore down open.
+    Exactly one run end closes every run as its final event, terminating
+    any inner lifecycle that remains open. The outcome is the same
+    discriminated value recorded on the durable run summary.
     """
 
     type: Literal["run_end"] = "run_end"
@@ -99,11 +98,7 @@ class AgentStartEvent(AgentEvent):
 
 
 class AgentEndEvent(AgentEvent):
-    """Marks the end of one stateless agent attempt.
-
-    An attempt whose turn errored in-band still ends normally; the
-    run-level verdict lives on ``RunEndEvent``.
-    """
+    """Marks successful completion of one stateless agent attempt."""
 
     type: Literal["agent_end"] = "agent_end"
 
@@ -126,13 +121,13 @@ class TurnEndEvent(AgentEvent):
 
     type: Literal["turn_end"] = "turn_end"
     assistant_turn: AssistantTurn
-    tool_executions: list[ToolExecutionOutcome]
+    tool_executions: tuple[ToolExecutionOutcome, ...]
 
     @property
-    def tool_result_turns(self) -> list[ToolResultTurn]:
+    def tool_result_turns(self) -> tuple[ToolResultTurn, ...]:
         """Return replayable tool result projections for this turn."""
 
-        return [execution.tool_result_turn for execution in self.tool_executions]
+        return tuple(execution.tool_result_turn for execution in self.tool_executions)
 
 
 class MessageStartEvent(AgentEvent):

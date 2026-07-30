@@ -137,10 +137,9 @@ status = report.status  # "completed" | "failed" | "aborted"
 Every run's log begins with `RunStartEvent` and ends with exactly one
 `RunEndEvent` carrying the run's terminal outcome, on every in-process
 termination path. Inner events carry no such guarantee: a failure or
-abort can tear the run down with inner scopes still open, and the run
-end sweeps them — its outcome names why, exactly once. `run.wait()`
-returns only after that closure, so waiters always observe a closed
-log.
+abort can leave inner scopes open, and `RunEndEvent` terminates them.
+Its outcome names why the run stopped. `run.wait()` returns only after
+that closure, so waiters always observe a closed log.
 
 Run events are currently replayable in process while the `RunHandle` exists.
 Conversation history and run records share one atomic SQLite store.
@@ -364,7 +363,7 @@ fake_stream.provider = "fake"
 ```
 
 Hand `fake_stream` to `AgentRuntime` in place of the real provider and the
-entire runtime executes: history is written, events are published, and the
+entire runtime executes: history is written, events are emitted, and the
 run ends with a real outcome to assert on. Script a `tool_use` stop with a
 `ToolCallBlock` to drive the tool loop, or a `complete` call to exercise a
 typed result. A public `tile.testing` module with ready-made stream
@@ -424,11 +423,11 @@ tile/
 ├── prompt.py        # System prompt composition
 ├── result.py        # Typed run outcomes and the output-contract protocol
 └── runtime/         # Session runtime package
-    ├── handle.py    # RunHandle: live execution and event delivery
-    ├── execution.py # Prompt programs: attempt loops and outcome derivation
-    ├── history.py   # Provisional run-local conversation buffering
-    ├── runtime.py   # AgentRuntime: orchestration and Store lifecycle
-    └── session.py   # Session facade
+    ├── run_handle.py  # RunHandle: live execution and event delivery
+    ├── execution.py   # Prompt programs: attempt loops and outcome derivation
+    ├── history.py     # Provisional run-local conversation buffering
+    ├── runtime.py     # AgentRuntime: orchestration and Store lifecycle
+    └── session.py     # Session facade
 tests/               # Test suite
 ```
 
