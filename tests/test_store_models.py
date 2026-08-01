@@ -214,6 +214,7 @@ def test_store_contract_exposes_only_lifecycle_operations() -> None:
 
     assert methods == {
         "create_session",
+        "delete_session",
         "finish_run",
         "fork_session",
         "get_history",
