@@ -28,6 +28,7 @@ from tile.store.schema import (
 from tile.store.sqlite import SQLiteStore
 
 __all__ = [
+    "SQLITE_STORE_SCHEMA_VERSION",
     "ActiveRunError",
     "HistoryItem",
     "InvalidHistoryError",
@@ -36,7 +37,6 @@ __all__ = [
     "RunNotFoundError",
     "RunRecord",
     "RunStatus",
-    "SQLITE_STORE_SCHEMA_VERSION",
     "SQLiteStore",
     "SQLiteStoreSchemaError",
     "SessionAlreadyExistsError",

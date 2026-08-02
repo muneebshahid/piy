@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Literal, Self, TypeAlias, cast
+from typing import Literal, Self, cast
 
 from pydantic import (
     BaseModel,
@@ -15,8 +15,8 @@ from pydantic import (
     model_validator,
 )
 
-JsonObject: TypeAlias = dict[str, JsonValue]
-ImageMimeType: TypeAlias = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
+type JsonObject = dict[str, JsonValue]
+type ImageMimeType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
 
 class ToolDetails(BaseModel):
@@ -42,7 +42,7 @@ class ToolImageContent(BaseModel):
     mime_type: ImageMimeType
 
 
-ToolResultContent: TypeAlias = ToolTextContent | ToolImageContent
+type ToolResultContent = ToolTextContent | ToolImageContent
 
 
 class ToolInput(BaseModel):
@@ -107,7 +107,7 @@ class ToolResult(BaseModel):
         )
 
 
-ToolFunction: TypeAlias = Callable[..., Awaitable[ToolResult]]
+type ToolFunction = Callable[..., Awaitable[ToolResult]]
 
 
 class ToolDefinition(BaseModel):

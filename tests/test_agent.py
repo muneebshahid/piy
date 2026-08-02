@@ -9,15 +9,29 @@ or ``error``, and executes tools before starting a follow-up assistant turn.
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TypeVar
 
 import pytest
 
-from tile.agent import AgentResult, run_agent
-from tile.exceptions import (
-    ProviderStreamProtocolError,
-    TurnFailedError,
+from tests.support.agent_runs import collect_agent_run, collect_run_events
+from tests.support.agent_streams import (
+    ProviderStreamMock,
+    empty_stream,
+    error_stream,
+    final_text_stream,
+    stream_done,
+    stream_start,
+    tool_call_block,
+    tool_call_stream,
 )
+from tests.support.conversation_assertions import (
+    expect_assistant_turn,
+    expect_tool_result_turn,
+    expect_user_message,
+)
+from tests.support.stream_assertions import expect_stream_event
+from tests.support.tool_definitions import CityInput, NoInput, city_tool
+from tests.support.tool_results import tool_text
+from tile.agent import AgentResult, run_agent
 from tile.events import (
     AgentEndEvent,
     AgentEvent,
@@ -30,8 +44,14 @@ from tile.events import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from tile.exceptions import (
+    ProviderStreamProtocolError,
+    TurnFailedError,
+)
 from tile.providers.base import Provider
 from tile.tool_executor import ToolExecutor
+from tile.tool_truncation import ToolOutputDetails
+from tile.tools.read import ReadDetails
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import (
     ConversationItem,
@@ -39,11 +59,11 @@ from tile.types.conversation import (
     UserMessage,
 )
 from tile.types.stream_events import (
+    ProviderStreamEvent,
     ReasoningBlock,
     ReasoningDeltaEvent,
     ReasoningEndEvent,
     ReasoningStartEvent,
-    ProviderStreamEvent,
     TextBlock,
     TextDeltaEvent,
     TextEndEvent,
@@ -54,33 +74,10 @@ from tile.types.stream_events import (
     ToolCallStartEvent,
 )
 from tile.types.tool_execution import ToolInputValidationFailure, ToolInvocationFailure
-from tile.tools.read import ReadDetails
-from tile.tool_truncation import ToolOutputDetails
 from tile.types.tools import (
     ToolDefinition,
     ToolResult,
 )
-from tests.support.agent_streams import (
-    ProviderStreamMock,
-    empty_stream,
-    error_stream,
-    final_text_stream,
-    stream_done,
-    stream_start,
-    tool_call_block,
-    tool_call_stream,
-)
-from tests.support.agent_runs import collect_agent_run, collect_run_events
-from tests.support.conversation_assertions import (
-    expect_assistant_turn,
-    expect_tool_result_turn,
-    expect_user_message,
-)
-from tests.support.stream_assertions import expect_stream_event
-from tests.support.tool_definitions import CityInput, NoInput, city_tool
-from tests.support.tool_results import tool_text
-
-TEvent = TypeVar("TEvent", bound=AgentEvent)
 
 
 class ClosingProvider(Provider):
@@ -133,7 +130,9 @@ class ToolUseLoopRun:
     text_block: TextBlock
 
 
-def _expect_event_type(event: AgentEvent, event_type: type[TEvent]) -> TEvent:
+def _expect_event_type[TEvent: AgentEvent](
+    event: AgentEvent, event_type: type[TEvent]
+) -> TEvent:
     """Assert and return an agent event with a precise type."""
 
     assert isinstance(event, event_type)
@@ -326,7 +325,9 @@ async def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
         """Fail after the provider stream has started."""
 
         if isinstance(event, MessageStartEvent):
-            raise RuntimeError("event sink unavailable")
+            # The isinstance check picks the moment to fail, not a type
+            # contract, so TypeError would misstate the scenario.
+            raise RuntimeError("event sink unavailable")  # noqa: TRY004
 
     with pytest.raises(RuntimeError, match="event sink unavailable"):
         await run_agent(

@@ -7,6 +7,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.support.store import (
+    corrupt_column,
+    create_session,
+    persist_outcome,
+    seed_database,
+    start_run,
+)
 from tile import (
     Aborted,
     Completed,
@@ -19,13 +26,6 @@ from tile import (
 )
 from tile.store import SQLiteStore
 from tile.types import AssistantTurn, UserMessage
-from tests.support.store import (
-    corrupt_column,
-    create_session,
-    persist_outcome,
-    seed_database,
-    start_run,
-)
 
 
 def _invoke_finish_run(store: SQLiteStore) -> None:

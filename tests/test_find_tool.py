@@ -5,10 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import tile.tools.find as find
-import tile.tools.support.truncation as truncation
-from tile.tools.find import FindDetails
-from tile.types.tools import ToolError
 from tests.support.command_mocks import (
     captured_args,
     captured_cwd,
@@ -17,6 +13,10 @@ from tests.support.command_mocks import (
     patch_execution,
 )
 from tests.support.tool_results import details_of, tool_text
+from tile.tools import find
+from tile.tools.find import FindDetails
+from tile.tools.support import truncation
+from tile.types.tools import ToolError
 
 
 def test_find_schema_requires_only_pattern() -> None:

@@ -1,7 +1,7 @@
 """Typed mapping between persistent domain records and SQLite values."""
 
 from datetime import datetime
-from typing import TypeAlias, cast
+from typing import cast
 from uuid import uuid4
 
 from pydantic import TypeAdapter
@@ -11,8 +11,8 @@ from tile.store.base import InvalidHistoryError
 from tile.store.models import HistoryItem, RunRecord, RunStatus, SessionRecord
 from tile.types.conversation import ConversationItem
 
-SessionRow: TypeAlias = tuple[str, str, str]
-RunRow: TypeAlias = tuple[
+type SessionRow = tuple[str, str, str]
+type RunRow = tuple[
     str,
     str,
     str,
@@ -23,8 +23,8 @@ RunRow: TypeAlias = tuple[
     str,
     str | None,
 ]
-HistoryRow: TypeAlias = tuple[str, str, str, int, str, str, str]
-TerminalRunValues: TypeAlias = tuple[str, str, str, str, str]
+type HistoryRow = tuple[str, str, str, int, str, str, str]
+type TerminalRunValues = tuple[str, str, str, str, str]
 
 _OUTCOME_ADAPTER = TypeAdapter(RunOutcome)
 _CONVERSATION_ITEM_ADAPTER = TypeAdapter(ConversationItem)

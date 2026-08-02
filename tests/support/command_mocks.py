@@ -62,7 +62,6 @@ def no_executable(command: str) -> None:
     """Return no command path for availability checks."""
 
     _ = command
-    return None
 
 
 def captured_args(execution: AsyncMock) -> list[str]:

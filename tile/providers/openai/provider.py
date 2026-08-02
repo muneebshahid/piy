@@ -10,8 +10,8 @@ from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_create_params import ResponseCreateParamsStreaming
 
 from tile.providers.base import Provider
-from tile.providers.openai.serialization import serialize_history_items, serialize_tools
 from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
+from tile.providers.openai.serialization import serialize_history_items, serialize_tools
 from tile.providers.openai.stream_assembler import assemble_stream
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
@@ -78,7 +78,7 @@ class OpenAIProvider(Provider):
 
 async def _sdk_stream_events(
     raw_stream: AsyncStream[ResponseStreamEvent],
-) -> AsyncGenerator[ResponseStreamEvent, None]:
+) -> AsyncGenerator[ResponseStreamEvent]:
     """Yield SDK events, closing the transport stream on every exit.
 
     The SDK stream owns a live HTTP response; wrapping it in a generator

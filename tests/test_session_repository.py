@@ -5,11 +5,11 @@ from uuid import UUID
 
 import pytest
 
+from tests.support.store import persist_outcome, start_run
 from tile import Completed, RunRecord
 from tile.sessions import SessionRepository
 from tile.store import HistoryItem, SQLiteStore
 from tile.types import AssistantTurn, UserMessage
-from tests.support.store import persist_outcome, start_run
 
 
 class _ObservedStore(SQLiteStore):

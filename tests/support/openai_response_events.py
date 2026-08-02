@@ -4,7 +4,6 @@ from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass
 from unittest.mock import AsyncMock
 
-from tile.types.tools import JsonObject
 from openai.types.responses import (
     ResponseCompletedEvent,
     ResponseContentPartAddedEvent,
@@ -16,15 +15,17 @@ from openai.types.responses import (
     ResponseIncompleteEvent,
     ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
-    ResponseReasoningTextDeltaEvent,
     ResponseReasoningSummaryPartAddedEvent,
     ResponseReasoningSummaryPartDoneEvent,
     ResponseReasoningSummaryTextDeltaEvent,
+    ResponseReasoningTextDeltaEvent,
     ResponseRefusalDeltaEvent,
     ResponseStreamEvent,
     ResponseTextDeltaEvent,
 )
+
 from tests.support.async_streams import async_stream
+from tile.types.tools import JsonObject
 
 
 @dataclass
@@ -79,7 +80,7 @@ class FakeRawResponseStream:
 
 def raw_response_stream(
     events: Sequence[ResponseStreamEvent],
-) -> AsyncGenerator[ResponseStreamEvent, None]:
+) -> AsyncGenerator[ResponseStreamEvent]:
     """Yield raw OpenAI response events as the provider's wrapper does."""
 
     return async_stream(events)

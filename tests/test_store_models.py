@@ -6,6 +6,13 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
+from tests.support.store import (
+    STARTED_AT,
+    corrupt_column,
+    create_session,
+    persist_outcome,
+    start_run,
+)
 from tile import (
     Aborted,
     AgentFailure,
@@ -19,13 +26,6 @@ from tile import (
 )
 from tile.store import SQLiteStore, TerminalRunStatus
 from tile.types import ConversationItem, UserMessage
-from tests.support.store import (
-    STARTED_AT,
-    corrupt_column,
-    create_session,
-    persist_outcome,
-    start_run,
-)
 
 
 def _session_record() -> SessionRecord:
@@ -96,11 +96,11 @@ def test_persistent_records_are_frozen() -> None:
     history_item = _history_item()
 
     with pytest.raises(ValidationError):
-        session.updated_at = STARTED_AT + timedelta(seconds=1)
+        session.updated_at = STARTED_AT + timedelta(seconds=1)  # ty: ignore[invalid-assignment]
     with pytest.raises(ValidationError):
-        run.status = "completed"
+        run.status = "completed"  # ty: ignore[invalid-assignment]
     with pytest.raises(ValidationError):
-        history_item.position = 2
+        history_item.position = 2  # ty: ignore[invalid-assignment]
 
 
 def test_session_record_validates_its_lifecycle_timestamps() -> None:
@@ -109,7 +109,7 @@ def test_session_record_validates_its_lifecycle_timestamps() -> None:
     with pytest.raises(ValidationError, match="timezone-aware"):
         SessionRecord(
             id="session-1",
-            created_at=datetime(2026, 7, 26, 12, 0),
+            created_at=datetime(2026, 7, 26, 12, 0),  # noqa: DTZ001
             updated_at=STARTED_AT,
         )
 

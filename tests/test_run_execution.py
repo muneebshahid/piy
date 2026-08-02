@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import get_args
 
+from tests.support.agent_streams import ProviderStreamMock, final_text_stream
 from tile import Aborted, Completed, RunOutcome, RunRecord
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent
 from tile.result import Faulted, RunResult
@@ -15,7 +16,6 @@ from tile.sessions import SessionRepository
 from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.types import ConversationItem
-from tests.support.agent_streams import ProviderStreamMock, final_text_stream
 
 
 async def test_run_execution_persists_before_provider_and_returns_only_outcome(
@@ -101,8 +101,8 @@ def test_run_result_adds_faulted_without_expanding_persisted_outcomes() -> None:
 
     assert result.error is error
     assert result.type == "faulted"
-    assert Faulted not in get_args(RunOutcome)
-    assert Faulted in get_args(RunResult)
+    assert Faulted not in get_args(RunOutcome.__value__)
+    assert Faulted in get_args(RunResult.__value__)
 
 
 def test_run_fault_event_carries_serializable_error_details() -> None:

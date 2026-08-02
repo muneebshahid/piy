@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-import tile.tools.ls as ls
-import tile.tools.support.truncation as truncation
-from tile.tools.ls import LsDetails
-from tile.types.tools import ToolError
 from tests.support.tool_results import details_of, tool_text
+from tile.tools import ls
+from tile.tools.ls import LsDetails
+from tile.tools.support import truncation
+from tile.types.tools import ToolError
 
 
 def test_ls_schema_requires_no_arguments() -> None:

@@ -51,7 +51,9 @@ def build_system_prompt(
     """Compose auto mode, instructions, project context, and environment lines."""
 
     environment = (
-        f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"
+        # The prompt states the user's local calendar date, so a naive today()
+        # is the correct source.
+        f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"  # noqa: DTZ011
     )
     parts = [
         AUTO_MODE if auto_mode else None,

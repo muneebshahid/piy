@@ -9,6 +9,12 @@ from typing import Literal
 
 from pydantic import Field
 
+from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.tools.support.output_accumulator import OutputAccumulator, OutputSnapshot
+from tile.tools.support.truncation import (
+    OUTPUT_BYTE_LIMIT_LABEL,
+    format_size,
+)
 from tile.types.tools import (
     ToolDefinition,
     ToolDetails,
@@ -16,12 +22,6 @@ from tile.types.tools import (
     ToolInput,
     ToolResult,
 )
-from tile.tools.support.output_accumulator import OutputAccumulator, OutputSnapshot
-from tile.tools.support.truncation import (
-    OUTPUT_BYTE_LIMIT_LABEL,
-    format_size,
-)
-from tile.tool_truncation import ToolOutputDetails, Truncation
 
 # Timeout applied when the model omits one, so hung commands cannot wedge a run.
 DEFAULT_TIMEOUT_SECONDS: float = 120

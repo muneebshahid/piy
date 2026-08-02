@@ -1,12 +1,12 @@
 """Normalized OpenAI event definitions for the provider pipeline."""
 
 from enum import StrEnum
-from typing import Literal, TypeAlias, TypedDict
+from typing import Literal, TypedDict
 
 from tile.types.stream_events import StopReason
 from tile.types.tools import JsonObject
 
-Phase: TypeAlias = Literal["commentary", "final_answer"]
+type Phase = Literal["commentary", "final_answer"]
 
 
 class NormalizedEventType(StrEnum):
@@ -147,7 +147,7 @@ class FailedNormalizedEvent(TypedDict):
     message: str
 
 
-NormalizedEvent: TypeAlias = (
+type NormalizedEvent = (
     CreatedNormalizedEvent
     | ReasoningAddedNormalizedEvent
     | ReasoningDeltaNormalizedEvent

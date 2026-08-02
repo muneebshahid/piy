@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
@@ -15,7 +15,7 @@ from tile.types.stream_events import (
 )
 from tile.types.tools import ToolResultContent
 
-TurnStatus: TypeAlias = Literal["completed", "aborted", "error"]
+type TurnStatus = Literal["completed", "aborted", "error"]
 
 
 class UserMessage(BaseModel):
@@ -79,7 +79,7 @@ class ToolResultTurn(BaseModel):
     is_error: bool = False
 
 
-ConversationItem: TypeAlias = Annotated[
+type ConversationItem = Annotated[
     UserMessage | AssistantTurn | ToolResultTurn,
     Field(discriminator="role"),
 ]

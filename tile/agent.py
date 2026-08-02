@@ -4,10 +4,6 @@ from collections.abc import Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 
-from tile.exceptions import (
-    ProviderStreamProtocolError,
-    TurnFailedError,
-)
 from tile.events import (
     AgentEndEvent,
     AgentStartEvent,
@@ -19,6 +15,10 @@ from tile.events import (
     ToolExecutionStartEvent,
     TurnEndEvent,
     TurnStartEvent,
+)
+from tile.exceptions import (
+    ProviderStreamProtocolError,
+    TurnFailedError,
 )
 from tile.providers.base import Provider
 from tile.tool_executor import ToolExecutor

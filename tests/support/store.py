@@ -13,7 +13,7 @@ from tile import (
     RunRecord,
     StorePersistenceError,
 )
-from tile.store import SQLiteStore, SessionRecord, StartedRun
+from tile.store import SessionRecord, SQLiteStore, StartedRun
 from tile.types import ConversationItem
 
 STARTED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
@@ -148,7 +148,7 @@ def corrupt_column(
 
     connection = sqlite3.connect(database_path)
     try:
-        connection.execute(f"UPDATE {table} SET {column} = ?", (value,))  # noqa: S608
+        connection.execute(f"UPDATE {table} SET {column} = ?", (value,))
         connection.commit()
     finally:
         connection.close()

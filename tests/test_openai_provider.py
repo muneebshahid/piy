@@ -15,11 +15,6 @@ from typing import cast
 
 from openai import AsyncOpenAI
 
-from tile.providers.openai import OpenAIProvider
-from tile.providers.openai.serialization import serialize_history_items, serialize_tools
-from tile.types.conversation import UserMessage
-from tile.types.stream_events import StreamStartEvent
-from tile.types.tools import ToolDefinition
 from tests.support.openai_response_events import (
     FakeOpenAIClient,
     build_fake_openai_client,
@@ -31,6 +26,11 @@ from tests.support.openai_response_events import (
 )
 from tests.support.stream_assertions import expect_stream_event as _expect_event_type
 from tests.support.tool_definitions import city_text_fn, city_tool
+from tile.providers.openai import OpenAIProvider
+from tile.providers.openai.serialization import serialize_history_items, serialize_tools
+from tile.types.conversation import UserMessage
+from tile.types.stream_events import StreamStartEvent
+from tile.types.tools import ToolDefinition
 
 
 def _provider(client: FakeOpenAIClient) -> OpenAIProvider:

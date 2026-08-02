@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
@@ -51,8 +51,8 @@ class Completed(BaseModel):
     )
 
 
-ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
-AbortReason: TypeAlias = Literal["cancelled"]
+type ExecutionFailureOrigin = Literal["turn", "execution"]
+type AbortReason = Literal["cancelled"]
 
 
 class AgentFailure(BaseModel):
@@ -83,7 +83,7 @@ class ExecutionFailure(BaseModel):
     message: str
 
 
-FailureCause: TypeAlias = AgentFailure | ExecutionFailure
+type FailureCause = AgentFailure | ExecutionFailure
 
 
 class Failed(BaseModel):
@@ -108,7 +108,7 @@ class Aborted(BaseModel):
     reason: AbortReason = "cancelled"
 
 
-RunOutcome: TypeAlias = Completed | Failed | Aborted
+type RunOutcome = Completed | Failed | Aborted
 
 
 @dataclass(frozen=True)
@@ -119,4 +119,4 @@ class Faulted:
     type: Literal["faulted"] = "faulted"
 
 
-RunResult: TypeAlias = RunOutcome | Faulted
+type RunResult = RunOutcome | Faulted

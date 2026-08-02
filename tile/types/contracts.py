@@ -1,9 +1,8 @@
 from collections.abc import AsyncGenerator
-from typing import TypeAlias
 
 from tile.types.stream_events import ProviderStreamEvent
 
-AsyncEventStream: TypeAlias = AsyncGenerator[ProviderStreamEvent, None]
+type AsyncEventStream = AsyncGenerator[ProviderStreamEvent]
 """Async stream of provider-originated assistant events.
 
 Provider streams are async generators: the consumer that iterates a

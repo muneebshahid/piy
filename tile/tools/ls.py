@@ -6,6 +6,13 @@ from typing import Literal
 
 from pydantic import Field
 
+from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.tools.support.paths import resolve_to_cwd
+from tile.tools.support.truncation import (
+    OUTPUT_BYTE_LIMIT_LABEL,
+    append_notice_block,
+    truncate_head,
+)
 from tile.types.tools import (
     ToolDefinition,
     ToolDetails,
@@ -13,14 +20,6 @@ from tile.types.tools import (
     ToolInput,
     ToolResult,
 )
-
-from tile.tools.support.paths import resolve_to_cwd
-from tile.tools.support.truncation import (
-    OUTPUT_BYTE_LIMIT_LABEL,
-    append_notice_block,
-    truncate_head,
-)
-from tile.tool_truncation import ToolOutputDetails, Truncation
 
 
 class LsDetails(ToolDetails):

@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from tile.types.tools import ToolDefinition, ToolDetails, ToolInput, ToolResult
+from tile.tool_truncation import ToolOutputDetails, Truncation
 from tile.tools.support.executables import execute, require_executable
 from tile.tools.support.truncation import (
     GREP_LINE_CHARACTER_LIMIT,
@@ -15,7 +15,7 @@ from tile.tools.support.truncation import (
     truncate_head,
     truncate_line,
 )
-from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.types.tools import ToolDefinition, ToolDetails, ToolInput, ToolResult
 
 
 class GrepDetails(ToolDetails):

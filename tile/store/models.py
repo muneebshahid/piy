@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal, Self, TypeAlias
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from tile.result import Aborted, Completed, Failed, RunOutcome
 from tile.types.conversation import ConversationItem
 
-RunStatus: TypeAlias = Literal["running", "completed", "failed", "aborted"]
-TerminalRunStatus: TypeAlias = Literal["completed", "failed", "aborted"]
+type RunStatus = Literal["running", "completed", "failed", "aborted"]
+type TerminalRunStatus = Literal["completed", "failed", "aborted"]
 
 
 class SessionRecord(BaseModel):

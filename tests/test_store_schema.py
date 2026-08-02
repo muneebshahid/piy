@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from tile.store import SQLiteStore, SQLiteStoreSchemaError
 from tests.support.store import STARTED_AT, create_session
+from tile.store import SQLiteStore, SQLiteStoreSchemaError
 
 
 def _raw_schema_connection(

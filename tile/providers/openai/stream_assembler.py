@@ -3,23 +3,18 @@
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import cast
 
 from tile.providers.openai.normalized_events import (
-    CompletedNormalizedEvent,
+    TERMINAL_NORMALIZED_EVENT_TYPES,
     CreatedNormalizedEvent,
-    FailedNormalizedEvent,
     IncompleteNormalizedEvent,
     MessageAddedNormalizedEvent,
     MessageDoneNormalizedEvent,
     MessageTextDeltaNormalizedEvent,
     NormalizedEvent,
     NormalizedEventType,
-    ReasoningDeltaNormalizedEvent,
     ReasoningDoneNormalizedEvent,
-    TERMINAL_NORMALIZED_EVENT_TYPES,
     ToolCallAddedNormalizedEvent,
-    ToolCallArgumentsDeltaNormalizedEvent,
     ToolCallArgumentsDoneNormalizedEvent,
     ToolCallDoneNormalizedEvent,
 )
@@ -59,10 +54,10 @@ class StreamAssemblyState:
 
 
 async def assemble_stream(
-    normalized_stream: AsyncGenerator[NormalizedEvent, None],
+    normalized_stream: AsyncGenerator[NormalizedEvent],
     *,
     source: ProviderSource,
-) -> AsyncGenerator[ProviderStreamEvent, None]:
+) -> AsyncGenerator[ProviderStreamEvent]:
     """Assemble normalized provider events into provider stream events.
 
     Closing this generator closes ``normalized_stream``: closure does not
@@ -88,48 +83,33 @@ def _yield_stream_event(
 
     match event["type"]:
         case NormalizedEventType.CREATED:
-            created_event = cast(CreatedNormalizedEvent, event)
-            return _record_created_event(state, created_event)
+            return _record_created_event(state, event)
         case NormalizedEventType.REASONING_ADDED:
             return _start_reasoning_block(state)
         case NormalizedEventType.REASONING_DELTA:
-            reasoning_delta_event = cast(ReasoningDeltaNormalizedEvent, event)
-            return _append_reasoning_delta(state, reasoning_delta_event["delta"])
+            return _append_reasoning_delta(state, event["delta"])
         case NormalizedEventType.REASONING_DONE:
-            reasoning_done_event = cast(ReasoningDoneNormalizedEvent, event)
-            return _finalize_reasoning_block(state, reasoning_done_event)
+            return _finalize_reasoning_block(state, event)
         case NormalizedEventType.MESSAGE_ADDED:
-            message_added_event = cast(MessageAddedNormalizedEvent, event)
-            return _start_text_block(state, message_added_event)
+            return _start_text_block(state, event)
         case NormalizedEventType.MESSAGE_TEXT_DELTA:
-            text_delta_event = cast(MessageTextDeltaNormalizedEvent, event)
-            return _append_text_delta(state, text_delta_event)
+            return _append_text_delta(state, event)
         case NormalizedEventType.MESSAGE_DONE:
-            message_done_event = cast(MessageDoneNormalizedEvent, event)
-            return _finalize_text_block(state, message_done_event)
+            return _finalize_text_block(state, event)
         case NormalizedEventType.TOOL_CALL_ADDED:
-            tool_call_added_event = cast(ToolCallAddedNormalizedEvent, event)
-            return _start_tool_call_block(state, tool_call_added_event)
+            return _start_tool_call_block(state, event)
         case NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA:
-            arguments_delta_event = cast(ToolCallArgumentsDeltaNormalizedEvent, event)
-            return _append_tool_call_arguments_delta(
-                state, arguments_delta_event["delta"]
-            )
+            return _append_tool_call_arguments_delta(state, event["delta"])
         case NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE:
-            arguments_done_event = cast(ToolCallArgumentsDoneNormalizedEvent, event)
-            _replace_tool_call_arguments(state, arguments_done_event)
+            _replace_tool_call_arguments(state, event)
         case NormalizedEventType.TOOL_CALL_DONE:
-            tool_call_done_event = cast(ToolCallDoneNormalizedEvent, event)
-            return _finalize_tool_call_block(state, tool_call_done_event)
+            return _finalize_tool_call_block(state, event)
         case NormalizedEventType.COMPLETED:
-            completed_event = cast(CompletedNormalizedEvent, event)
-            return _build_stream_done_event(state, completed_event["stop_reason"])
+            return _build_stream_done_event(state, event["stop_reason"])
         case NormalizedEventType.INCOMPLETE:
-            incomplete_event = cast(IncompleteNormalizedEvent, event)
-            return _build_incomplete_event(state, incomplete_event)
+            return _build_incomplete_event(state, event)
         case NormalizedEventType.FAILED:
-            failed_event = cast(FailedNormalizedEvent, event)
-            return _build_stream_error_event(state, failed_event["message"])
+            return _build_stream_error_event(state, event["message"])
 
     return None
 

@@ -6,6 +6,25 @@ from collections.abc import Sequence
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
+from tests.support.agent_runs import collect_run_events
+from tests.support.agent_streams import (
+    ProviderStreamMock,
+    error_stream,
+    final_text_stream,
+    stream_done,
+    stream_start,
+    tool_call_block,
+    tool_call_stream,
+)
+from tests.support.harnesses import build_harness
+from tests.support.tool_definitions import WeatherReport, city_text_fn, city_tool
+from tile.events import (
+    AgentEndEvent,
+    AgentEvent,
+    AgentStartEvent,
+    ResultFollowUpEvent,
+    ToolExecutionEndEvent,
+)
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
     NO_RESULT_REASON,
@@ -18,30 +37,12 @@ from tile.result import (
 )
 from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
-from tile.tools.complete import CompleteDetails, tool as complete_tool
+from tile.tools.complete import CompleteDetails
+from tile.tools.complete import tool as complete_tool
 from tile.tools.fail import tool as fail_tool
-from tile.events import (
-    AgentEndEvent,
-    AgentEvent,
-    AgentStartEvent,
-    ResultFollowUpEvent,
-    ToolExecutionEndEvent,
-)
 from tile.types.conversation import AssistantTurn, ToolResultTurn, UserMessage
 from tile.types.stream_events import ProviderStreamEvent, TextBlock
 from tile.types.tools import JsonObject, ToolDefinition
-from tests.support.agent_streams import (
-    ProviderStreamMock,
-    error_stream,
-    final_text_stream,
-    stream_done,
-    stream_start,
-    tool_call_block,
-    tool_call_stream,
-)
-from tests.support.agent_runs import collect_run_events
-from tests.support.harnesses import build_harness
-from tests.support.tool_definitions import WeatherReport, city_text_fn, city_tool
 
 
 def _result_tools() -> list[ToolDefinition]:

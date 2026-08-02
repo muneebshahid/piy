@@ -69,8 +69,8 @@ async def test_documented_public_imports_run_fake_prompt() -> None:
     assert issubclass(SessionNotFoundError, KeyError)
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
-    assert get_args(ExecutionFailureOrigin) == ("turn", "execution")
-    assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
+    assert get_args(ExecutionFailureOrigin.__value__) == ("turn", "execution")
+    assert get_args(FailureCause.__value__) == (AgentFailure, ExecutionFailure)
     assert issubclass(RunAlreadyEndedError, RuntimeError)
     assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]
@@ -135,7 +135,7 @@ def _assistant_response() -> tuple[ProviderStreamEvent, ...]:
 
 async def _stream_events(
     events: Sequence[ProviderStreamEvent],
-) -> AsyncGenerator[ProviderStreamEvent, None]:
+) -> AsyncGenerator[ProviderStreamEvent]:
     """Yield fake provider events."""
 
     for event in events:

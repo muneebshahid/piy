@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-import tile.tools.support.executables as executables
-from tile.types.tools import ToolError
 from tests.support.command_mocks import (
     make_executable_available,
     make_executable_missing,
 )
+from tile.tools.support import executables
+from tile.types.tools import ToolError
 
 
 def test_require_executable_returns_resolved_path(

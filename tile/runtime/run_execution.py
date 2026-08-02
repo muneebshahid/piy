@@ -152,7 +152,7 @@ class RunExecution:
 
         try:
             result = self._finish(task)
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001
             result = Faulted(error=error)
         self._result = result
         self._append_terminal_event(result)

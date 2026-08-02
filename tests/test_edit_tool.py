@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import tile.tools.edit as edit
-from tile.tools.edit import EditDetails
 from tests.support.files import read_text, write_text
 from tests.support.tool_results import details_of, tool_text
+from tile.tools import edit
+from tile.tools.edit import EditDetails
 
 
 def test_edit_schema_exposes_edit_controls() -> None:

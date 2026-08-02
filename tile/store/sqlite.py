@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator, cast
+from typing import cast
 
 from tile._sqlite import immediate_transaction, resolve_connection_target
 from tile.result import Aborted, RunOutcome
@@ -119,20 +119,22 @@ class SQLiteStore:
     ) -> StartedRun:
         """Atomically create a run when its session has no active run."""
 
-        with _translate_store_errors("start_run"):
-            with immediate_transaction(self._connection):
-                self._require_session(session_id)
-                active = self._running_run_for_session(session_id)
-                self._reject_active_run(active)
-                committed_history = self._history_for_session(session_id)
-                record = new_running_run_record(
-                    run_id=run_id,
-                    session_id=session_id,
-                    prompt=prompt,
-                    model=model,
-                    provider=provider,
-                )
-                self._insert_run(record)
+        with (
+            _translate_store_errors("start_run"),
+            immediate_transaction(self._connection),
+        ):
+            self._require_session(session_id)
+            active = self._running_run_for_session(session_id)
+            self._reject_active_run(active)
+            committed_history = self._history_for_session(session_id)
+            record = new_running_run_record(
+                run_id=run_id,
+                session_id=session_id,
+                prompt=prompt,
+                model=model,
+                provider=provider,
+            )
+            self._insert_run(record)
         return StartedRun(
             run=record,
             committed_history=committed_history,
@@ -148,29 +150,33 @@ class SQLiteStore:
     ) -> RunRecord:
         """Atomically finalize a still-running run and append its history delta."""
 
-        with _translate_store_errors("finish_run"):
-            with immediate_transaction(self._connection):
-                run = self._get_run(session_id, run_id)
-                if run.status != "running":
-                    raise RunAlreadyEndedError(f"Run already ended: {run_id}")
-                record = terminal_run_record(run, outcome=outcome)
-                self._update_running_run(record)
-                self._insert_history_delta(record, history_delta)
-                self._touch_session(record)
+        with (
+            _translate_store_errors("finish_run"),
+            immediate_transaction(self._connection),
+        ):
+            run = self._get_run(session_id, run_id)
+            if run.status != "running":
+                raise RunAlreadyEndedError(f"Run already ended: {run_id}")
+            record = terminal_run_record(run, outcome=outcome)
+            self._update_running_run(record)
+            self._insert_history_delta(record, history_delta)
+            self._touch_session(record)
         return record
 
     def abort_active_run(self, session_id: str) -> RunRecord | None:
         """Durably abort a session's active run and fence its later writes."""
 
-        with _translate_store_errors("abort_active_run"):
-            with immediate_transaction(self._connection):
-                self._require_session(session_id)
-                active = self._running_run_for_session(session_id)
-                if active is None:
-                    return None
-                record = terminal_run_record(active, outcome=Aborted())
-                self._update_running_run(record)
-                self._touch_session(record)
+        with (
+            _translate_store_errors("abort_active_run"),
+            immediate_transaction(self._connection),
+        ):
+            self._require_session(session_id)
+            active = self._running_run_for_session(session_id)
+            if active is None:
+                return None
+            record = terminal_run_record(active, outcome=Aborted())
+            self._update_running_run(record)
+            self._touch_session(record)
         return record
 
     def get_history(self, session_id: str) -> tuple[HistoryItem, ...]:
@@ -206,14 +212,16 @@ class SQLiteStore:
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
 
-        with _translate_store_errors("fork_session"):
-            with immediate_transaction(self._connection):
-                self._require_session(source_session_id)
-                self._reject_existing_session(target_session_id)
-                target = new_session_record(session_id=target_session_id)
-                self._insert_session(target)
-                source_items = self._history_for_session(source_session_id)
-                self._copy_history_items(source_items, target_session_id)
+        with (
+            _translate_store_errors("fork_session"),
+            immediate_transaction(self._connection),
+        ):
+            self._require_session(source_session_id)
+            self._reject_existing_session(target_session_id)
+            target = new_session_record(session_id=target_session_id)
+            self._insert_session(target)
+            source_items = self._history_for_session(source_session_id)
+            self._copy_history_items(source_items, target_session_id)
         return target
 
     def close(self) -> None:

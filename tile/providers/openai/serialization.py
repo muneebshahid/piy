@@ -2,21 +2,23 @@ import json
 from collections.abc import Sequence
 from typing import cast
 
-from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.easy_input_message_param import EasyInputMessageParam
-from openai.types.responses.response_input_param import ResponseInputParam
-from openai.types.responses.response_input_param import (
-    FunctionCallOutput as ResponseFunctionCallOutputParam,
-    ResponseFunctionCallOutputItemListParam,
+from openai.types.responses.function_tool_param import FunctionToolParam
+from openai.types.responses.response_function_tool_call_param import (
+    ResponseFunctionToolCallParam,
 )
 from openai.types.responses.response_input_image_content_param import (
     ResponseInputImageContentParam,
 )
+from openai.types.responses.response_input_param import (
+    FunctionCallOutput as ResponseFunctionCallOutputParam,
+)
+from openai.types.responses.response_input_param import (
+    ResponseFunctionCallOutputItemListParam,
+    ResponseInputParam,
+)
 from openai.types.responses.response_input_text_content_param import (
     ResponseInputTextContentParam,
-)
-from openai.types.responses.response_function_tool_call_param import (
-    ResponseFunctionToolCallParam,
 )
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_output_message_param import (

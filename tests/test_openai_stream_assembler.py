@@ -11,24 +11,6 @@ from collections.abc import Sequence
 
 import pytest
 
-from tile.providers.openai.normalized_events import NormalizedEvent
-from tile.providers.openai.stream_assembler import assemble_stream
-from tile.types.stream_events import (
-    ProviderSource,
-    ProviderStreamEvent,
-    ReasoningDeltaEvent,
-    ReasoningEndEvent,
-    ReasoningStartEvent,
-    StreamDoneEvent,
-    StreamErrorEvent,
-    StreamStartEvent,
-    TextDeltaEvent,
-    TextEndEvent,
-    TextStartEvent,
-    ToolCallDeltaEvent,
-    ToolCallEndEvent,
-    ToolCallStartEvent,
-)
 from tests.support.async_streams import async_stream
 from tests.support.normalized_events import (
     completed_event,
@@ -48,10 +30,36 @@ from tests.support.normalized_events import (
 )
 from tests.support.stream_assertions import (
     expect_metadata_string as _expect_metadata_string,
+)
+from tests.support.stream_assertions import (
     expect_reasoning_block as _expect_reasoning_block,
+)
+from tests.support.stream_assertions import (
     expect_stream_event as _expect_event_type,
+)
+from tests.support.stream_assertions import (
     expect_text_block as _expect_text_block,
+)
+from tests.support.stream_assertions import (
     expect_tool_call_block as _expect_tool_call_block,
+)
+from tile.providers.openai.normalized_events import NormalizedEvent
+from tile.providers.openai.stream_assembler import assemble_stream
+from tile.types.stream_events import (
+    ProviderSource,
+    ProviderStreamEvent,
+    ReasoningDeltaEvent,
+    ReasoningEndEvent,
+    ReasoningStartEvent,
+    StreamDoneEvent,
+    StreamErrorEvent,
+    StreamStartEvent,
+    TextDeltaEvent,
+    TextEndEvent,
+    TextStartEvent,
+    ToolCallDeltaEvent,
+    ToolCallEndEvent,
+    ToolCallStartEvent,
 )
 
 

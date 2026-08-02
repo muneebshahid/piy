@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Sequence
 from unittest.mock import AsyncMock
 
+from tests.support.async_streams import async_stream
 from tile.providers.base import Provider
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
@@ -12,15 +13,14 @@ from tile.types.stream_events import (
     ProviderMetadata,
     ProviderSource,
     ProviderStreamEvent,
+    StopReason,
     StreamDoneEvent,
     StreamErrorEvent,
     StreamStartEvent,
-    StopReason,
     TextBlock,
     ToolCallBlock,
 )
 from tile.types.tools import JsonObject, ToolDefinition
-from tests.support.async_streams import async_stream
 
 TEST_PROVIDER = "test"
 

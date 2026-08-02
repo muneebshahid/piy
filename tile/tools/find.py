@@ -5,14 +5,14 @@ from typing import Literal
 
 from pydantic import Field
 
-from tile.types.tools import ToolDefinition, ToolDetails, ToolInput, ToolResult
+from tile.tool_truncation import ToolOutputDetails, Truncation
 from tile.tools.support.executables import execute, require_executable
 from tile.tools.support.truncation import (
     OUTPUT_BYTE_LIMIT_LABEL,
     append_notice_block,
     truncate_head,
 )
-from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.types.tools import ToolDefinition, ToolDetails, ToolInput, ToolResult
 
 
 class FindDetails(ToolDetails):

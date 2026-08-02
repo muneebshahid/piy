@@ -8,6 +8,7 @@ from threading import Barrier
 
 import pytest
 
+from tests.support.store import seed_database, start_run
 from tile import (
     Aborted,
     ActiveRunError,
@@ -18,7 +19,6 @@ from tile import (
 )
 from tile.store import SQLiteStore
 from tile.types import UserMessage
-from tests.support.store import seed_database, start_run
 
 
 def _finish_run(store: SQLiteStore) -> RunRecord:

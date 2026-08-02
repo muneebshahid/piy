@@ -3,8 +3,8 @@
 from tile.exceptions import TurnFailedError
 from tile.providers import Provider
 from tile.result import (
-    AbortReason,
     Aborted,
+    AbortReason,
     AgentFailure,
     Completed,
     ExecutionFailure,

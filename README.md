@@ -266,7 +266,7 @@ run = await harness.prompt(
 result = await run.wait()
 match result:
     case Completed(value=report):
-        print(report.city, report.temp_c)   # a WeatherReport instance
+        print(report.city, report.temp_c)  # a WeatherReport instance
     case Failed(cause=AgentFailure(reason=reason)):
         print("model declared failure:", reason)
 ```

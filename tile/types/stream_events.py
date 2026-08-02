@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
 from tile.types.tools import JsonObject
 
-StopReason: TypeAlias = Literal["stop", "length", "tool_use", "error", "aborted"]
+type StopReason = Literal["stop", "length", "tool_use", "error", "aborted"]
 
 
 class ProviderSource(BaseModel):
@@ -79,7 +79,7 @@ class ToolCallBlock(AssistantBlockBase):
     arguments: JsonObject = Field(default_factory=dict)
 
 
-AssistantBlock: TypeAlias = TextBlock | ReasoningBlock | ToolCallBlock
+type AssistantBlock = TextBlock | ReasoningBlock | ToolCallBlock
 
 
 class StreamEvent(BaseModel):
@@ -164,9 +164,9 @@ class ToolCallEndEvent(BlockStreamEvent):
     block: ToolCallBlock
 
 
-StreamBlockEvent: TypeAlias = ReasoningEndEvent | TextEndEvent | ToolCallEndEvent
+type StreamBlockEvent = ReasoningEndEvent | TextEndEvent | ToolCallEndEvent
 
-StreamUpdateEvent: TypeAlias = (
+type StreamUpdateEvent = (
     ReasoningStartEvent
     | ReasoningDeltaEvent
     | ReasoningEndEvent
@@ -200,7 +200,7 @@ class StreamErrorEvent(StreamEvent):
     blocks: list[AssistantBlock] = Field(default_factory=list)
 
 
-StreamTerminalEvent: TypeAlias = StreamDoneEvent | StreamErrorEvent
-ProviderStreamEvent: TypeAlias = (
+type StreamTerminalEvent = StreamDoneEvent | StreamErrorEvent
+type ProviderStreamEvent = (
     StreamStartEvent | StreamUpdateEvent | StreamDoneEvent | StreamErrorEvent
 )

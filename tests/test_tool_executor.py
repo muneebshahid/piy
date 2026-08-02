@@ -8,6 +8,8 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from pydantic.errors import PydanticInvalidForJsonSchema
 
+from tests.support.tool_definitions import CityInput, NoInput, city_tool
+from tests.support.tool_results import tool_text
 from tile.tool_executor import ToolExecutor
 from tile.types.tool_execution import (
     ToolInputValidationFailure,
@@ -21,8 +23,6 @@ from tile.types.tools import (
     ToolInput,
     ToolResult,
 )
-from tests.support.tool_definitions import CityInput, NoInput, city_tool
-from tests.support.tool_results import tool_text
 
 
 async def _get_weather(params: CityInput) -> ToolResult:

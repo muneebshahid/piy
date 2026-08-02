@@ -1,7 +1,7 @@
 """Tests for the configured provider boundary."""
 
-from tile.types import JsonObject
 from tests.support.agent_streams import ProviderStreamMock
+from tile.types import JsonObject
 
 
 def test_provider_isolates_reasoning_from_caller_and_reader_mutation() -> None:

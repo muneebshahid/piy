@@ -10,15 +10,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from tile.types.tools import (
-    ImageMimeType,
-    ToolDefinition,
-    ToolDetails,
-    ToolError,
-    ToolImageContent,
-    ToolInput,
-    ToolResult,
-)
+from tile.tool_truncation import ToolOutputDetails, Truncation
 from tile.tools.support.image_processing import (
     ImageProcessingError,
     ProcessedImage,
@@ -37,7 +29,15 @@ from tile.tools.support.truncation import (
     format_size,
     truncate_head,
 )
-from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.types.tools import (
+    ImageMimeType,
+    ToolDefinition,
+    ToolDetails,
+    ToolError,
+    ToolImageContent,
+    ToolInput,
+    ToolResult,
+)
 
 NARROW_NO_BREAK_SPACE = "\u202f"
 IMAGE_TYPE_SNIFF_BYTES = 4100

@@ -1,7 +1,5 @@
 """Shared assertions for provider stream event tests."""
 
-from typing import TypeVar
-
 from tile.types.stream_events import (
     AssistantBlock,
     ReasoningBlock,
@@ -10,10 +8,8 @@ from tile.types.stream_events import (
     ToolCallBlock,
 )
 
-TStreamEvent = TypeVar("TStreamEvent", bound=StreamEvent)
 
-
-def expect_stream_event(
+def expect_stream_event[TStreamEvent: StreamEvent](
     event: StreamEvent,
     event_type: type[TStreamEvent],
 ) -> TStreamEvent:

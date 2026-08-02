@@ -1,7 +1,7 @@
 """Atomic persistence boundary for sessions, runs, and committed history."""
 
 from collections.abc import Sequence
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol
 
 from tile.result import RunOutcome
 from tile.store.models import HistoryItem, RunRecord, SessionRecord, StartedRun
@@ -36,7 +36,7 @@ class RunNotFoundError(StoreError, KeyError):
     """Raised when an operation references an unknown run."""
 
 
-StoreOperation: TypeAlias = Literal[
+type StoreOperation = Literal[
     "create_session",
     "get_session",
     "list_sessions",

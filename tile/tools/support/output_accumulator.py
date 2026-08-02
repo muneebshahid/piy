@@ -3,12 +3,12 @@
 import codecs
 from dataclasses import dataclass, replace
 
+from tile.tool_truncation import Truncation, TruncationReason
 from tile.tools.support.truncation import (
     OUTPUT_BYTE_LIMIT,
     OUTPUT_LINE_LIMIT,
     truncate_tail,
 )
-from tile.tool_truncation import Truncation, TruncationReason
 
 
 @dataclass(frozen=True)

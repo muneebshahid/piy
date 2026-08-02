@@ -1,5 +1,7 @@
+from openai.types.responses.response_input_param import ResponseInputParam
 from pydantic import TypeAdapter
 
+from tests.support.tool_definitions import city_text_fn, city_tool
 from tile.providers.openai.serialization import (
     serialize_history_items,
     serialize_tools,
@@ -12,8 +14,6 @@ from tile.types.stream_events import (
     ToolCallBlock,
 )
 from tile.types.tools import ToolImageContent, ToolResult
-from tests.support.tool_definitions import city_text_fn, city_tool
-from openai.types.responses.response_input_param import ResponseInputParam
 
 
 def test_serialize_history_items_flattens_sample_thread() -> None:

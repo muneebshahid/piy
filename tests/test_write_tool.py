@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-import tile.tools.write as write
-from tile.types.tools import ToolError
 from tests.support.tool_results import tool_text
+from tile.tools import write
+from tile.types.tools import ToolError
 
 
 def test_write_schema_exposes_write_controls() -> None:

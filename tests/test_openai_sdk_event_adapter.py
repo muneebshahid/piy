@@ -6,8 +6,6 @@ from dataclasses import dataclass
 import pytest
 from openai.types.responses import ResponseStreamEvent
 
-from tile.providers.openai.normalized_events import NormalizedEvent, NormalizedEventType
-from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
 from tests.support import normalized_events as normalized
 from tests.support.openai_response_events import (
     content_part_added_event,
@@ -32,6 +30,8 @@ from tests.support.openai_response_events import (
     response_incomplete_event,
     text_delta_event,
 )
+from tile.providers.openai.normalized_events import NormalizedEvent, NormalizedEventType
+from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
 
 
 @dataclass(frozen=True)

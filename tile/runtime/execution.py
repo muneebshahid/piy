@@ -17,8 +17,8 @@ from pydantic import BaseModel
 
 from tile.agent import AgentResult, run_agent
 from tile.events import EmitFn, ResultFollowUpEvent
-from tile.providers.base import Provider
 from tile.prompt import build_system_prompt
+from tile.providers.base import Provider
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
     NO_RESULT_REASON,

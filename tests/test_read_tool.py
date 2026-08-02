@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-import tile.tools.read as read
-import tile.tools.support.truncation as truncation
-from tile.tools.read import ReadDetails
-from tile.types.tools import ToolError, ToolImageContent, ToolTextContent
 from tests.support.tool_results import details_of, tool_text
+from tile.tools import read
+from tile.tools.read import ReadDetails
+from tile.tools.support import truncation
+from tile.types.tools import ToolError, ToolImageContent, ToolTextContent
 
 
 def test_read_schema_exposes_text_read_controls() -> None:

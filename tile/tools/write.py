@@ -7,8 +7,8 @@ from pathlib import Path
 
 from pydantic import Field
 
-from tile.types.tools import ToolDefinition, ToolError, ToolInput, ToolResult
 from tile.tools.support.paths import resolve_to_cwd
+from tile.types.tools import ToolDefinition, ToolError, ToolInput, ToolResult
 
 
 class WriteInput(ToolInput):

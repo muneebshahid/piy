@@ -2,11 +2,22 @@
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import NamedTuple, Protocol, TypeVar, cast
+from typing import NamedTuple, Protocol, cast
 from unittest.mock import AsyncMock
 
 import pytest
 
+from tests.support.agent_streams import (
+    TEST_PROVIDER,
+    ProviderStreamMock,
+    error_stream,
+    final_text_stream,
+    stream_start,
+    tool_call_stream,
+)
+from tests.support.async_streams import async_stream
+from tests.support.harnesses import build_harness
+from tests.support.tool_definitions import CityInput, WeatherReport, city_tool
 from tile import Provider, RunHandle
 from tile.events import (
     AgentEvent,
@@ -21,17 +32,6 @@ from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
 from tile.types.stream_events import ProviderStreamEvent
 from tile.types.tools import ToolDefinition, ToolFunction, ToolResult
-from tests.support.agent_streams import (
-    TEST_PROVIDER,
-    ProviderStreamMock,
-    error_stream,
-    final_text_stream,
-    stream_start,
-    tool_call_stream,
-)
-from tests.support.async_streams import async_stream
-from tests.support.harnesses import build_harness
-from tests.support.tool_definitions import CityInput, WeatherReport, city_tool
 
 
 def assert_run_lifecycle(events: Sequence[AgentEvent]) -> None:
@@ -452,10 +452,9 @@ async def _blocked_weather(params: CityInput) -> ToolResult:
     return ToolResult.text("never")
 
 
-_EventT = TypeVar("_EventT", bound=AgentEvent)
-
-
-def _single(events: Sequence[AgentEvent], event_type: type[_EventT]) -> _EventT:
+def _single[EventT: AgentEvent](
+    events: Sequence[AgentEvent], event_type: type[EventT]
+) -> EventT:
     """Return the only event of one type in a run log."""
 
     matches = [event for event in events if isinstance(event, event_type)]

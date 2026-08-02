@@ -7,6 +7,24 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+from tests.support.agent_streams import (
+    GatedProviderStreamMock,
+    GatedQueuedProviderStreamMock,
+    ProviderStreamMock,
+    error_stream,
+    final_text_stream,
+    tool_call_stream,
+)
+from tests.support.async_streams import async_stream
+from tests.support.harnesses import build_harness
+from tests.support.store import (
+    FailingFinishStore,
+    FailingStartStore,
+    create_session,
+    persist_outcome,
+    start_run,
+)
+from tests.support.tool_definitions import NoInput
 from tile import (
     Aborted,
     ActiveRunError,
@@ -36,24 +54,6 @@ from tile.types import (
     UserMessage,
 )
 from tile.types.stream_events import ProviderStreamEvent
-from tests.support.agent_streams import (
-    GatedProviderStreamMock,
-    GatedQueuedProviderStreamMock,
-    ProviderStreamMock,
-    error_stream,
-    final_text_stream,
-    tool_call_stream,
-)
-from tests.support.async_streams import async_stream
-from tests.support.harnesses import build_harness
-from tests.support.store import (
-    FailingFinishStore,
-    FailingStartStore,
-    create_session,
-    persist_outcome,
-    start_run,
-)
-from tests.support.tool_definitions import NoInput
 
 
 class _TextResult(BaseModel):
