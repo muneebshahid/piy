@@ -108,19 +108,6 @@ class SQLiteStore:
             session_rows = cast("Sequence[SessionRow]", rows)
             return tuple(session_from_row(row) for row in session_rows)
 
-    def delete_session(self, session_id: str) -> None:
-        """Atomically delete one session and all of its owned data."""
-
-        with _translate_store_errors("delete_session"):
-            with immediate_transaction(self._connection):
-                self._require_session(session_id)
-                self._delete_session_history(session_id)
-                self._delete_session_runs(session_id)
-                self._connection.execute(
-                    "DELETE FROM sessions WHERE id = ?",
-                    (session_id,),
-                )
-
     def start_run(
         self,
         *,
@@ -243,22 +230,6 @@ class SQLiteStore:
             VALUES (?, ?, ?)
             """,
             session_values(record),
-        )
-
-    def _delete_session_history(self, session_id: str) -> None:
-        """Delete history rows owned by one session inside a transaction."""
-
-        self._connection.execute(
-            "DELETE FROM history_items WHERE session_id = ?",
-            (session_id,),
-        )
-
-    def _delete_session_runs(self, session_id: str) -> None:
-        """Delete run rows owned by one session inside a transaction."""
-
-        self._connection.execute(
-            "DELETE FROM runs WHERE session_id = ?",
-            (session_id,),
         )
 
     def _get_session(self, session_id: str) -> SessionRecord:

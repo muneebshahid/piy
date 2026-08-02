@@ -107,11 +107,6 @@ class SessionRepository:
 
         return tuple(self._session(record.id) for record in self._store.list_sessions())
 
-    def delete(self, session_id: str) -> None:
-        """Delete one persistent session and all of its owned data."""
-
-        self._store.delete_session(session_id)
-
     def abort_active_run(self, session_id: str) -> RunRecord | None:
         """Durably abort a running record without controlling its local task."""
 

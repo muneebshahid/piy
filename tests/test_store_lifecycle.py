@@ -64,12 +64,6 @@ def _invoke_get_run(store: SQLiteStore) -> None:
     store.get_run(session_id="session-1", run_id="run-1")
 
 
-def _invoke_delete_session(store: SQLiteStore) -> None:
-    """Invoke delete_session for backend-error translation coverage."""
-
-    store.delete_session("session-1")
-
-
 def test_sqlite_store_requires_an_explicit_storage_mode() -> None:
     """Require a path unless process-local SQLite was requested."""
 
@@ -145,8 +139,6 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
             create_session(store, session_id="session-1")
         with pytest.raises(SessionNotFoundError, match="missing"):
             store.get_session("missing")
-        with pytest.raises(SessionNotFoundError, match="missing"):
-            store.delete_session("missing")
         with pytest.raises(SessionNotFoundError, match="missing"):
             store.abort_active_run("missing")
         with pytest.raises(SessionNotFoundError, match="missing"):
@@ -360,7 +352,6 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
             id="abort-active-run",
         ),
         pytest.param("get_run", _invoke_get_run, id="get-run"),
-        pytest.param("delete_session", _invoke_delete_session, id="delete-session"),
     ],
 )
 def test_sqlite_store_translates_backend_errors(
@@ -377,38 +368,6 @@ def test_sqlite_store_translates_backend_errors(
 
     assert raised.value.operation == operation
     assert isinstance(raised.value.cause, sqlite3.ProgrammingError)
-
-
-def test_delete_session_rolls_back_when_owned_data_deletion_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep the complete session aggregate when atomic deletion fails."""
-
-    store = SQLiteStore(in_memory=True)
-    create_session(store, session_id="session-1")
-    start_run(store)
-    persist_outcome(
-        store,
-        outcome=Completed(value="done"),
-        history_delta=[UserMessage(content="hello")],
-    )
-
-    def fail_run_deletion(session_id: str) -> None:
-        """Fail after history deletion to exercise transaction rollback."""
-
-        _ = session_id
-        raise sqlite3.OperationalError("cannot delete runs")
-
-    monkeypatch.setattr(store, "_delete_session_runs", fail_run_deletion)
-
-    with pytest.raises(StorePersistenceError) as raised:
-        store.delete_session("session-1")
-
-    assert raised.value.operation == "delete_session"
-    assert store.get_session("session-1").id == "session-1"
-    assert len(store.list_runs("session-1")) == 1
-    assert len(store.get_history("session-1")) == 1
-    store.close()
 
 
 def test_file_backed_store_survives_restart(tmp_path: Path) -> None:

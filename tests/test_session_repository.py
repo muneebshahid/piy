@@ -1,12 +1,16 @@
 """Tests for store-bound sessions and the session repository."""
 
-import pytest
-
-from tile import Aborted, Completed, RunNotFoundError, RunRecord, SessionNotFoundError
+from tile import Aborted, Completed, RunRecord
 from tile.sessions import SessionRepository
 from tile.store import HistoryItem, SQLiteStore
 from tile.types import AssistantTurn, UserMessage
 from tests.support.store import persist_outcome, start_run
+
+
+def test_repository_does_not_expose_session_deletion() -> None:
+    """Keep unsupported session deletion out of the public repository API."""
+
+    assert not hasattr(SessionRepository, "delete")
 
 
 def test_repository_creates_gets_and_lists_lightweight_sessions() -> None:
@@ -113,28 +117,6 @@ def test_repository_forks_committed_history_without_loading_it() -> None:
     assert fork.get_session_record().id == "fork"
     assert fork.get_history() == history
     assert store.history_reads == 1
-    store.close()
-
-
-def test_repository_deletes_a_session_and_all_owned_data() -> None:
-    """Delete session metadata, run records, and committed history atomically."""
-
-    store = SQLiteStore(in_memory=True)
-    repository = SessionRepository(store)
-    repository.create(session_id="session-1")
-    started = start_run(store)
-    persist_outcome(
-        store,
-        outcome=Completed(value="done"),
-        history_delta=(UserMessage(content="hello"),),
-    )
-
-    repository.delete("session-1")
-
-    with pytest.raises(SessionNotFoundError):
-        repository.get("session-1")
-    with pytest.raises(RunNotFoundError):
-        store.get_run(session_id="session-1", run_id=started.run.id)
     store.close()
 
 

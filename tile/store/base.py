@@ -40,7 +40,6 @@ StoreOperation: TypeAlias = Literal[
     "create_session",
     "get_session",
     "list_sessions",
-    "delete_session",
     "start_run",
     "finish_run",
     "abort_active_run",
@@ -89,10 +88,6 @@ class Store(Protocol):
 
     def list_sessions(self) -> Sequence[SessionRecord]:
         """Return sessions in creation order."""
-        ...
-
-    def delete_session(self, session_id: str) -> None:
-        """Atomically delete one session and all of its owned data."""
         ...
 
     def start_run(

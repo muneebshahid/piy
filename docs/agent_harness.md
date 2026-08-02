@@ -19,8 +19,8 @@ result = await run.wait()
 
 ## Responsibilities
 
-- `SessionRepository` creates, gets, lists, forks, and deletes persistent
-  sessions. It temporarily exposes a durable active-run abort escape hatch.
+- `SessionRepository` creates, gets, lists, and forks persistent sessions. It
+  temporarily exposes a durable active-run abort escape hatch.
 - `Session` is a lightweight, Store-bound handle. It exposes current metadata,
   committed history, and durable run records.
 - `AgentHarness` owns the tools, working directory, instructions, and prompt
