@@ -194,11 +194,12 @@ class _FailingFinishStore(SQLiteStore):
     def finish_run(
         self,
         *,
+        session_id: str,
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
     ) -> RunRecord:
         """Reject terminal persistence after successful admission."""
 
-        _ = run_id, outcome, history_delta
+        _ = session_id, run_id, outcome, history_delta
         raise StorePersistenceError("finish_run", OSError("disk full"))

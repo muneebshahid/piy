@@ -64,7 +64,7 @@ from tile.tools import BUILTIN_TOOLS
 
 async def main() -> None:
     store = SQLiteStore(in_memory=True)
-    session = SessionRepository(store).create(name="quickstart")
+    session = SessionRepository(store).create()
     harness = AgentHarness(
         session=session,
         tools=BUILTIN_TOOLS,
@@ -151,23 +151,31 @@ not current capabilities.
 
 ## Atomic persistence
 
-One `Store` owns sessions, runs, and committed conversation history. A running
-record contains the submitted prompt before provider execution begins. The
-prompt and all replayable assistant/tool items remain provisional until the run
-finishes; session history therefore contains complete committed turns only.
-The harness constructs a new run record before handing it to the Store.
-Finalization is a state transition: the harness
-supplies only the run id, outcome, and history delta, and the Store derives the
-authoritative terminal record from its stored running row.
+One `Store` owns sessions, runs, and committed conversation history. Persistent
+`SessionRecord` and `RunRecord` objects are outputs of Store operations, not
+caller-constructed inputs. A running record contains the submitted prompt
+before provider execution begins. The prompt and all replayable assistant/tool
+items remain provisional until the run finishes; session history therefore
+contains complete committed turns only.
+
+Prompt admission supplies intent fields — the owning session id, a new run id,
+the prompt, model, and provider — and the Store constructs and persists the
+running record. Finalization supplies the owning session id, run id, outcome,
+and history delta. The Store scopes the operation by both identities and
+derives the authoritative terminal record from its stored running row. Reading
+one run is scoped by session in the same way. `RunRecord` consequently has no
+public `start` or `finish` factory: it is an immutable snapshot returned after
+a Store operation succeeds.
 
 Execution sits between two short transactions:
 
-1. `start_run` validates the session, snapshots committed history, and inserts
-   the running record atomically.
+1. `start_run` validates the session, snapshots committed history, constructs
+   the running record from the supplied intent fields, and inserts it
+   atomically.
 2. Provider streaming and tool execution happen entirely in memory.
-3. Execution derives a candidate outcome. `finish_run` applies it to the
-   authoritative stored record and persists the complete history delta in one
-   transaction before exposing `RunEndEvent`.
+3. Execution derives a candidate outcome. `finish_run` finds the authoritative
+   stored record by session and run id, applies the outcome, and persists the
+   complete history delta in one transaction before exposing `RunEndEvent`.
 
 ```python
 from pathlib import Path

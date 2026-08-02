@@ -13,10 +13,11 @@ from tile import (
     AgentFailure,
     Completed,
     Failed,
+    RunAlreadyEndedError,
     RunAlreadyExistsError,
+    RunNotFoundError,
     SessionAlreadyExistsError,
     SessionNotFoundError,
-    RunAlreadyEndedError,
     StorePersistenceError,
 )
 from tile.store import SQLiteStore
@@ -24,8 +25,6 @@ from tile.types import AssistantTurn, UserMessage
 from tests.support.store import (
     create_session,
     persist_outcome,
-    run_record,
-    running_record,
     start_run,
 )
 
@@ -33,13 +32,20 @@ from tests.support.store import (
 def _invoke_start_run(store: SQLiteStore) -> None:
     """Invoke start_run for backend-error translation coverage."""
 
-    store.start_run(record=running_record())
+    store.start_run(
+        session_id="session-1",
+        run_id="run-1",
+        prompt="hello",
+        model="gpt-5.4",
+        provider="test",
+    )
 
 
 def _invoke_finish_run(store: SQLiteStore) -> None:
     """Invoke finish_run for backend-error translation coverage."""
 
     store.finish_run(
+        session_id="session-1",
         run_id="run-1",
         outcome=Completed(value="done"),
         history_delta=(),
@@ -55,7 +61,7 @@ def _invoke_abort_active_run(store: SQLiteStore) -> None:
 def _invoke_get_run(store: SQLiteStore) -> None:
     """Invoke get_run for backend-error translation coverage."""
 
-    store.get_run("run-1")
+    store.get_run(session_id="session-1", run_id="run-1")
 
 
 def _invoke_delete_session(store: SQLiteStore) -> None:
@@ -76,10 +82,11 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
 
     store = SQLiteStore(in_memory=True)
     try:
-        session = create_session(store, session_id="session-1", name="First")
+        session = create_session(store, session_id="session-1")
         started = start_run(store)
         assert started.committed_history == ()
         finished = store.finish_run(
+            session_id=session.id,
             run_id=started.run.id,
             outcome=Completed(value="done"),
             history_delta=[
@@ -90,10 +97,9 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
 
         stored_session = store.get_session(session.id)
         assert stored_session.id == session.id
-        assert stored_session.name == session.name
         assert stored_session.updated_at >= session.updated_at
         assert store.list_sessions() == (stored_session,)
-        assert store.get_run(finished.id) == finished
+        assert store.get_run(session_id=session.id, run_id=finished.id) == finished
         assert store.list_runs(session.id) == (finished,)
         history = store.get_history(session.id)
         assert [type(item.item) for item in history] == [
@@ -145,22 +151,29 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
             store.abort_active_run("missing")
         with pytest.raises(SessionNotFoundError, match="missing"):
             store.start_run(
-                record=run_record(run_id="run-1", session_id="missing"),
+                session_id="missing",
+                run_id="run-1",
+                prompt="hello",
+                model="gpt-5.4",
+                provider="test",
             )
 
         active = start_run(store).run
         store.abort_active_run("session-1")
         with pytest.raises(RunAlreadyExistsError, match="run-1"):
             store.start_run(
-                record=run_record(
-                    run_id="run-1",
-                    session_id="session-1",
-                    prompt="again",
-                ),
+                session_id="session-1",
+                run_id="run-1",
+                prompt="again",
+                model="gpt-5.4",
+                provider="test",
             )
 
-        assert store.get_run("run-1").id == active.id
-        assert store.get_run("run-1").outcome == Aborted(reason="cancelled")
+        assert store.get_run(session_id="session-1", run_id="run-1").id == active.id
+        assert store.get_run(
+            session_id="session-1",
+            run_id="run-1",
+        ).outcome == Aborted(reason="cancelled")
     finally:
         store.close()
 
@@ -175,11 +188,11 @@ def test_start_run_enforces_one_active_run_per_session() -> None:
 
         with pytest.raises(ActiveRunError, match="session-1"):
             store.start_run(
-                record=run_record(
-                    run_id="run-2",
-                    session_id="session-1",
-                    prompt="again",
-                ),
+                session_id="session-1",
+                run_id="run-2",
+                prompt="again",
+                model="gpt-5.4",
+                provider="test",
             )
 
         assert [run.id for run in store.list_runs("session-1")] == ["run-1"]
@@ -187,24 +200,28 @@ def test_start_run_enforces_one_active_run_per_session() -> None:
         store.close()
 
 
-def test_start_run_rejects_terminal_record_before_checking_active() -> None:
-    """Preserve the active run when the submitted record is already terminal."""
+def test_get_and_finish_run_require_the_owning_session() -> None:
+    """Keep run reads and transitions inside their owning session boundary."""
 
     store = SQLiteStore(in_memory=True)
     try:
         create_session(store, session_id="session-1")
-        active = start_run(store).run
-        terminal = run_record(
-            run_id="run-2",
-            session_id="session-1",
-            prompt="invalid replacement",
-        ).finish(outcome=Completed(value="already done"))
+        create_session(store, session_id="session-2")
+        active = start_run(store, session_id="session-1").run
 
-        with pytest.raises(ValueError, match="requires a running RunRecord"):
-            store.start_run(record=terminal)
+        with pytest.raises(RunNotFoundError, match="run-1"):
+            store.get_run(session_id="session-2", run_id=active.id)
+        with pytest.raises(RunNotFoundError, match="run-1"):
+            store.finish_run(
+                session_id="session-2",
+                run_id=active.id,
+                outcome=Completed(value="wrong session"),
+                history_delta=[UserMessage(content="must not commit")],
+            )
 
-        assert store.get_run(active.id) == active
-        assert store.list_runs("session-1") == (active,)
+        assert store.get_run(session_id="session-1", run_id=active.id) == active
+        assert store.get_history("session-1") == ()
+        assert store.get_history("session-2") == ()
     finally:
         store.close()
 
@@ -225,6 +242,7 @@ def test_abort_active_run_finishes_the_record_and_fences_late_writes() -> None:
         assert aborted.outcome == Aborted(reason="cancelled")
         with pytest.raises(RunAlreadyEndedError, match="run-1"):
             store.finish_run(
+                session_id="session-1",
                 run_id=active.id,
                 outcome=Completed(value="late"),
                 history_delta=[UserMessage(content="must not commit")],
@@ -249,19 +267,19 @@ def test_abort_active_run_is_idempotent_when_no_run_is_running() -> None:
 
         aborted = store.abort_active_run("session-1")
         started = store.start_run(
-            record=run_record(
-                run_id="run-2",
-                session_id="session-1",
-                prompt="next",
-            ),
+            session_id="session-1",
+            run_id="run-2",
+            prompt="next",
+            model="gpt-5.4",
+            provider="test",
         )
 
         assert aborted is None
         assert tuple(item.item for item in started.committed_history) == (
             UserMessage(content="hello"),
         )
-        assert store.get_run("run-1") == completed
-        assert store.get_run("run-2").status == "running"
+        assert store.get_run(session_id="session-1", run_id="run-1") == completed
+        assert store.get_run(session_id="session-1", run_id="run-2").status == "running"
     finally:
         store.close()
 
@@ -300,7 +318,7 @@ def test_finish_run_rolls_back_status_when_history_insert_fails(
         assert raised.value.operation == "finish_run"
         assert isinstance(raised.value.cause, sqlite3.IntegrityError)
         assert "history insert failed" in str(raised.value.cause)
-        assert store.get_run("run-1").status == "running"
+        assert store.get_run(session_id="session-1", run_id="run-1").status == "running"
         assert store.get_history("session-1") == ()
     finally:
         store.close()
@@ -321,11 +339,12 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
 
         with pytest.raises(RunAlreadyEndedError, match="run-1"):
             store.finish_run(
+                session_id="session-1",
                 run_id="run-1",
                 outcome=Completed(value="rewritten"),
                 history_delta=[],
             )
-        assert store.get_run("run-1").status == "failed"
+        assert store.get_run(session_id="session-1", run_id="run-1").status == "failed"
     finally:
         store.close()
 
@@ -408,7 +427,10 @@ def test_file_backed_store_survives_restart(tmp_path: Path) -> None:
 
     reopened = SQLiteStore(database_path)
     try:
-        assert reopened.get_run("run-1").status == "completed"
+        assert (
+            reopened.get_run(session_id="session-1", run_id="run-1").status
+            == "completed"
+        )
         assert reopened.get_history("session-1")[0].item == UserMessage(content="hello")
     finally:
         reopened.close()
@@ -431,7 +453,7 @@ def test_store_translates_corrupted_run_outcome_payloads(tmp_path: Path) -> None
     store = SQLiteStore(database_path)
     try:
         with pytest.raises(StorePersistenceError) as get_error:
-            store.get_run("run-1")
+            store.get_run(session_id="session-1", run_id="run-1")
         assert get_error.value.operation == "get_run"
         assert isinstance(get_error.value.cause, ValidationError)
 
@@ -453,6 +475,7 @@ def test_start_run_rolls_back_insert_when_history_snapshot_fails(
     create_session(seed, session_id="session-1")
     first = start_run(seed)
     seed.finish_run(
+        session_id="session-1",
         run_id=first.run.id,
         outcome=Completed(value="done"),
         history_delta=[UserMessage(content="hello")],
@@ -472,11 +495,11 @@ def test_start_run_rolls_back_insert_when_history_snapshot_fails(
 
         with pytest.raises(StorePersistenceError) as start_error:
             store.start_run(
-                record=run_record(
-                    run_id="run-2",
-                    session_id="session-1",
-                    prompt="next",
-                ),
+                session_id="session-1",
+                run_id="run-2",
+                prompt="next",
+                model="gpt-5.4",
+                provider="test",
             )
         assert start_error.value.operation == "start_run"
         assert isinstance(start_error.value.cause, ValidationError)

@@ -7,7 +7,7 @@ from threading import Barrier
 from tile import Aborted, ActiveRunError, Completed, RunAlreadyEndedError
 from tile.store import SQLiteStore
 from tile.types import UserMessage
-from tests.support.store import create_session, run_record, start_run
+from tests.support.store import create_session, start_run
 
 
 def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None:
@@ -26,11 +26,11 @@ def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None
         try:
             barrier.wait()
             store.start_run(
-                record=run_record(
-                    run_id=run_id,
-                    session_id="session-1",
-                    prompt=run_id,
-                ),
+                session_id="session-1",
+                run_id=run_id,
+                prompt=run_id,
+                model="gpt-5.4",
+                provider="test",
             )
             return "started"
         except ActiveRunError:
@@ -100,6 +100,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
         try:
             barrier.wait()
             store.finish_run(
+                session_id="session-1",
                 run_id="run-1",
                 outcome=Completed(value="done"),
                 history_delta=[UserMessage(content="hello")],
@@ -129,7 +130,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
 
     reopened = SQLiteStore(database_path)
     try:
-        run = reopened.get_run("run-1")
+        run = reopened.get_run(session_id="session-1", run_id="run-1")
         if finish_result == "finished":
             assert abort_result == "idle"
             assert run.status == "completed"

@@ -40,14 +40,12 @@ class RunExecution:
     ) -> RunExecution:
         """Durably accept one run, start execution, and return its owner."""
 
-        record = RunRecord.start(
-            id=str(uuid4()),
-            session_id=session.id,
+        started = session._start_run(
+            run_id=str(uuid4()),
             prompt=prompt,
             model=dependencies.provider.model,
             provider=dependencies.provider.name,
         )
-        started = session._start_run(record)
         execution = cls(
             session=session,
             record=started.run,

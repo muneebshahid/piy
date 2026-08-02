@@ -18,6 +18,7 @@ from tile import (
     SessionRecord,
     Store,
 )
+from tile.store import TerminalRunStatus
 from tile.types import AssistantTurn, ConversationItem, UserMessage
 
 CREATED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
@@ -31,7 +32,7 @@ def test_persistent_records_are_frozen() -> None:
     history_item = _history_item()
 
     with pytest.raises(ValidationError):
-        session.name = "Changed"
+        session.updated_at = CREATED_AT + timedelta(seconds=1)
     with pytest.raises(ValidationError):
         run.status = "completed"
     with pytest.raises(ValidationError):
@@ -56,26 +57,13 @@ def test_session_record_validates_its_lifecycle_timestamps() -> None:
         )
 
 
-def test_record_factories_construct_new_aggregate_states() -> None:
-    """Create new session and running records inside the domain models."""
+def test_persistent_records_are_passive_store_outputs() -> None:
+    """Keep caller intent and lifecycle transitions out of record models."""
 
-    before = datetime.now(UTC)
-    session = SessionRecord.create(id="session-1", name="Session")
-    run = RunRecord.start(
-        id="run-1",
-        session_id=session.id,
-        prompt="hello",
-        model="gpt-5.4",
-        provider="openai",
-    )
-    after = datetime.now(UTC)
-
-    assert session.created_at == session.updated_at
-    assert before <= session.created_at <= after
-    assert run.status == "running"
-    assert run.ended_at is None
-    assert run.outcome is None
-    assert before <= run.started_at <= after
+    assert "name" not in SessionRecord.model_fields
+    assert not hasattr(SessionRecord, "create")
+    assert not hasattr(RunRecord, "start")
+    assert not hasattr(RunRecord, "finish")
 
 
 def test_history_item_round_trips_typed_conversation_payloads() -> None:
@@ -132,13 +120,13 @@ def test_conversation_item_is_discriminated_by_role() -> None:
         ),
     ],
 )
-def test_run_record_derives_status_from_every_outcome(
+def test_run_record_accepts_every_consistent_terminal_outcome(
     outcome: Completed | Failed | Aborted,
-    expected_status: str,
+    expected_status: TerminalRunStatus,
 ) -> None:
     """Keep terminal status consistent with its serializable outcome."""
 
-    finished = _running_record().finish(outcome=outcome)
+    finished = _terminal_record(outcome=outcome, status=expected_status)
 
     assert finished.status == expected_status
     assert finished.outcome == outcome
@@ -156,15 +144,27 @@ def test_run_record_requires_a_provider_at_creation() -> None:
         RunRecord.model_validate(values)
 
 
-def test_run_record_finish_sets_its_terminal_timestamp() -> None:
-    """Capture the completion time inside the domain transition."""
+def test_terminal_run_requires_an_end_timestamp() -> None:
+    """Reject a persisted terminal snapshot without complete lifecycle data."""
 
-    before = datetime.now(UTC)
-    finished = _running_record().finish(outcome=Completed(value="done"))
-    after = datetime.now(UTC)
+    values = _running_record().model_dump()
+    values.update(status="completed", outcome=Completed(value="done"))
 
-    assert finished.ended_at is not None
-    assert before <= finished.ended_at <= after
+    with pytest.raises(ValidationError, match="end timestamp"):
+        RunRecord.model_validate(values)
+
+
+def test_terminal_run_rejects_a_status_that_conflicts_with_its_outcome() -> None:
+    """Reject terminal snapshots whose redundant lifecycle facts disagree."""
+
+    values = _terminal_record(
+        outcome=Completed(value="done"),
+        status="completed",
+    ).model_dump()
+    values.update(status="aborted")
+
+    with pytest.raises(ValidationError, match="contradicts"):
+        RunRecord.model_validate(values)
 
 
 @pytest.mark.parametrize(
@@ -237,7 +237,6 @@ def _session_record() -> SessionRecord:
 
     return SessionRecord(
         id="session-1",
-        name="Session",
         created_at=CREATED_AT,
         updated_at=CREATED_AT,
     )
@@ -254,6 +253,26 @@ def _running_record() -> RunRecord:
         started_at=CREATED_AT,
         model="gpt-5.4",
         provider="openai",
+    )
+
+
+def _terminal_record(
+    *,
+    outcome: Completed | Failed | Aborted,
+    status: TerminalRunStatus,
+) -> RunRecord:
+    """Build one deterministic terminal record snapshot."""
+
+    return RunRecord(
+        id="run-1",
+        session_id="session-1",
+        prompt="hello",
+        status=status,
+        started_at=CREATED_AT,
+        ended_at=CREATED_AT + timedelta(seconds=1),
+        model="gpt-5.4",
+        provider="openai",
+        outcome=outcome,
     )
 
 

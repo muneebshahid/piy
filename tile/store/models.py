@@ -20,26 +20,8 @@ class SessionRecord(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str
-    name: str | None = None
     created_at: datetime
     updated_at: datetime
-
-    @classmethod
-    def create(
-        cls,
-        *,
-        id: str,
-        name: str | None = None,
-    ) -> SessionRecord:
-        """Create a new session record at the current time."""
-
-        now = datetime.now(UTC)
-        return cls(
-            id=id,
-            name=name,
-            created_at=now,
-            updated_at=now,
-        )
 
     @field_validator("created_at", "updated_at")
     @classmethod
@@ -71,54 +53,6 @@ class RunRecord(BaseModel):
     model: str
     provider: str
     outcome: RunOutcome | None = None
-
-    @classmethod
-    def start(
-        cls,
-        *,
-        id: str,
-        session_id: str,
-        prompt: str,
-        model: str,
-        provider: str,
-    ) -> RunRecord:
-        """Create a new running record at the current time."""
-
-        return cls(
-            id=id,
-            session_id=session_id,
-            prompt=prompt,
-            status="running",
-            started_at=datetime.now(UTC),
-            model=model,
-            provider=provider,
-        )
-
-    def finish(
-        self,
-        *,
-        outcome: RunOutcome,
-    ) -> RunRecord:
-        """Return the terminal form while preserving execution identity.
-
-        Status is derived from the outcome, and the end timestamp is clamped
-        to the start so a backward clock step cannot create invalid history.
-        """
-
-        if self.status != "running":
-            raise ValueError("Only a running run can be finished.")
-        terminal_time = datetime.now(UTC)
-        return RunRecord(
-            id=self.id,
-            session_id=self.session_id,
-            prompt=self.prompt,
-            status=terminal_status_for(outcome),
-            started_at=self.started_at,
-            ended_at=max(terminal_time, self.started_at),
-            model=self.model,
-            provider=self.provider,
-            outcome=outcome,
-        )
 
     @field_validator("started_at", "ended_at")
     @classmethod
@@ -194,6 +128,59 @@ class StartedRun(BaseModel):
 
     run: RunRecord
     committed_history: tuple[HistoryItem, ...]
+
+
+def new_session_record(*, session_id: str) -> SessionRecord:
+    """Create Store-owned metadata for a newly persisted session."""
+
+    now = datetime.now(UTC)
+    return SessionRecord(
+        id=session_id,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def new_running_run_record(
+    *,
+    run_id: str,
+    session_id: str,
+    prompt: str,
+    model: str,
+    provider: str,
+) -> RunRecord:
+    """Create Store-owned persistent state for a newly accepted run."""
+
+    return RunRecord(
+        id=run_id,
+        session_id=session_id,
+        prompt=prompt,
+        status="running",
+        started_at=datetime.now(UTC),
+        model=model,
+        provider=provider,
+    )
+
+
+def terminal_run_record(
+    running: RunRecord,
+    *,
+    outcome: RunOutcome,
+) -> RunRecord:
+    """Create terminal persistent state from an authoritative running record."""
+
+    terminal_time = datetime.now(UTC)
+    return RunRecord(
+        id=running.id,
+        session_id=running.session_id,
+        prompt=running.prompt,
+        status=terminal_status_for(outcome),
+        started_at=running.started_at,
+        ended_at=max(terminal_time, running.started_at),
+        model=running.model,
+        provider=running.provider,
+        outcome=outcome,
+    )
 
 
 def terminal_status_for(outcome: RunOutcome) -> TerminalRunStatus:

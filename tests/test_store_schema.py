@@ -95,6 +95,23 @@ def test_unified_schema_uses_id_for_entity_primary_keys(tmp_path: Path) -> None:
     }
 
 
+def test_unified_schema_keeps_only_session_identity_and_timestamps(
+    tmp_path: Path,
+) -> None:
+    """Exclude unused display metadata from persistent session records."""
+
+    database_path = tmp_path / "session-columns.db"
+    store = SQLiteStore(database_path)
+    store.close()
+    connection = sqlite3.connect(database_path)
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
+    finally:
+        connection.close()
+
+    assert columns == {"id", "created_at", "updated_at"}
+
+
 def test_unified_schema_enforces_run_session_foreign_key(tmp_path: Path) -> None:
     """Reject a run whose owning session does not exist."""
 

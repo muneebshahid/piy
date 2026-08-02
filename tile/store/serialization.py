@@ -11,7 +11,7 @@ from tile.store.base import InvalidHistoryError
 from tile.store.models import HistoryItem, RunRecord, RunStatus, SessionRecord
 from tile.types.conversation import ConversationItem
 
-SessionRow: TypeAlias = tuple[str, str | None, str, str]
+SessionRow: TypeAlias = tuple[str, str, str]
 RunRow: TypeAlias = tuple[
     str,
     str,
@@ -24,7 +24,7 @@ RunRow: TypeAlias = tuple[
     str | None,
 ]
 HistoryRow: TypeAlias = tuple[str, str, str, int, str, str, str]
-TerminalRunValues: TypeAlias = tuple[str, str, str, str]
+TerminalRunValues: TypeAlias = tuple[str, str, str, str, str]
 
 _OUTCOME_ADAPTER = TypeAdapter(RunOutcome)
 _CONVERSATION_ITEM_ADAPTER = TypeAdapter(ConversationItem)
@@ -35,7 +35,6 @@ def session_values(record: SessionRecord) -> SessionRow:
 
     return (
         record.id,
-        record.name,
         record.created_at.isoformat(),
         record.updated_at.isoformat(),
     )
@@ -44,10 +43,9 @@ def session_values(record: SessionRecord) -> SessionRow:
 def session_from_row(row: SessionRow) -> SessionRecord:
     """Deserialize one SQLite session row."""
 
-    session_id, name, created_at, updated_at = row
+    session_id, created_at, updated_at = row
     return SessionRecord(
         id=session_id,
-        name=name,
         created_at=datetime.fromisoformat(created_at),
         updated_at=datetime.fromisoformat(updated_at),
     )
@@ -82,6 +80,7 @@ def terminal_run_values(record: RunRecord) -> TerminalRunValues:
         record.ended_at.isoformat(),
         outcome_json,
         record.id,
+        record.session_id,
     )
 
 

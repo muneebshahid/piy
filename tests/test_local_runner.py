@@ -142,7 +142,6 @@ def _assert_runtime_persisted_completed_history(
 
     sessions = store.list_sessions()
     assert len(sessions) == 1
-    assert sessions[0].name == "local-runner"
     history = tuple(envelope.item for envelope in store.get_history(sessions[0].id))
     assert [_history_role(item) for item in history] == [
         "user",

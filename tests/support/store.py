@@ -14,11 +14,19 @@ def start_run(
     store: SQLiteStore,
     *,
     session_id: str = "session-1",
+    run_id: str = "run-1",
+    prompt: str = "hello",
+    model: str = "gpt-5.4",
+    provider: str = "test",
 ) -> StartedRun:
-    """Start one run through the record-based Store contract."""
+    """Start one run from caller-owned execution inputs."""
 
     return store.start_run(
-        record=run_record(run_id="run-1", session_id=session_id),
+        session_id=session_id,
+        run_id=run_id,
+        prompt=prompt,
+        model=model,
+        provider=provider,
     )
 
 
@@ -27,37 +35,16 @@ def persist_outcome(
     *,
     outcome: Completed | Failed | Aborted,
     history_delta: Sequence[ConversationItem],
+    session_id: str = "session-1",
     run_id: str = "run-1",
 ) -> RunRecord:
     """Finish and persist one Store-owned running record."""
 
     return store.finish_run(
+        session_id=session_id,
         run_id=run_id,
         outcome=outcome,
         history_delta=history_delta,
-    )
-
-
-def running_record() -> RunRecord:
-    """Build one running record without Store access."""
-
-    return run_record(run_id="run-1", session_id="session-1")
-
-
-def run_record(
-    *,
-    run_id: str,
-    session_id: str,
-    prompt: str = "hello",
-) -> RunRecord:
-    """Build one new run through the domain factory."""
-
-    return RunRecord.start(
-        id=run_id,
-        session_id=session_id,
-        prompt=prompt,
-        model="gpt-5.4",
-        provider="test",
     )
 
 
@@ -65,9 +52,7 @@ def create_session(
     store: SQLiteStore,
     *,
     session_id: str,
-    name: str | None = None,
 ) -> SessionRecord:
-    """Create one session through the record-based Store contract."""
+    """Create one session from its caller-owned identity."""
 
-    record = SessionRecord.create(id=session_id, name=name)
-    return store.create_session(record=record)
+    return store.create_session(session_id=session_id)

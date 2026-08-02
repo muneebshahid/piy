@@ -66,7 +66,7 @@ async def run_prompt(
         owned_store = None
         active_store = store
     try:
-        session = SessionRepository(active_store).create(name="local-runner")
+        session = SessionRepository(active_store).create()
         harness = AgentHarness(
             session=session,
             tools=active_tools,

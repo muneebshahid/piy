@@ -78,7 +78,7 @@ class Store(Protocol):
     def create_session(
         self,
         *,
-        record: SessionRecord,
+        session_id: str,
     ) -> SessionRecord:
         """Create and return one session, rejecting an existing id."""
         ...
@@ -98,21 +98,23 @@ class Store(Protocol):
     def start_run(
         self,
         *,
-        record: RunRecord,
+        session_id: str,
+        run_id: str,
+        prompt: str,
+        model: str,
+        provider: str,
     ) -> StartedRun:
         """Atomically start a run and snapshot its committed session history.
 
-        ``record`` must represent a running run. Terminal records are not valid
-        inputs to this insert operation.
-
         The returned history must come from the same consistency boundary as
-        the accepted run.
+        the Store-created running record.
         """
         ...
 
     def finish_run(
         self,
         *,
+        session_id: str,
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
@@ -137,8 +139,8 @@ class Store(Protocol):
         """Return committed history items in session-local position order."""
         ...
 
-    def get_run(self, run_id: str) -> RunRecord:
-        """Return one persistent run or raise a run-not-found domain error."""
+    def get_run(self, session_id: str, run_id: str) -> RunRecord:
+        """Return one session-owned run or raise a run-not-found error."""
         ...
 
     def list_runs(self, session_id: str) -> Sequence[RunRecord]:
@@ -149,7 +151,7 @@ class Store(Protocol):
         self,
         *,
         source_session_id: str,
-        target: SessionRecord,
+        target_session_id: str,
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
         ...

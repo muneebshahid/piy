@@ -14,8 +14,8 @@ def test_repository_creates_gets_and_lists_lightweight_sessions() -> None:
 
     store = _ObservedStore()
     repository = SessionRepository(store)
-    generated = repository.create(name="Generated")
-    explicit = repository.create(session_id="known", name="Known")
+    generated = repository.create()
+    explicit = repository.create(session_id="known")
 
     fetched = repository.get("known")
     listed = repository.list()
@@ -33,7 +33,7 @@ def test_session_reads_its_current_record_history_and_runs() -> None:
 
     store = SQLiteStore(in_memory=True)
     repository = SessionRepository(store)
-    session = repository.create(session_id="session-1", name="Session")
+    session = repository.create(session_id="session-1")
     started = start_run(store)
     history = (
         UserMessage(content="hello"),
@@ -41,9 +41,11 @@ def test_session_reads_its_current_record_history_and_runs() -> None:
     )
     persist_outcome(store, outcome=Completed(value="done"), history_delta=history)
 
-    assert session.get_session_record().name == "Session"
+    assert session.get_session_record().id == "session-1"
     assert session.get_history() == history
-    assert session.get_runs() == (store.get_run(started.run.id),)
+    assert session.get_runs() == (
+        store.get_run(session_id=session.id, run_id=started.run.id),
+    )
     store.close()
 
 
@@ -53,24 +55,22 @@ def test_session_scopes_atomic_run_lifecycle_operations() -> None:
     store = SQLiteStore(in_memory=True)
     repository = SessionRepository(store)
     session = repository.create(session_id="session-1")
-    record = RunRecord.start(
-        id="run-1",
-        session_id=session.id,
+    started = session._start_run(
+        run_id="run-1",
         prompt="hello",
         model="gpt-5.4",
         provider="test",
     )
-
-    started = session._start_run(record)
     finished = session._finish_run(
-        record.id,
+        started.run.id,
         outcome=Completed(value="done"),
         history_delta=(UserMessage(content="hello"),),
     )
 
-    assert started.run == record
+    assert started.run.session_id == session.id
+    assert started.run.status == "running"
     assert started.committed_history == ()
-    assert session._get_run(record.id) == finished
+    assert session._get_run(started.run.id) == finished
     store.close()
 
 
@@ -107,11 +107,10 @@ def test_repository_forks_committed_history_without_loading_it() -> None:
     fork = repository.fork(
         "session-1",
         target_session_id="fork",
-        name="Fork",
     )
 
     assert fork.id == "fork"
-    assert fork.get_session_record().name == "Fork"
+    assert fork.get_session_record().id == "fork"
     assert fork.get_history() == history
     assert store.history_reads == 1
     store.close()
@@ -135,7 +134,7 @@ def test_repository_deletes_a_session_and_all_owned_data() -> None:
     with pytest.raises(SessionNotFoundError):
         repository.get("session-1")
     with pytest.raises(RunNotFoundError):
-        store.get_run(started.run.id)
+        store.get_run(session_id="session-1", run_id=started.run.id)
     store.close()
 
 

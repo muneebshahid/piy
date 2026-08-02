@@ -21,7 +21,6 @@ from tile import (
     RunHandle,
     RunOutcome,
     RunRecord,
-    SessionRecord,
     SessionNotFoundError,
     SessionRepository,
     SQLiteStore,
@@ -65,13 +64,13 @@ def test_repository_creates_lists_and_gets_persistent_sessions() -> None:
     """Use the repository as the authoritative session registry."""
 
     repository = SessionRepository(SQLiteStore(in_memory=True))
-    generated = repository.create(name="Generated")
-    explicit = repository.create(session_id="known", name="Known")
+    generated = repository.create()
+    explicit = repository.create(session_id="known")
 
     assert generated.id != explicit.id
-    assert explicit.get_session_record().name == "Known"
+    assert explicit.get_session_record().id == "known"
     assert [session.id for session in repository.list()] == [generated.id, "known"]
-    assert repository.get("known").get_session_record().name == "Known"
+    assert repository.get("known").get_session_record().id == "known"
     with pytest.raises(SessionNotFoundError, match="missing"):
         repository.get("missing")
 
@@ -93,8 +92,10 @@ def test_runtime_commits_a_complete_turn_only_at_finalization() -> None:
         await _wait_for_provider(provider)
 
         assert session.get_history() == ()
-        assert store.get_run(handle.id).status == "running"
-        assert store.get_run(handle.id).prompt == "hello"
+        assert (
+            store.get_run(session_id=session.id, run_id=handle.id).status == "running"
+        )
+        assert store.get_run(session_id=session.id, run_id=handle.id).prompt == "hello"
 
         release.set()
         assert await handle.wait() == Completed(value="answer 0")
@@ -102,7 +103,10 @@ def test_runtime_commits_a_complete_turn_only_at_finalization() -> None:
         assert isinstance(prompt, UserMessage)
         assert prompt.content == "hello"
         assert len(session.get_history()) == 2
-        assert store.get_run(handle.id).outcome == Completed(value="answer 0")
+        assert store.get_run(
+            session_id=session.id,
+            run_id=handle.id,
+        ).outcome == Completed(value="answer 0")
         store.close()
 
     asyncio.run(_run())
@@ -229,17 +233,16 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
     """Avoid a second fallible Store read after durable run acceptance."""
 
     store = _UnavailablePublicHistoryStore(in_memory=True)
-    store.create_session(record=SessionRecord.create(id="session-1"))
+    store.create_session(session_id="session-1")
     started = store.start_run(
-        record=RunRecord.start(
-            id="seed",
-            session_id="session-1",
-            prompt="first",
-            model="gpt-5.4",
-            provider="test",
-        ),
+        session_id="session-1",
+        run_id="seed",
+        prompt="first",
+        model="gpt-5.4",
+        provider="test",
     )
     store.finish_run(
+        session_id="session-1",
         run_id=started.run.id,
         outcome=Completed(value="first answer"),
         history_delta=[
@@ -323,7 +326,9 @@ def test_agent_failure_commits_its_complete_replayable_history() -> None:
 
         expected = Failed(cause=AgentFailure(reason="cannot deliver"))
         assert outcome == expected
-        assert store.get_run(handle.id).outcome == expected
+        assert (
+            store.get_run(session_id=session.id, run_id=handle.id).outcome == expected
+        )
         assert [item.role for item in session.get_history()] == [
             "user",
             "assistant",
@@ -434,7 +439,10 @@ def test_durable_abort_fences_old_history_and_runs_the_successor() -> None:
             for item in session.get_history()
             if isinstance(item, UserMessage)
         ] == ["second"]
-        assert store.get_run(first.id).outcome == Aborted(reason="cancelled")
+        assert store.get_run(
+            session_id=session.id,
+            run_id=first.id,
+        ).outcome == Aborted(reason="cancelled")
         store.close()
 
     asyncio.run(_run())
@@ -526,7 +534,7 @@ def test_finalization_fault_requires_the_durable_abort_escape_hatch() -> None:
         assert isinstance(result.error, StorePersistenceError)
         assert isinstance(result.error.cause, OSError)
         assert await first.wait() is result
-        assert store.get_run(first.id).status == "running"
+        assert store.get_run(session_id=session.id, run_id=first.id).status == "running"
         assert session.get_history() == ()
 
         store.fail_finishes = False
@@ -630,7 +638,7 @@ def test_forked_session_inherits_flat_history_and_diverges() -> None:
     async def _run() -> None:
         first = await source_harness.prompt("first", provider=configured_provider)
         assert isinstance(await first.wait(), Completed)
-        fork = repository.fork("source", target_session_id="fork", name="Fork")
+        fork = repository.fork("source", target_session_id="fork")
         assert fork.get_history() == source.get_history()
         assert fork.get_runs() == ()
 
@@ -780,6 +788,7 @@ class _FailingFinishStore(SQLiteStore):
     def finish_run(
         self,
         *,
+        session_id: str,
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
@@ -789,6 +798,7 @@ class _FailingFinishStore(SQLiteStore):
         if self.fail_finishes:
             raise StorePersistenceError("finish_run", OSError("disk full"))
         return super().finish_run(
+            session_id=session_id,
             run_id=run_id,
             outcome=outcome,
             history_delta=history_delta,

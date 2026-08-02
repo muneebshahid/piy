@@ -39,13 +39,21 @@ class Session:
 
     def _start_run(
         self,
-        record: RunRecord,
+        *,
+        run_id: str,
+        prompt: str,
+        model: str,
+        provider: str,
     ) -> StartedRun:
         """Atomically accept one run and return its private bootstrap state."""
 
-        if record.session_id != self.id:
-            raise ValueError("Run record belongs to another session.")
-        return self._store.start_run(record=record)
+        return self._store.start_run(
+            session_id=self.id,
+            run_id=run_id,
+            prompt=prompt,
+            model=model,
+            provider=provider,
+        )
 
     def _finish_run(
         self,
@@ -57,6 +65,7 @@ class Session:
         """Atomically finish one run and append its replayable history."""
 
         return self._store.finish_run(
+            session_id=self.id,
             run_id=run_id,
             outcome=outcome,
             history_delta=history_delta,
@@ -65,10 +74,7 @@ class Session:
     def _get_run(self, run_id: str) -> RunRecord:
         """Return one authoritative run for lifecycle reconciliation."""
 
-        record = self._store.get_run(run_id)
-        if record.session_id != self.id:
-            raise ValueError("Run record belongs to another session.")
-        return record
+        return self._store.get_run(self.id, run_id)
 
 
 class SessionRepository:
@@ -83,13 +89,11 @@ class SessionRepository:
         self,
         *,
         session_id: str | None = None,
-        name: str | None = None,
     ) -> Session:
         """Create and return a new persistent session."""
 
         resolved_id = session_id if session_id is not None else str(uuid4())
-        record = SessionRecord.create(id=resolved_id, name=name)
-        persisted = self._store.create_session(record=record)
+        persisted = self._store.create_session(session_id=resolved_id)
         return self._session(persisted.id)
 
     def get(self, session_id: str) -> Session:
@@ -118,17 +122,15 @@ class SessionRepository:
         source_session_id: str,
         *,
         target_session_id: str | None = None,
-        name: str | None = None,
     ) -> Session:
         """Fork committed history into a new persistent session."""
 
-        target = SessionRecord.create(
-            id=target_session_id if target_session_id is not None else str(uuid4()),
-            name=name,
+        resolved_target_id = (
+            target_session_id if target_session_id is not None else str(uuid4())
         )
         persisted = self._store.fork_session(
             source_session_id=source_session_id,
-            target=target,
+            target_session_id=resolved_target_id,
         )
         return self._session(persisted.id)
 

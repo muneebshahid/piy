@@ -34,7 +34,9 @@ def test_run_execution_persists_before_provider_and_returns_only_outcome() -> No
             dependencies=_dependencies(transport),
         )
         handle = RunHandle(execution)
-        assert store.get_run(handle.id).status == "running"
+        assert (
+            store.get_run(session_id=session.id, run_id=handle.id).status == "running"
+        )
         result, events = await _wait_and_collect(handle)
         return handle, result, events
 
@@ -42,7 +44,7 @@ def test_run_execution_persists_before_provider_and_returns_only_outcome() -> No
 
     assert result == Completed(value="done")
     assert isinstance(events[-1], RunEndEvent)
-    assert store.get_run(handle.id).outcome == result
+    assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
     assert [item.role for item in session.get_history()] == ["user", "assistant"]
     assert tuple(vars(handle)) == ("_execution",)
     store.close()
@@ -74,7 +76,7 @@ def test_run_execution_returns_faulted_when_finalization_is_not_durable() -> Non
     assert isinstance(result, Faulted)
     assert isinstance(result.error, StorePersistenceError)
     assert isinstance(events[-1], RunFaultEvent)
-    assert store.get_run(handle.id).status == "running"
+    assert store.get_run(session_id=session.id, run_id=handle.id).status == "running"
     assert session.get_history() == ()
     store.close()
 
@@ -133,7 +135,7 @@ def test_cancelled_execution_defaults_a_missing_abort_reason() -> None:
 
     assert result == Aborted(reason="cancelled")
     assert isinstance(events[-1], RunEndEvent)
-    assert store.get_run(handle.id).outcome == result
+    assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
     store.close()
 
 
@@ -165,13 +167,14 @@ class _FailingFinishStore(SQLiteStore):
     def finish_run(
         self,
         *,
+        session_id: str,
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
     ) -> RunRecord:
         """Reject terminal persistence after successful admission."""
 
-        _ = run_id, outcome, history_delta
+        _ = session_id, run_id, outcome, history_delta
         raise StorePersistenceError("finish_run", OSError("disk full"))
 
 
@@ -185,11 +188,12 @@ class _CrashingFinishStore(SQLiteStore):
     def finish_run(
         self,
         *,
+        session_id: str,
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
     ) -> RunRecord:
         """Crash terminal persistence after successful admission."""
 
-        _ = run_id, outcome, history_delta
+        _ = session_id, run_id, outcome, history_delta
         raise _FinalizationCrash("unexpected finalization crash")
