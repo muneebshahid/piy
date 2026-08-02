@@ -54,7 +54,7 @@ def test_session_reads_its_current_record_history_and_runs() -> None:
 
 
 def test_session_scopes_atomic_run_lifecycle_operations() -> None:
-    """Preserve Store bootstrap state and fence records from other sessions."""
+    """Preserve Store bootstrap state through Session lifecycle operations."""
 
     store = SQLiteStore(in_memory=True)
     repository = SessionRepository(store)

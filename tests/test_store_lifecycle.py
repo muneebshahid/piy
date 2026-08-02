@@ -129,6 +129,28 @@ def test_sqlite_store_returns_defensive_typed_snapshots() -> None:
         store.close()
 
 
+def test_finish_run_copies_the_caller_owned_outcome() -> None:
+    """Keep nested input mutations out of the returned and durable snapshots."""
+
+    store = SQLiteStore(in_memory=True)
+    try:
+        create_session(store, session_id="session-1")
+        start_run(store)
+        outcome = Completed(value={"nested": {"value": "original"}})
+
+        finished = persist_outcome(store, outcome=outcome, history_delta=())
+        assert isinstance(outcome.value, dict)
+        nested = outcome.value["nested"]
+        assert isinstance(nested, dict)
+        nested["value"] = "mutated"
+
+        expected = Completed(value={"nested": {"value": "original"}})
+        assert finished.outcome == expected
+        assert store.get_run(session_id="session-1", run_id="run-1").outcome == expected
+    finally:
+        store.close()
+
+
 def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
     """Translate uniqueness and lookup failures into domain errors."""
 

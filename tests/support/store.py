@@ -3,11 +3,70 @@
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from tile import Aborted, Completed, Failed, RunRecord
+from tile import (
+    Aborted,
+    Completed,
+    Failed,
+    RunOutcome,
+    RunRecord,
+    StorePersistenceError,
+)
 from tile.store import SQLiteStore, SessionRecord, StartedRun
 from tile.types import ConversationItem
 
 STARTED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+
+
+class FailingStartStore(SQLiteStore):
+    """SQLite Store with a recoverable deterministic admission failure."""
+
+    fail_starts: bool = True
+
+    def start_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        prompt: str,
+        model: str,
+        provider: str,
+    ) -> StartedRun:
+        """Fail or delegate one atomic start operation."""
+
+        if self.fail_starts:
+            raise StorePersistenceError("start_run", OSError("disk full"))
+        return super().start_run(
+            session_id=session_id,
+            run_id=run_id,
+            prompt=prompt,
+            model=model,
+            provider=provider,
+        )
+
+
+class FailingFinishStore(SQLiteStore):
+    """SQLite Store with a recoverable deterministic finalization failure."""
+
+    fail_finishes: bool = True
+
+    def finish_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        outcome: RunOutcome,
+        history_delta: Sequence[ConversationItem],
+    ) -> RunRecord:
+        """Fail or delegate one atomic finish operation."""
+
+        if self.fail_finishes:
+            raise StorePersistenceError("finish_run", OSError("disk full"))
+        return super().finish_run(
+            session_id=session_id,
+            run_id=run_id,
+            outcome=outcome,
+            history_delta=history_delta,
+        )
 
 
 def start_run(

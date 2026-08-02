@@ -1,7 +1,6 @@
 """End-to-end tests for the single-session AgentHarness API."""
 
 import asyncio
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -19,12 +18,13 @@ from tile import (
     SQLiteStore,
     StorePersistenceError,
 )
-from tile.types import ConversationItem, UserMessage
+from tile.types import UserMessage
 from tests.support.agent_streams import (
     GatedProviderStreamMock,
     ProviderStreamMock,
     final_text_stream,
 )
+from tests.support.store import FailingFinishStore, FailingStartStore
 
 
 def test_harness_runs_prompts_for_its_single_session() -> None:
@@ -126,29 +126,35 @@ def test_repository_escape_hatch_fences_a_local_run_and_unblocks_harness() -> No
 
 
 def test_start_persistence_failure_does_not_disable_the_harness() -> None:
-    """Let each admission attempt report the current persistence failure."""
+    """Reuse the same harness after a transient admission failure is resolved."""
 
-    store = SQLiteStore(in_memory=True)
+    store = FailingStartStore(in_memory=True)
     session = SessionRepository(store).create(session_id="session-1")
     harness = AgentHarness(session=session, cwd=Path("."))
-    provider = _provider(ProviderStreamMock([]))
-    store.close()
+    provider = _provider(
+        ProviderStreamMock([final_text_stream("response-1", "recovered")])
+    )
 
-    async def run() -> None:
-        """Attempt initial and subsequent prompts after Store loss."""
+    async def run() -> RunOutcome | Faulted:
+        """Retry through the same harness after restoring Store admission."""
 
         with pytest.raises(StorePersistenceError):
             await harness.prompt("first", provider=provider)
-        with pytest.raises(StorePersistenceError):
-            await harness.prompt("second", provider=provider)
+        store.fail_starts = False
+        handle = await harness.prompt("second", provider=provider)
+        return await handle.wait()
 
-    asyncio.run(run())
+    result = asyncio.run(run())
+
+    assert result == Completed(value="recovered")
+    assert session.get_runs()[0].prompt == "second"
+    store.close()
 
 
 def test_finalization_failure_leaves_admission_blocked_by_the_store() -> None:
     """Return Faulted while the durable running record fences another prompt."""
 
-    store = _FailingFinishStore(in_memory=True)
+    store = FailingFinishStore(in_memory=True)
     session = SessionRepository(store).create(session_id="session-1")
     harness = AgentHarness(session=session, cwd=Path("."))
     provider = _provider(ProviderStreamMock([final_text_stream("response-1", "lost")]))
@@ -186,20 +192,3 @@ async def _wait_for_provider(provider: ProviderStreamMock) -> None:
             return
         await asyncio.sleep(0)
     raise AssertionError("Expected one provider invocation.")
-
-
-class _FailingFinishStore(SQLiteStore):
-    """Store with deterministic terminal persistence failure."""
-
-    def finish_run(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        outcome: RunOutcome,
-        history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
-        """Reject terminal persistence after successful admission."""
-
-        _ = session_id, run_id, outcome, history_delta
-        raise StorePersistenceError("finish_run", OSError("disk full"))

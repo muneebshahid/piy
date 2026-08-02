@@ -1,10 +1,11 @@
 """Tests for the documented public import surface."""
 
 import asyncio
-from pathlib import Path
 from collections.abc import AsyncGenerator, Sequence
+from pathlib import Path
 from typing import get_args
 
+import tile
 from tile import (
     Aborted,
     AgentFailure,
@@ -65,6 +66,7 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     assert len(run_records) == 1
     assert isinstance(run_records[0], RunRecord)
     assert run_records[0].status == "completed"
+    assert run_records[0].provider == provider.name
     assert issubclass(SessionNotFoundError, KeyError)
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
@@ -78,6 +80,13 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     assert ToolInvocationFailure.model_fields["exception_type"]
     assert issubclass(ToolError, RuntimeError)
     assert issubclass(OpenAIProvider, Provider)
+
+
+def test_removed_runtime_concepts_are_not_public_exports() -> None:
+    """Keep replaced runtime concepts outside the top-level package facade."""
+
+    for name in ("AgentRuntime", "RunReport", "StartedRun"):
+        assert not hasattr(tile, name)
 
 
 class _FakeProvider(Provider):

@@ -20,7 +20,6 @@ from tile import (
     Provider,
     RunHandle,
     RunOutcome,
-    RunRecord,
     SessionNotFoundError,
     SessionRepository,
     SQLiteStore,
@@ -48,6 +47,7 @@ from tests.support.agent_streams import (
     tool_call_stream,
 )
 from tests.support.async_streams import async_stream
+from tests.support.store import FailingFinishStore
 
 
 class _NoInput(ToolInput):
@@ -512,7 +512,7 @@ def test_finalization_fault_requires_the_durable_abort_escape_hatch() -> None:
     """Unblock the harness explicitly after a terminal persistence failure."""
 
     async def _run() -> None:
-        store = _FailingFinishStore(in_memory=True)
+        store = FailingFinishStore(in_memory=True)
         provider = ProviderStreamMock(
             [
                 final_text_stream("response-1", "lost"),
@@ -551,7 +551,7 @@ def test_finalization_fault_requires_the_durable_abort_escape_hatch() -> None:
 def test_agent_failure_is_overridden_by_a_finalization_fault() -> None:
     """Return the durability fault when an agent failure cannot be persisted."""
 
-    store = _FailingFinishStore(in_memory=True)
+    store = FailingFinishStore(in_memory=True)
     provider = ProviderStreamMock(
         [
             tool_call_stream(
@@ -583,7 +583,7 @@ def test_agent_failure_is_overridden_by_a_finalization_fault() -> None:
 def test_execution_failure_is_overridden_by_a_finalization_fault() -> None:
     """Return the durability fault when execution failure cannot be persisted."""
 
-    store = _FailingFinishStore(in_memory=True)
+    store = FailingFinishStore(in_memory=True)
     provider = ProviderStreamMock([error_stream("response-1", "provider unavailable")])
     session = SessionRepository(store).create(session_id="execution-failure")
     harness = AgentHarness(session=session, cwd=Path("."))
@@ -605,7 +605,7 @@ def test_abort_is_overridden_by_a_finalization_fault() -> None:
     async def _run() -> None:
         release = asyncio.Event()
         provider = GatedProviderStreamMock([release])
-        store = _FailingFinishStore(in_memory=True)
+        store = FailingFinishStore(in_memory=True)
         session = SessionRepository(store).create(session_id="abort-failure")
         harness = AgentHarness(session=session, cwd=Path("."))
         handle = await harness.prompt("wait", provider=_configured(provider))
@@ -778,31 +778,6 @@ def test_runtime_binds_cwd_and_rejects_model_visible_cwd(tmp_path: Path) -> None
     asyncio.run(_run())
     assert captured == [tmp_path.resolve()]
     store.close()
-
-
-class _FailingFinishStore(SQLiteStore):
-    """SQLite Store with a deterministic finalization failure."""
-
-    fail_finishes: bool = True
-
-    def finish_run(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        outcome: RunOutcome,
-        history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
-        """Fail or delegate one atomic finish operation."""
-
-        if self.fail_finishes:
-            raise StorePersistenceError("finish_run", OSError("disk full"))
-        return super().finish_run(
-            session_id=session_id,
-            run_id=run_id,
-            outcome=outcome,
-            history_delta=history_delta,
-        )
 
 
 class _UnavailablePublicHistoryStore(SQLiteStore):

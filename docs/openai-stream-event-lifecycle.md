@@ -259,18 +259,14 @@ sequenceDiagram
     Norm->>Asm: INCOMPLETE(error)
     Asm->>Stream: StreamErrorEvent(error_message, blocks)
     Stream->>Agent: stream_error
-    Agent->>Hist: append AssistantTurn to run-local history
-    Agent-->>Agent: emit MessageEndEvent
-    Agent-->>Agent: emit TurnEndEvent(tool_executions=[])
+    Agent-->>Agent: emit MessageEndEvent (live log only)
 
     SDK->>Adapter: ResponseFailedEvent or ResponseErrorEvent
     Adapter->>Norm: FAILED(message)
     Norm->>Asm: FAILED
     Asm->>Stream: StreamErrorEvent(error_message, blocks)
     Stream->>Agent: stream_error
-    Agent->>Hist: append AssistantTurn to run-local history
-    Agent-->>Agent: emit MessageEndEvent
-    Agent-->>Agent: emit TurnEndEvent(tool_executions=[])
+    Agent-->>Agent: emit MessageEndEvent (live log only)
 ```
 
 ## Raw Event Mapping
@@ -315,7 +311,7 @@ open. Hard process death is outside this contract.
 
 Rules:
 
-- The handle emits its own `RunStartEvent` before execution starts, so
+- `RunExecution` emits `RunStartEvent` before execution starts, so
   every run log begins with a run start on every path, including an
   abort that lands before the first tick.
 - `RunEndEvent` is emitted only after harness-owned durable finalization.
@@ -328,7 +324,8 @@ Rules:
   the tool scope open until `RunEndEvent`.
 - An in-band provider `StreamErrorEvent` is a terminal message, so its
   partial error-bearing assistant turn is retained in `MessageEndEvent`.
-  The failed turn and agent remain open until the failed `RunEndEvent`.
+  It is not committed to replayable history. The failed turn and agent remain
+  open until the failed `RunEndEvent`.
 - Typed-result runs close each agent attempt before the follow-up message
   or next attempt starts; the final `AgentEndEvent` precedes `RunEndEvent`.
   Agent events carry no attempt label: attempts are strictly sequential,

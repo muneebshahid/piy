@@ -15,6 +15,7 @@ from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.types import ConversationItem
 from tests.support.agent_streams import ProviderStreamMock, final_text_stream
+from tests.support.store import FailingFinishStore
 
 
 def test_run_execution_persists_before_provider_and_returns_only_outcome() -> None:
@@ -44,6 +45,7 @@ def test_run_execution_persists_before_provider_and_returns_only_outcome() -> No
 
     assert result == Completed(value="done")
     assert isinstance(events[-1], RunEndEvent)
+    assert handle.session_id == session.id
     assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
     assert [item.role for item in session.get_history()] == ["user", "assistant"]
     assert tuple(vars(handle)) == ("_execution",)
@@ -53,7 +55,7 @@ def test_run_execution_persists_before_provider_and_returns_only_outcome() -> No
 def test_run_execution_returns_faulted_when_finalization_is_not_durable() -> None:
     """Replace a candidate outcome with Faulted after Store failure."""
 
-    store = _FailingFinishStore(in_memory=True)
+    store = FailingFinishStore(in_memory=True)
     session = SessionRepository(store).create(session_id="session-1")
     transport = ProviderStreamMock([final_text_stream("response-1", "lost")])
 
@@ -159,23 +161,6 @@ def _dependencies(transport: ProviderStreamMock) -> _ExecutionDependencies:
         auto_mode=False,
         tool_executor=ToolExecutor(()),
     )
-
-
-class _FailingFinishStore(SQLiteStore):
-    """Store that deterministically fails terminal persistence."""
-
-    def finish_run(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        outcome: RunOutcome,
-        history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
-        """Reject terminal persistence after successful admission."""
-
-        _ = session_id, run_id, outcome, history_delta
-        raise StorePersistenceError("finish_run", OSError("disk full"))
 
 
 class _FinalizationCrash(BaseException):
