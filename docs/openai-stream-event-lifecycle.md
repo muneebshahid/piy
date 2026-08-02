@@ -298,16 +298,16 @@ sequenceDiagram
 
 ## Run Lifecycle
 
-Every run log begins with `RunStartEvent` and ends with exactly one
-`RunEndEvent(outcome)` on every in-process termination path. Inner events
+Every run log begins with `RunStartEvent` and ends with one terminal event.
+`RunEndEvent(outcome)` closes a durably finalized run; `RunFaultEvent` closes
+the local stream when that durable ending cannot be established. Inner events
 carry no such guarantee. A failure or cancellation can leave inner starts
-without their normal ends; `RunEndEvent` terminates every scope still open
-and its outcome explains why the run stopped. Hard process death is outside
-this contract.
+without their normal ends; the terminal run event closes every scope still
+open. Hard process death is outside this contract.
 
 | Scope | Start | Normal end |
 | --- | --- | --- |
-| run | `RunStartEvent` (guaranteed first) | `RunEndEvent(outcome)` (guaranteed last) |
+| run | `RunStartEvent` (guaranteed first) | `RunEndEvent(outcome)` or `RunFaultEvent` (guaranteed last) |
 | agent attempt | `AgentStartEvent` | `AgentEndEvent` |
 | turn | `TurnStartEvent` | `TurnEndEvent(assistant_turn, tool_executions)` |
 | message | `MessageStartEvent` | `MessageEndEvent(assistant_turn)` |
@@ -318,13 +318,10 @@ Rules:
 - The handle emits its own `RunStartEvent` before execution starts, so
   every run log begins with a run start on every path, including an
   abort that lands before the first tick.
-- `RunEndEvent` is emitted only by the handle, after runtime-owned
-  finalization, exactly
-  once as the log's final event. Execution never emits it: the prompt
-  program returns a `RunOutcome`, and the handle turns that outcome — or
-  the exception or cancellation that replaces it — into the terminal
-  event, so a duplicated or missing run end is unrepresentable. Its
-  outcome variant implies how execution terminated.
+- `RunEndEvent` is emitted only after harness-owned durable finalization.
+  Execution returns a candidate `RunOutcome`; `RunExecution` persists it and
+  then emits the matching run end. A finalization failure emits
+  `RunFaultEvent` instead.
 - A tool execution that *fails* still gets its `ToolExecutionEndEvent`:
   the executor boundary wraps every tool failure into an error outcome.
   Cancellation or infrastructure failure while the tool is active leaves
@@ -338,12 +335,9 @@ Rules:
   so position in the log identifies them, with `ResultFollowUpEvent`
   separating retries.
 - The terminal run record and replayable history are committed atomically
-  before `RunEndEvent` closes the live log. If that transaction fails, the
-  run end preserves the execution outcome and `RunHandle.wait()` returns a
-  `RunReport` whose `finalization_error` carries the Store failure. A stale
-  writer is reported the same way with `StaleRunError`; its report retains the
-  local outcome and history delta while an explicit Store read reveals the
-  winning durable outcome.
+  before `RunEndEvent` closes the live log. If that transaction fails,
+  `RunHandle.wait()` returns `Faulted` and `RunFaultEvent` closes the local
+  event stream. A stale writer reconciles to the authoritative stored outcome.
 - Provider stream fragments (`TextStart/End`, `ReasoningStart/End`,
   `ToolCallStart/Delta/End`, and the provider `StreamStart/Done/Error`
   events) are message content, not lifecycle scopes; the containing

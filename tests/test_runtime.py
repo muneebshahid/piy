@@ -11,21 +11,23 @@ from tile import (
     Aborted,
     ActiveRunError,
     AgentFailure,
-    AgentRuntime,
+    AgentHarness,
     Completed,
     ExecutionFailure,
     Failed,
+    Faulted,
     HistoryItem,
+    Provider,
     RunHandle,
     RunOutcome,
     RunRecord,
     SessionRecord,
     SessionNotFoundError,
+    SessionRepository,
     SQLiteStore,
-    StaleRunError,
     StorePersistenceError,
 )
-from tile.events import AgentEvent, RunEndEvent
+from tile.events import AgentEvent, RunFaultEvent
 from tile.types import (
     AssistantTurn,
     AsyncEventStream,
@@ -59,20 +61,19 @@ class _TextResult(BaseModel):
     value: str
 
 
-def test_runtime_creates_lists_and_gets_persistent_sessions() -> None:
-    """Use the Store as the authoritative session registry."""
+def test_repository_creates_lists_and_gets_persistent_sessions() -> None:
+    """Use the repository as the authoritative session registry."""
 
-    runtime, _, _ = _runtime([])
-    generated = runtime.session(name="Generated")
-    explicit = runtime.session(session_id="known", name="Known")
-    repeated = runtime.session(session_id="known", name="Ignored")
+    repository = SessionRepository(SQLiteStore(in_memory=True))
+    generated = repository.create(name="Generated")
+    explicit = repository.create(session_id="known", name="Known")
 
     assert generated.id != explicit.id
-    assert repeated.name == "Known"
-    assert [session.id for session in runtime.sessions] == [generated.id, "known"]
-    assert runtime.get_session("known").name == "Known"
+    assert explicit.get_session_record().name == "Known"
+    assert [session.id for session in repository.list()] == [generated.id, "known"]
+    assert repository.get("known").get_session_record().name == "Known"
     with pytest.raises(SessionNotFoundError, match="missing"):
-        runtime.get_session("missing")
+        repository.get("missing")
 
 
 def test_runtime_commits_a_complete_turn_only_at_finalization() -> None:
@@ -82,27 +83,25 @@ def test_runtime_commits_a_complete_turn_only_at_finalization() -> None:
         release = asyncio.Event()
         provider = GatedProviderStreamMock([release])
         store = SQLiteStore(in_memory=True)
-        runtime = AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
+        session = SessionRepository(store).create(session_id="atomic-history")
+        harness = AgentHarness(
+            session=session,
             cwd=Path("."),
-            store=store,
         )
-        session = runtime.session(session_id="atomic-history")
-        handle = await session.prompt("hello")
+        configured_provider = provider
+        handle = await harness.prompt("hello", provider=configured_provider)
         await _wait_for_provider(provider)
 
-        assert session.history == ()
+        assert session.get_history() == ()
         assert store.get_run(handle.id).status == "running"
         assert store.get_run(handle.id).prompt == "hello"
 
         release.set()
-        report = await handle.wait()
-        assert report.status == "completed"
-        prompt = report.history_delta[0]
+        assert await handle.wait() == Completed(value="answer 0")
+        prompt = session.get_history()[0]
         assert isinstance(prompt, UserMessage)
         assert prompt.content == "hello"
-        assert len(session.history) == 2
+        assert len(session.get_history()) == 2
         assert store.get_run(handle.id).outcome == Completed(value="answer 0")
         store.close()
 
@@ -142,18 +141,19 @@ def test_runtime_keeps_multi_attempt_history_provisional_until_finalization() ->
             return ToolResult.text("inspected")
 
         store = SQLiteStore(in_memory=True)
-        runtime = AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
+        session = SessionRepository(store).create(session_id="provisional")
+        harness = AgentHarness(
+            session=session,
             cwd=Path("."),
-            store=store,
             tools=[_tool("inspect", inspect)],
         )
-        session = runtime.session(session_id="provisional")
-        handle = await session.prompt("inspect", result=_TextResult)
+        configured_provider = provider
+        handle = await harness.prompt(
+            "inspect", provider=configured_provider, result=_TextResult
+        )
 
         await _wait_for_provider(provider, expected=3)
-        assert session.history == ()
+        assert session.get_history() == ()
         assert [item.role for item in provider.history(2)] == [
             "user",
             "assistant",
@@ -163,9 +163,8 @@ def test_runtime_keeps_multi_attempt_history_provisional_until_finalization() ->
         ]
 
         releases[2].set()
-        report = await handle.wait()
-        assert report.persisted
-        assert [item.role for item in session.history] == [
+        assert isinstance(await handle.wait(), Completed)
+        assert [item.role for item in session.get_history()] == [
             "user",
             "assistant",
             "tool_result",
@@ -186,35 +185,40 @@ def test_runtime_persists_running_record_before_provider_execution() -> None:
         store = SQLiteStore(in_memory=True)
         observed_statuses: list[str] = []
 
-        class _ObservingProvider:
+        class _ObservingProvider(Provider):
             """Read the store at the provider boundary."""
 
-            provider = "test"
+            def __init__(self) -> None:
+                """Configure the observing provider."""
 
-            async def __call__(
+                super().__init__(model="gpt-5.4")
+
+            @property
+            def name(self) -> str:
+                """Return the deterministic provider identity."""
+
+                return "test"
+
+            async def stream(
                 self,
                 history: Sequence[ConversationItem],
-                model: str,
                 *,
                 instructions: str,
                 tools: Sequence[ToolDefinition] | None,
             ) -> AsyncEventStream:
                 """Capture the running record before returning a response."""
 
-                _ = history, model, instructions, tools
+                _ = history, instructions, tools
                 observed_statuses.extend(
                     run.status for run in store.list_runs("session-1")
                 )
                 return async_stream(final_text_stream("response-1", "done"))
 
-        runtime = AgentRuntime(
-            stream_fn=_ObservingProvider(),
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=store,
-        )
-        run = await runtime.session(session_id="session-1").prompt("hello")
-        assert (await run.wait()).status == "completed"
+        session = SessionRepository(store).create(session_id="session-1")
+        harness = AgentHarness(session=session, cwd=Path("."))
+        provider = _ObservingProvider()
+        run = await harness.prompt("hello", provider=provider)
+        assert isinstance(await run.wait(), Completed)
         assert observed_statuses == ["running"]
         store.close()
 
@@ -225,10 +229,10 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
     """Avoid a second fallible Store read after durable run acceptance."""
 
     store = _UnavailablePublicHistoryStore(in_memory=True)
-    store.create_session(record=SessionRecord.create(session_id="session-1"))
+    store.create_session(record=SessionRecord.create(id="session-1"))
     started = store.start_run(
         record=RunRecord.start(
-            run_id="seed",
+            id="seed",
             session_id="session-1",
             prompt="first",
             model="gpt-5.4",
@@ -236,7 +240,7 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
         ),
     )
     store.finish_run(
-        run_id=started.run.run_id,
+        run_id=started.run.id,
         outcome=Completed(value="first answer"),
         history_delta=[
             UserMessage(content="first"),
@@ -244,16 +248,13 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
         ],
     )
     provider = ProviderStreamMock([final_text_stream("response-2", "second answer")])
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        cwd=Path("."),
-        store=store,
-    )
+    session = SessionRepository(store).get("session-1")
+    harness = AgentHarness(session=session, cwd=Path("."))
+    configured_provider = provider
 
     async def _run() -> None:
-        handle = await runtime.get_session("session-1").prompt("second")
-        assert (await handle.wait()).status == "completed"
+        handle = await harness.prompt("second", provider=configured_provider)
+        assert isinstance(await handle.wait(), Completed)
 
     asyncio.run(_run())
     assert [item.role for item in provider.history(0)] == [
@@ -267,14 +268,17 @@ def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
 def test_runtime_failure_commits_the_valid_completed_prefix() -> None:
     """Persist replayable items while excluding an errored assistant turn."""
 
-    runtime, store, _ = _runtime([error_stream("response-1", "provider unavailable")])
-    session = runtime.session(session_id="failed")
+    harness, store, provider = _harness(
+        [error_stream("response-1", "provider unavailable")],
+        session_id="failed",
+    )
+    session = harness.session
 
     async def _run() -> tuple[RunHandle, RunOutcome]:
-        handle = await session.prompt("hello")
-        report = await handle.wait()
-        assert report.status == "failed"
-        return handle, report.outcome
+        handle = await harness.prompt("hello", provider=_configured(provider))
+        outcome = await handle.wait()
+        assert isinstance(outcome, Failed)
+        return handle, outcome
 
     handle, outcome = asyncio.run(_run())
 
@@ -285,8 +289,9 @@ def test_runtime_failure_commits_the_valid_completed_prefix() -> None:
             message="provider unavailable",
         )
     )
-    assert session.history == (session.history[0],)
-    prompt = session.history[0]
+    history = session.get_history()
+    assert history == (history[0],)
+    prompt = history[0]
     assert isinstance(prompt, UserMessage)
     assert prompt.content == "hello"
     store.close()
@@ -306,28 +311,24 @@ def test_agent_failure_commits_its_complete_replayable_history() -> None:
         ]
     )
     store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        cwd=Path("."),
-        store=store,
-    )
-    session = runtime.session(session_id="agent-failure-history")
+    session = SessionRepository(store).create(session_id="agent-failure-history")
+    harness = AgentHarness(session=session, cwd=Path("."))
+    configured_provider = provider
 
     async def _run() -> None:
-        handle = await session.prompt("try", result=_TextResult)
-        report = await handle.wait()
+        handle = await harness.prompt(
+            "try", provider=configured_provider, result=_TextResult
+        )
+        outcome = await handle.wait()
 
         expected = Failed(cause=AgentFailure(reason="cannot deliver"))
-        assert report.outcome == expected
-        assert report.persisted
+        assert outcome == expected
         assert store.get_run(handle.id).outcome == expected
-        assert [item.role for item in session.history] == [
+        assert [item.role for item in session.get_history()] == [
             "user",
             "assistant",
             "tool_result",
         ]
-        assert tuple(session.history) == report.history_delta
 
     asyncio.run(_run())
     store.close()
@@ -347,7 +348,7 @@ def test_abort_commits_a_healed_replayable_prefix() -> None:
         return ToolResult.text("unreachable")
 
     tool = _tool("blocked", _blocked_tool)
-    runtime, store, provider = _runtime(
+    harness, store, provider = _harness(
         [
             tool_call_stream(
                 response_id="response-1",
@@ -356,21 +357,22 @@ def test_abort_commits_a_healed_replayable_prefix() -> None:
                 arguments={},
             )
         ],
+        session_id="abort",
         tools=[tool],
     )
-    session = runtime.session(session_id="abort")
+    session = harness.session
 
     async def _run() -> tuple[RunHandle, RunOutcome]:
-        handle = await session.prompt("start")
+        handle = await harness.prompt("start", provider=_configured(provider))
         await _wait_for_provider(provider)
         await tool_started.wait()
         handle.abort()
-        report = await handle.wait()
-        assert report.status == "aborted"
-        return handle, report.outcome
+        outcome = await handle.wait()
+        assert isinstance(outcome, Aborted)
+        return handle, outcome
 
     handle, outcome = asyncio.run(_run())
-    history = session.history
+    history = session.get_history()
 
     assert outcome == Aborted(reason="cancelled")
     assert len(history) == 3
@@ -387,64 +389,59 @@ def test_overlapping_prompt_is_rejected_by_the_store() -> None:
         release = asyncio.Event()
         provider = GatedProviderStreamMock([release])
         store = SQLiteStore(in_memory=True)
-        runtime = AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=store,
-        )
-        session = runtime.session(session_id="busy")
-        first = await session.prompt("first")
+        session = SessionRepository(store).create(session_id="busy")
+        harness = AgentHarness(session=session, cwd=Path("."))
+        configured_provider = provider
+        first = await harness.prompt("first", provider=configured_provider)
         await _wait_for_provider(provider)
 
         with pytest.raises(ActiveRunError, match="busy"):
-            await session.prompt("second")
+            await harness.prompt("second", provider=configured_provider)
 
         first.abort()
-        assert (await first.wait()).status == "aborted"
+        assert await first.wait() == Aborted(reason="cancelled")
         store.close()
 
     asyncio.run(_run())
 
 
-def test_replace_active_fences_old_history_and_runs_the_successor() -> None:
-    """Cancel a local predecessor after atomic replacement and commit only the new turn."""
+def test_durable_abort_fences_old_history_and_runs_the_successor() -> None:
+    """Fence a local predecessor in storage and commit only the new turn."""
 
     async def _run() -> None:
         first_release = asyncio.Event()
         second_release = asyncio.Event()
         provider = GatedProviderStreamMock([first_release, second_release])
         store = SQLiteStore(in_memory=True)
-        runtime = AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=store,
-        )
-        session = runtime.session(session_id="replace")
-        first = await session.prompt("first")
+        repository = SessionRepository(store)
+        session = repository.create(session_id="recover")
+        harness = AgentHarness(session=session, cwd=Path("."))
+        configured_provider = provider
+        first = await harness.prompt("first", provider=configured_provider)
         await _wait_for_provider(provider)
-        second = await session.prompt("second", replace_active=True)
+        aborted = repository.abort_active_run(session.id)
+        second = await harness.prompt("second", provider=configured_provider)
         await _wait_for_provider(provider, expected=2)
 
-        first_report = await first.wait()
-        assert first_report.status == "aborted"
-        assert first_report.outcome == Aborted(reason="replaced")
-        assert not first_report.persisted
-        assert isinstance(first_report.finalization_error, StaleRunError)
         second_release.set()
-        assert (await second.wait()).status == "completed"
+        assert isinstance(await second.wait(), Completed)
+        first_release.set()
+        assert await first.wait() == Aborted(reason="recovered")
+        assert aborted is not None
+        assert aborted.outcome == Aborted(reason="recovered")
         assert [
-            item.content for item in session.history if isinstance(item, UserMessage)
+            item.content
+            for item in session.get_history()
+            if isinstance(item, UserMessage)
         ] == ["second"]
-        assert store.get_run(first.id).outcome == Aborted(reason="replaced")
+        assert store.get_run(first.id).outcome == Aborted(reason="recovered")
         store.close()
 
     asyncio.run(_run())
 
 
-def test_replace_active_works_across_runtime_instances(tmp_path: Path) -> None:
-    """Use database fencing when the predecessor belongs to another runtime."""
+def test_durable_abort_works_across_harness_instances(tmp_path: Path) -> None:
+    """Use repository fencing when the predecessor belongs to another harness."""
 
     async def _run() -> None:
         database_path = tmp_path / "shared.db"
@@ -455,35 +452,30 @@ def test_replace_active_works_across_runtime_instances(tmp_path: Path) -> None:
         second_provider = ProviderStreamMock(
             [final_text_stream("response-2", "replacement")]
         )
-        first_runtime = AgentRuntime(
-            stream_fn=first_provider.fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=first_store,
+        first_repository = SessionRepository(first_store)
+        first_session = first_repository.create(session_id="shared")
+        first_harness = AgentHarness(session=first_session, cwd=Path("."))
+        first = await first_harness.prompt(
+            "first", provider=_configured(first_provider)
         )
-        second_runtime = AgentRuntime(
-            stream_fn=second_provider.fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=second_store,
-        )
-        first_session = first_runtime.session(session_id="shared")
-        first = await first_session.prompt("first")
         await _wait_for_provider(first_provider)
 
-        second_session = second_runtime.get_session("shared")
-        second = await second_session.prompt("second", replace_active=True)
-        assert (await second.wait()).status == "completed"
+        second_repository = SessionRepository(second_store)
+        second_session = second_repository.get("shared")
+        second_harness = AgentHarness(session=second_session, cwd=Path("."))
+        aborted = second_repository.abort_active_run(second_session.id)
+        second = await second_harness.prompt(
+            "second",
+            provider=_configured(second_provider),
+        )
+        assert isinstance(await second.wait(), Completed)
         first_release.set()
-        first_report = await first.wait()
-        assert first_report.status == "completed"
-        assert first_report.outcome == Completed(value="answer 0")
-        assert not first_report.persisted
-        assert isinstance(first_report.finalization_error, StaleRunError)
-        assert first_report.last_assistant_turn is not None
+        assert await first.wait() == Aborted(reason="recovered")
+        assert aborted is not None
+        assert aborted.id == first.id
         assert [
             item.content
-            for item in second_session.history
+            for item in second_session.get_history()
             if isinstance(item, UserMessage)
         ] == ["second"]
         first_store.close()
@@ -497,25 +489,21 @@ def test_start_persistence_failure_raises_before_a_handle_exists() -> None:
 
     async def _run() -> None:
         store = SQLiteStore(in_memory=True)
-        runtime = AgentRuntime(
-            stream_fn=ProviderStreamMock([]).fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=store,
-        )
-        session = runtime.session(session_id="start-failure")
+        transport = ProviderStreamMock([])
+        session = SessionRepository(store).create(session_id="start-failure")
+        harness = AgentHarness(session=session, cwd=Path("."))
         store.close()
 
         with pytest.raises(StorePersistenceError) as raised:
-            await session.prompt("cannot start")
+            await harness.prompt("cannot start", provider=_configured(transport))
 
         assert raised.value.operation == "start_run"
 
     asyncio.run(_run())
 
 
-def test_atomic_finalization_failure_is_visible_and_recoverable() -> None:
-    """Report finalization failure without replacing the execution outcome."""
+def test_atomic_finalization_failure_faults_handle_until_durable_recovery() -> None:
+    """Expose a finalization fault and reuse the harness after recovery."""
 
     async def _run() -> None:
         store = _FailingFinishStore(in_memory=True)
@@ -525,40 +513,37 @@ def test_atomic_finalization_failure_is_visible_and_recoverable() -> None:
                 final_text_stream("response-2", "recovered"),
             ]
         )
-        runtime = AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=store,
-        )
-        session = runtime.session(session_id="failure")
-        first = await session.prompt("first")
+        repository = SessionRepository(store)
+        session = repository.create(session_id="failure")
+        harness = AgentHarness(session=session, cwd=Path("."))
+        configured_provider = _configured(provider)
+        first = await harness.prompt("first", provider=configured_provider)
 
-        report = await first.wait()
+        result = await first.wait()
 
         events = [event async for event in first.events()]
         terminal = events[-1]
-        assert isinstance(terminal, RunEndEvent)
-        assert report.outcome == Completed(value="lost")
-        assert report.status == "completed"
-        assert not report.persisted
-        assert isinstance(report.finalization_error, StorePersistenceError)
-        assert isinstance(report.finalization_error.cause, OSError)
-        assert await first.wait() is report
-        assert terminal.outcome == Completed(value="lost")
+        assert isinstance(terminal, RunFaultEvent)
+        assert isinstance(result, Faulted)
+        assert isinstance(result.error, StorePersistenceError)
+        assert isinstance(result.error.cause, OSError)
+        assert await first.wait() is result
         assert store.get_run(first.id).status == "running"
-        assert session.history == ()
+        assert session.get_history() == ()
 
         store.fail_finishes = False
-        recovery = await session.prompt("second", replace_active=True)
-        assert (await recovery.wait()).status == "completed"
+        aborted = repository.abort_active_run(session.id)
+        assert aborted is not None
+        assert aborted.outcome == Aborted(reason="recovered")
+        recovery = await harness.prompt("second", provider=configured_provider)
+        assert isinstance(await recovery.wait(), Completed)
         store.close()
 
     asyncio.run(_run())
 
 
-def test_agent_failure_survives_a_finalization_failure() -> None:
-    """Keep the agent verdict separate from Store finalization diagnostics."""
+def test_agent_failure_is_overridden_by_a_finalization_fault() -> None:
+    """Return the durability fault when an agent failure cannot be persisted."""
 
     store = _FailingFinishStore(in_memory=True)
     provider = ProviderStreamMock(
@@ -571,76 +556,59 @@ def test_agent_failure_survives_a_finalization_failure() -> None:
             )
         ]
     )
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        cwd=Path("."),
-        store=store,
-    )
+    session = SessionRepository(store).create(session_id="agent-failure")
+    harness = AgentHarness(session=session, cwd=Path("."))
 
     async def _run() -> None:
-        handle = await runtime.session(session_id="agent-failure").prompt(
+        handle = await harness.prompt(
             "fail",
+            provider=_configured(provider),
             result=_TextResult,
         )
-        report = await handle.wait()
+        result = await handle.wait()
 
-        assert report.outcome == Failed(cause=AgentFailure(reason="cannot deliver"))
-        assert report.execution_error is None
-        assert isinstance(report.finalization_error, StorePersistenceError)
-        assert not report.persisted
+        assert isinstance(result, Faulted)
+        assert isinstance(result.error, StorePersistenceError)
 
     asyncio.run(_run())
     store.close()
 
 
-def test_execution_failure_survives_a_finalization_failure() -> None:
-    """Report both execution and Store errors without conflating their meanings."""
+def test_execution_failure_is_overridden_by_a_finalization_fault() -> None:
+    """Return the durability fault when execution failure cannot be persisted."""
 
     store = _FailingFinishStore(in_memory=True)
     provider = ProviderStreamMock([error_stream("response-1", "provider unavailable")])
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        cwd=Path("."),
-        store=store,
-    )
+    session = SessionRepository(store).create(session_id="execution-failure")
+    harness = AgentHarness(session=session, cwd=Path("."))
 
     async def _run() -> None:
-        handle = await runtime.session(session_id="execution-failure").prompt("fail")
-        report = await handle.wait()
+        handle = await harness.prompt("fail", provider=_configured(provider))
+        result = await handle.wait()
 
-        assert isinstance(report.outcome, Failed)
-        assert isinstance(report.outcome.cause, ExecutionFailure)
-        assert report.outcome.cause.message == "provider unavailable"
-        assert report.execution_error is not None
-        assert isinstance(report.finalization_error, StorePersistenceError)
+        assert isinstance(result, Faulted)
+        assert isinstance(result.error, StorePersistenceError)
 
     asyncio.run(_run())
     store.close()
 
 
-def test_abort_survives_a_finalization_failure() -> None:
-    """Preserve explicit cancellation when its terminal write cannot commit."""
+def test_abort_is_overridden_by_a_finalization_fault() -> None:
+    """Return the durability fault when cancellation cannot be persisted."""
 
     async def _run() -> None:
         release = asyncio.Event()
         provider = GatedProviderStreamMock([release])
         store = _FailingFinishStore(in_memory=True)
-        runtime = AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
-            cwd=Path("."),
-            store=store,
-        )
-        handle = await runtime.session(session_id="abort-failure").prompt("wait")
+        session = SessionRepository(store).create(session_id="abort-failure")
+        harness = AgentHarness(session=session, cwd=Path("."))
+        handle = await harness.prompt("wait", provider=_configured(provider))
         await _wait_for_provider(provider)
         handle.abort()
-        report = await handle.wait()
+        result = await handle.wait()
 
-        assert report.outcome == Aborted(reason="cancelled")
-        assert report.execution_error is None
-        assert isinstance(report.finalization_error, StorePersistenceError)
+        assert isinstance(result, Faulted)
+        assert isinstance(result.error, StorePersistenceError)
         store.close()
 
     asyncio.run(_run())
@@ -649,25 +617,30 @@ def test_abort_survives_a_finalization_failure() -> None:
 def test_forked_session_inherits_flat_history_and_diverges() -> None:
     """Fork committed history without copying run ownership."""
 
-    runtime, store, _ = _runtime(
+    provider = ProviderStreamMock(
         [
             final_text_stream("response-1", "source"),
             final_text_stream("response-2", "fork"),
         ]
     )
-    source = runtime.session(session_id="source")
+    store = SQLiteStore(in_memory=True)
+    repository = SessionRepository(store)
+    source = repository.create(session_id="source")
+    source_harness = AgentHarness(session=source, cwd=Path("."))
+    configured_provider = _configured(provider)
 
     async def _run() -> None:
-        first = await source.prompt("first")
-        assert (await first.wait()).status == "completed"
-        fork = source.fork(session_id="fork", name="Fork")
-        assert fork.history == source.history
-        assert runtime.runs_for("fork") == ()
+        first = await source_harness.prompt("first", provider=configured_provider)
+        assert isinstance(await first.wait(), Completed)
+        fork = repository.fork("source", target_session_id="fork", name="Fork")
+        assert fork.get_history() == source.get_history()
+        assert fork.get_runs() == ()
 
-        second = await fork.prompt("second")
-        assert (await second.wait()).status == "completed"
-        assert len(fork.history) == 4
-        assert len(source.history) == 2
+        fork_harness = AgentHarness(session=fork, cwd=Path("."))
+        second = await fork_harness.prompt("second", provider=configured_provider)
+        assert isinstance(await second.wait(), Completed)
+        assert len(fork.get_history()) == 4
+        assert len(source.get_history()) == 2
 
     asyncio.run(_run())
     store.close()
@@ -676,11 +649,13 @@ def test_forked_session_inherits_flat_history_and_diverges() -> None:
 def test_multiple_subscribers_replay_the_same_closed_log() -> None:
     """Keep event subscription independent from execution ownership."""
 
-    runtime, store, _ = _runtime([final_text_stream("response-1", "done")])
-    session = runtime.session(session_id="subscribers")
+    harness, store, provider = _harness(
+        [final_text_stream("response-1", "done")],
+        session_id="subscribers",
+    )
 
     async def _run() -> None:
-        handle = await session.prompt("hello")
+        handle = await harness.prompt("hello", provider=_configured(provider))
         first, second = await asyncio.gather(
             _collect_events(handle),
             _collect_events(handle),
@@ -695,16 +670,19 @@ def test_multiple_subscribers_replay_the_same_closed_log() -> None:
 def test_run_continues_after_a_subscriber_stops_consuming() -> None:
     """Keep execution task-owned when an event subscriber disconnects."""
 
-    runtime, store, _ = _runtime([final_text_stream("response-1", "done")])
-    session = runtime.session(session_id="early-stop")
+    harness, store, provider = _harness(
+        [final_text_stream("response-1", "done")],
+        session_id="early-stop",
+    )
+    session = harness.session
 
     async def _run() -> None:
-        handle = await session.prompt("hello")
+        handle = await harness.prompt("hello", provider=_configured(provider))
         async for _ in handle.events():
             break
 
-        assert (await handle.wait()).status == "completed"
-        assert len(session.history) == 2
+        assert isinstance(await handle.wait(), Completed)
+        assert len(session.get_history()) == 2
 
     asyncio.run(_run())
     store.close()
@@ -713,19 +691,20 @@ def test_run_continues_after_a_subscriber_stops_consuming() -> None:
 def test_next_prompt_replays_committed_history_and_current_prompt() -> None:
     """Build later requests from typed committed history plus the new prompt."""
 
-    runtime, store, provider = _runtime(
+    harness, store, provider = _harness(
         [
             final_text_stream("response-1", "first answer"),
             final_text_stream("response-2", "second answer"),
-        ]
+        ],
+        session_id="multi-turn",
     )
-    session = runtime.session(session_id="multi-turn")
+    configured_provider = _configured(provider)
 
     async def _run() -> None:
-        first = await session.prompt("first")
-        assert (await first.wait()).status == "completed"
-        second = await session.prompt("second")
-        assert (await second.wait()).status == "completed"
+        first = await harness.prompt("first", provider=configured_provider)
+        assert isinstance(await first.wait(), Completed)
+        second = await harness.prompt("second", provider=configured_provider)
+        assert isinstance(await second.wait(), Completed)
 
     asyncio.run(_run())
     replayed = provider.history(1)
@@ -738,17 +717,18 @@ def test_next_prompt_replays_committed_history_and_current_prompt() -> None:
     store.close()
 
 
-def test_run_report_exposes_history_and_latest_assistant_turn() -> None:
-    """Expose terminal run-local history through the immutable report."""
+def test_wait_returns_only_outcome_while_session_exposes_history() -> None:
+    """Keep run results small and expose durable history through the session."""
 
-    runtime, store, _ = _runtime([final_text_stream("response-1", "done")])
+    harness, store, provider = _harness(
+        [final_text_stream("response-1", "done")],
+        session_id="output",
+    )
 
     async def _run() -> None:
-        handle = await runtime.session(session_id="output").prompt("hello")
-        report = await handle.wait()
-        assert report.status == "completed"
-        assert report.last_assistant_turn is not None
-        assert [item.role for item in report.history_delta] == [
+        handle = await harness.prompt("hello", provider=_configured(provider))
+        assert await handle.wait() == Completed(value="done")
+        assert [item.role for item in harness.session.get_history()] == [
             "user",
             "assistant",
         ]
@@ -770,7 +750,7 @@ def test_runtime_binds_cwd_and_rejects_model_visible_cwd(tmp_path: Path) -> None
         return ToolResult.text("ok")
 
     valid = _tool("inspect_cwd", inspect_cwd)
-    runtime, store, _ = _runtime(
+    harness, store, provider = _harness(
         [
             tool_call_stream(
                 response_id="response-1",
@@ -780,13 +760,14 @@ def test_runtime_binds_cwd_and_rejects_model_visible_cwd(tmp_path: Path) -> None
             ),
             final_text_stream("response-2", "done"),
         ],
+        session_id="cwd",
         tools=[valid],
         cwd=tmp_path,
     )
 
     async def _run() -> None:
-        run = await runtime.session(session_id="cwd").prompt("inspect")
-        assert (await run.wait()).status == "completed"
+        run = await harness.prompt("inspect", provider=_configured(provider))
+        assert isinstance(await run.wait(), Completed)
 
     asyncio.run(_run())
     assert captured == [tmp_path.resolve()]
@@ -823,27 +804,33 @@ class _UnavailablePublicHistoryStore(SQLiteStore):
         """Prove prompt bootstrap does not perform a second Store read."""
 
         _ = session_id
-        raise AssertionError("AgentRuntime must use StartedRun.committed_history")
+        raise AssertionError("RunExecution must use StartedRun.committed_history")
 
 
-def _runtime(
+def _harness(
     streams: Sequence[Sequence[ProviderStreamEvent]],
     *,
+    session_id: str,
     tools: Sequence[ToolDefinition] = (),
     cwd: Path = Path("."),
-) -> tuple[AgentRuntime, SQLiteStore, ProviderStreamMock]:
-    """Build a runtime with one in-memory SQLite Store."""
+) -> tuple[AgentHarness, SQLiteStore, ProviderStreamMock]:
+    """Build a session-bound harness with an in-memory SQLite Store."""
 
     provider = ProviderStreamMock(streams)
     store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
+    session = SessionRepository(store).create(session_id=session_id)
+    harness = AgentHarness(
+        session=session,
         cwd=cwd,
-        store=store,
         tools=tools,
     )
-    return runtime, store, provider
+    return harness, store, provider
+
+
+def _configured(provider: ProviderStreamMock) -> Provider:
+    """Bind a deterministic transport to the test model."""
+
+    return provider
 
 
 async def _wait_for_provider(

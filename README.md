@@ -10,12 +10,12 @@ architecture: a frontier model, local tools, and your context, trusted to
 finish a task. Tile is that architecture as an embeddable Python runtime.
 Your model, your context, your software.
 
-Tile is a **runtime you use as a library**: pass it a provider stream, tools,
-and one store — built-ins ship for all three — and it runs prompt-driven agent
-sessions on top: provider streaming, a tool-execution loop, typed run
-outcomes, session history, and durable run summaries. Setup is one
-constructor call; the quickstart below is the whole thing. Embed it in an
-application, or build a service on top.
+Tile is a **runtime you use as a library**. A `SessionRepository` manages
+persistent sessions, an `AgentHarness` binds one session to its tools and
+working directory, and a configured `Provider` is selected for each prompt.
+Tile supplies provider streaming, a tool-execution loop, typed run outcomes,
+session history, and durable run summaries. Embed it in an application, or
+build a service on top.
 
 **Status: 0.x.** APIs change without deprecation cycles. OpenAI (Responses API)
 is the only provider today; more are planned. Requires Python 3.13+.
@@ -26,13 +26,13 @@ See [Roadmap](#roadmap) for where this is going.
 Tile owns the lifecycle around an agent loop, and that ownership is a set of
 concrete guarantees:
 
-- a prompt becomes a task-owned `RunHandle`: `session.prompt(...)` returns it
+- a prompt becomes a task-owned `RunHandle`: `harness.prompt(...)` returns it
   immediately, and execution continues even if every subscriber disconnects;
 - a provider death never corrupts the session: partial turns are dropped,
   unanswered tool calls are healed, and the next prompt works;
 - every accepted prompt has a durable running record before execution begins;
-- every run log closes: exactly one `RunEndEvent` carries the terminal
-  outcome on every in-process termination path;
+- every durable run log closes with `RunEndEvent`; a durability failure closes
+  the local stream with `RunFaultEvent` and faults its harness;
 - providers normalize into one event and history contract;
 - prompts may require explicit, typed success or failure outcomes.
 
@@ -57,31 +57,36 @@ from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from tile import AgentRuntime, SQLiteStore
-from tile.providers.openai import create_stream_api
+from tile import AgentHarness, Completed, SessionRepository, SQLiteStore
+from tile.providers.openai import OpenAIProvider
 from tile.tools import BUILTIN_TOOLS
 
 
 async def main() -> None:
     store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=create_stream_api(AsyncOpenAI()),
-        model="gpt-5.4",
+    session = SessionRepository(store).create(name="quickstart")
+    harness = AgentHarness(
+        session=session,
         tools=BUILTIN_TOOLS,
         cwd=Path.cwd(),
-        store=store,
     )
-    session = runtime.session(name="quickstart")
-    run = await session.prompt("List the files in the current directory.")
-    report = await run.wait()
-    print(report.status)  # "completed"
-    print(report.outcome)
+    provider = OpenAIProvider(
+        client=AsyncOpenAI(),
+        model="gpt-5.4",
+    )
+    run = await harness.prompt(
+        "List the files in the current directory.",
+        provider=provider,
+    )
+    result = await run.wait()
+    if isinstance(result, Completed):
+        print(result.value)
 
 
 asyncio.run(main())
 ```
 
-`cwd` is required and is the runtime's single working directory: it is
+`cwd` is required and is the harness's single working directory: it is
 announced to the model in the system prompt and injected into every tool whose
 function declares a `cwd` parameter. `BUILTIN_TOOLS` (`read`, `bash`, `edit`,
 `grep`, `find`, `ls`, `write`) are plain, unbound definitions — the runtime
@@ -122,24 +127,22 @@ return `ToolResult` only for success and raise `ToolError` for intentional,
 model-visible failures. Any other exception is normalized as an unexpected
 invocation failure, while cancellation continues to propagate.
 
-Prompt execution is task-owned: `session.prompt(...)` submits a run and returns
-a handle immediately, the runtime drives it to completion, and any number of
+Prompt execution is task-owned: `harness.prompt(...)` submits a run and returns
+a handle immediately, the harness drives it to completion, and any number of
 subscribers can observe the event stream.
 
 ```python
-run = await session.prompt("Inspect the current repository")
+run = await harness.prompt("Inspect the current repository", provider=provider)
 async for event in run.events():
     ...
-report = await run.wait()
-status = report.status  # "completed" | "failed" | "aborted"
+result = await run.wait()  # Completed | Failed | Aborted | Faulted
 ```
 
-Every run's log begins with `RunStartEvent` and ends with exactly one
-`RunEndEvent` carrying the run's terminal outcome, on every in-process
-termination path. Inner events carry no such guarantee: a failure or
-abort can leave inner scopes open, and `RunEndEvent` terminates them.
-Its outcome names why the run stopped. `run.wait()` returns only after
-that closure, so waiters always observe a closed log.
+Every run's log begins with `RunStartEvent`. A durably finalized run ends with
+exactly one `RunEndEvent` carrying its outcome. If finalization itself fails,
+the local log instead ends with `RunFaultEvent` and `run.wait()` returns
+`Faulted`. Inner events carry no closure guarantee: a failure or abort can
+leave inner scopes open, and the terminal run event closes them.
 
 Run events are currently replayable in process while the `RunHandle` exists.
 Conversation history and run records share one atomic SQLite store.
@@ -152,9 +155,8 @@ One `Store` owns sessions, runs, and committed conversation history. A running
 record contains the submitted prompt before provider execution begins. The
 prompt and all replayable assistant/tool items remain provisional until the run
 finishes; session history therefore contains complete committed turns only.
-The runtime constructs new records through `SessionRecord.create()` and
-`RunRecord.start()` before handing them to the Store. Inserts therefore accept
-complete records. Finalization is a state transition instead: the runtime
+The harness constructs a new run record before handing it to the Store.
+Finalization is a state transition: the harness
 supplies only the run id, outcome, and history delta, and the Store derives the
 authoritative terminal record from its stored running row.
 
@@ -163,60 +165,65 @@ Execution sits between two short transactions:
 1. `start_run` validates the session, snapshots committed history, and inserts
    the running record atomically.
 2. Provider streaming and tool execution happen entirely in memory.
-3. The handle derives a local terminal record when execution ends. `finish_run`
-   applies its outcome to the authoritative stored record and conditionally
-   persists that record with the complete history delta in one transaction.
+3. Execution derives a candidate outcome. `finish_run` applies it to the
+   authoritative stored record and persists the complete history delta in one
+   transaction before exposing `RunEndEvent`.
 
 ```python
 from pathlib import Path
 
 from openai import AsyncOpenAI
 
-from tile import AgentRuntime, SQLiteStore
-from tile.providers.openai import create_stream_api
+from tile import AgentHarness, SessionRepository, SQLiteStore
+from tile.providers.openai import OpenAIProvider
 
 
 database_path = Path("tile.db")
 store = SQLiteStore(database_path)
-runtime = AgentRuntime(
-    stream_fn=create_stream_api(AsyncOpenAI()),
-    model="gpt-5.4",
+repository = SessionRepository(store)
+session = repository.create()
+harness = AgentHarness(
+    session=session,
     cwd=Path.cwd(),
-    store=store,
 )
+provider = OpenAIProvider(client=AsyncOpenAI(), model="gpt-5.4")
 
-session = runtime.session()
-run = await session.prompt("Inspect this repository")
+run = await harness.prompt("Inspect this repository", provider=provider)
 await run.wait()
 
-record = runtime.get_run(run.id)
-session_records = runtime.runs_for(session.id)
+record = next(record for record in session.get_runs() if record.id == run.id)
+session_records = session.get_runs()
 ```
 
 `finish_run` uses the run's `status="running"` condition as a stale-writer
-fence. If another process has already replaced or finalized that run, no
-history is inserted, and the report retains the process-local execution result
-with `StaleRunError` in `report.finalization_error`. If a terminal write fails
-because of a backend error, the transaction rolls back and the stored run
-remains `running`. In either case, `RunHandle.wait()` returns the local result
-with `report.persisted == False`; use `runtime.get_run(run.id)` when the
-authoritative stored outcome is needed. Recover from a still-running record
-explicitly by submitting another prompt with `replace_active=True`.
+fence. If repository recovery already aborted the run, its handle reconciles
+to the authoritative stored outcome. If the terminal write fails because of a
+backend error, the transaction rolls back, the stored run remains `running`,
+and `RunHandle.wait()` returns `Faulted`. The running record blocks later
+prompts with `ActiveRunError`. After resolving the persistence issue, recovery
+explicitly aborts that durable record; the same harness can then be reused.
 
 ```python
-replacement = await session.prompt("Try again", replace_active=True)
+aborted = repository.abort_active_run(session.id)
+assert aborted is not None
+
+retry = await harness.prompt(
+    "Try again",
+    provider=provider,
+)
 ```
 
-Replacement atomically marks the still-running predecessor as
-`Aborted(reason="replaced")` and inserts the successor. If the predecessor
-finished before the transaction acquired its lock, its terminal result remains
-unchanged and the new run starts normally.
+`abort_active_run` atomically marks a still-running record as
+`Aborted(reason="recovered")`; it returns `None` when no run is active. This is
+a durable recovery operation, not process control: an old task may continue,
+but stale-write fencing prevents it from committing. Call `RunHandle.abort()`
+separately when the local handle is still available.
 
 Forking creates a new session and copies its complete committed history into
 new history rows. Run records are not copied:
 
 ```python
-fork = session.fork(session_id="experiment")
+fork = repository.fork(session.id, target_session_id="experiment")
 ```
 
 Custom `Store` implementations must provide the same atomic semantics. JSONL
@@ -243,9 +250,13 @@ class WeatherReport(BaseModel):
     summary: str
 
 
-run = await session.prompt("What's the weather in Munich?", result=WeatherReport)
-report = await run.wait()
-match report.outcome:
+run = await harness.prompt(
+    "What's the weather in Munich?",
+    provider=provider,
+    result=WeatherReport,
+)
+result = await run.wait()
+match result:
     case Completed(value=report):
         print(report.city, report.temp_c)   # a WeatherReport instance
     case Failed(cause=AgentFailure(reason=reason)):
@@ -270,32 +281,27 @@ and contract text sit at the front of every provider request, so alternating
 typed and plain prompts — or switching schemas — within a session re-reads the
 whole session history at full price on each flip.
 
-## Run reports, status, and outcome
+## Run results and durable records
 
-`await run.wait()` returns one immutable `RunReport`. Its `record`, `status`,
-`outcome`, `history_delta`, and `last_assistant_turn` describe the terminal
-result. `execution_error` retains an original in-process exception for local
-debugging; it is never serialized. `finalization_error` describes a Store or
-other post-execution failure without changing the execution outcome.
+`await run.wait()` returns only a `RunResult`: `Completed`, `Failed`,
+`Aborted`, or `Faulted`. It does not bundle persistence metadata or history.
+Read committed history and durable run records from the harness's `Session`:
+`session.get_history()` and `session.get_runs()`.
 
-Use `runtime.get_run(run.id)` when an immediate cross-process authoritative
-read is required. Every terminal report carries exactly one `Completed`,
-`Failed`, or `Aborted` outcome, and status is derived directly from that
-variant. A `Failed` outcome preserves whether the agent could not satisfy the
-result contract through `AgentFailure` or execution broke through
-`ExecutionFailure`.
+A `Failed` result preserves whether the agent could not satisfy the result
+contract through `AgentFailure` or execution broke through
+`ExecutionFailure`. `Faulted` is deliberately not a persisted `RunOutcome`;
+it means the harness could not durably establish the terminal outcome.
 
-| Run ending | `status` | `outcome` |
-|---|---|---|
-| Plain prompt, text answer | `completed` | `Completed(value=text)` |
-| `complete` validates | `completed` | `Completed(value=model instance)` |
-| `fail(reason)` | `failed` | `Failed(cause=AgentFailure(...))` |
-| Reminder cap exhausted | `failed` | `Failed(cause=AgentFailure(...))` |
-| Provider dies (stream error or raise) | `failed` | `Failed(cause=ExecutionFailure(...))` |
-| Explicit cancellation | `aborted` | `Aborted(reason="cancelled")` |
-| Replaced locally by a newer run | `aborted` | `Aborted(reason="replaced")` plus `StaleRunError`; `persisted=False` |
-| Replaced by another process | local candidate status; durable record is `aborted` | local outcome plus `StaleRunError`; `persisted=False` |
-| Atomic finalization fails | candidate status in the report; durable record may remain `running` | original outcome plus `finalization_error`; `persisted=False` |
+| Run ending | `RunResult` |
+|---|---|
+| Plain prompt, text answer | `Completed(value=text)` |
+| `complete` validates | `Completed(value=model instance)` |
+| `fail(reason)` or reminder cap | `Failed(cause=AgentFailure(...))` |
+| Provider dies | `Failed(cause=ExecutionFailure(...))` |
+| Explicit cancellation | `Aborted(reason="cancelled")` |
+| Durable recovery | authoritative `Aborted(reason="recovered")` |
+| Atomic finalization fails | `Faulted(error=StorePersistenceError(...))` |
 
 A provider death never corrupts the session: partial turns are dropped, history
 ends at the last stable item, unanswered tool calls are healed, and the session
@@ -303,24 +309,19 @@ accepts the next prompt immediately. Tile does not retry; request-level retries
 belong to the `AsyncOpenAI` client you construct (`max_retries`), and the
 recovery unit above that is re-prompting the session.
 
-Run events are replayable facts, and the run-level closure survives every
-in-process termination: an exception or abort still lands exactly one
-`RunEndEvent` as the log's final event before the terminal status lands.
-After a successful finalization, `RunEndEvent.outcome`, `report.outcome`, and
-the stored record agree. When a stale writer is fenced, the event and report
-preserve its local execution outcome, `report.finalization_error` carries a
-`StaleRunError`, and an explicit Store read reveals the winning durable
-outcome. On a backend persistence failure, the error is a
-`StorePersistenceError` and the stored run remains `running`.
+Run events are replayable in-process facts. After successful finalization,
+`RunEndEvent.outcome`, `run.wait()`, and the stored record agree. A backend
+persistence failure instead emits `RunFaultEvent`, returns `Faulted`, and may
+leave the stored run `running` for explicit recovery.
 
 ## Observability
 
 `run.events()` is the observation surface: every run yields a structured
 event stream — run, agent, turn, message, and tool-execution scopes, plus
 provider stream updates. Monitoring can rely on the closure guarantee: the
-log begins with `RunStartEvent` and ends with exactly one `RunEndEvent`
-whose outcome matches the run's terminal state, on every in-process
-termination path. Failures are structured data, not log lines to parse: a
+log begins with `RunStartEvent` and ends with `RunEndEvent` after durable
+finalization or `RunFaultEvent` after a durability failure. Failures are
+structured data, not log lines to parse: a
 `Failed` outcome names its cause — the model's own `AgentFailure(reason=...)`
 verdict, or an `ExecutionFailure` with an origin, exception type, and
 message when a runtime boundary broke.
@@ -332,10 +333,11 @@ exporters and sampling remain application concerns.
 
 ## Testing your agent
 
-`stream_fn` is a plain callable, so a scripted fake makes end-to-end tests
-deterministic — no network, no API key:
+`Provider` is an abstract callable, so a scripted implementation makes
+end-to-end tests deterministic — no network, no API key:
 
 ```python
+from tile import Provider
 from tile.types import (
     ProviderSource,
     StreamDoneEvent,
@@ -346,25 +348,30 @@ from tile.types import (
 SOURCE = ProviderSource(provider="fake", model="fake-model")
 
 
-async def fake_stream(history, model, *, instructions, tools):
-    async def events():
-        yield StreamStartEvent(source=SOURCE, response_id="resp_1")
-        yield StreamDoneEvent(
-            source=SOURCE,
-            response_id="resp_1",
-            stop_reason="stop",
-            blocks=[TextBlock(text="All clear.")],
-        )
+class FakeProvider(Provider):
+    def __init__(self):
+        super().__init__(model="fake-model")
 
-    return events()
+    @property
+    def name(self):
+        return "fake"
 
+    async def stream(self, history, *, instructions, tools):
+        async def events():
+            yield StreamStartEvent(source=SOURCE, response_id="resp_1")
+            yield StreamDoneEvent(
+                source=SOURCE,
+                response_id="resp_1",
+                stop_reason="stop",
+                blocks=[TextBlock(text="All clear.")],
+            )
 
-fake_stream.provider = "fake"
+        return events()
 ```
 
-Hand `fake_stream` to `AgentRuntime` in place of the real provider and the
-entire runtime executes: history is written, events are emitted, and the
-run ends with a real outcome to assert on. Script a `tool_use` stop with a
+Pass `FakeProvider()` to `harness.prompt`. The entire harness executes:
+history is written, events are emitted, and the run ends with a real outcome
+to assert on. Script a `tool_use` stop with a
 `ToolCallBlock` to drive the tool loop, or a `complete` call to exercise a
 typed result. A public `tile.testing` module with ready-made stream
 builders is planned.
@@ -378,37 +385,38 @@ and may move as Tile grows.
 from tile import (
     Aborted,
     AgentFailure,
-    AgentRuntime,
+    AgentHarness,
     Completed,
     ExecutionFailure,
     Failed,
+    Faulted,
     HistoryItem,
+    Provider,
     RunHandle,
-    RunReport,
     RunRecord,
+    Session,
+    SessionRepository,
     SQLiteStore,
     Store,
     StorePersistenceError,
 )
-from tile.events import AgentEvent, MessageEndEvent, RunEndEvent, StreamFn
-from tile.providers.openai import create_stream_api
+from tile.events import AgentEvent, MessageEndEvent, RunEndEvent, RunFaultEvent
+from tile.providers.openai import OpenAIProvider
 from tile.tools import BUILTIN_TOOLS
 from tile.types import ToolDefinition, ToolError, ToolInput, ToolResult
 from tile.types import ToolInputValidationFailure, ToolInvocationFailure
 ```
 
-`tile` exposes the runtime, session, run handle, persistent records, atomic
-store, outcomes, and domain errors. `tile.events` exposes the structured
+`tile` exposes the harness, session repository, session, provider, run handle,
+persistent records, atomic store, results, and domain errors. `tile.events`
+exposes the structured
 events yielded by `RunHandle.events()`. `tile.types` exposes provider-neutral
 conversation, stream, and tool contracts, including structured validation and
 invocation failures on tool-execution event details. `tile.providers.openai`
-exposes
-`create_stream_api`, which
-binds a caller-constructed `AsyncOpenAI` client and optional provider reasoning
-options to the runtime's stream-function contract:
-`create_stream_api(AsyncOpenAI(...), reasoning={"effort": "medium"})`. A stream
-function declares its provider identity via a `provider` attribute on the
-callable, stated once where the callable is constructed.
+exposes `OpenAIProvider`, which binds a caller-constructed `AsyncOpenAI`
+client, model, and optional reasoning options:
+`OpenAIProvider(client=AsyncOpenAI(...), model="gpt-5.4",
+reasoning={"effort": "medium"})`.
 
 ## Architecture
 
@@ -422,12 +430,13 @@ tile/
 ├── events.py        # Runtime event contracts and run lifecycle rules
 ├── prompt.py        # System prompt composition
 ├── result.py        # Typed run outcomes and the output-contract protocol
-└── runtime/         # Session runtime package
-    ├── run_handle.py  # RunHandle: live execution and event delivery
+├── sessions.py      # Session and SessionRepository persistence boundary
+└── runtime/         # Single-session harness package
+    ├── harness.py     # AgentHarness: session-bound prompt coordination
+    ├── run_execution.py # RunExecution: live and durable run ownership
+    ├── run_handle.py  # RunHandle: caller-facing live-run facade
     ├── execution.py   # Prompt programs: attempt loops and outcome derivation
-    ├── history.py     # Provisional run-local conversation buffering
-    ├── runtime.py     # AgentRuntime: orchestration and Store lifecycle
-    └── session.py     # Session facade
+    └── history.py     # Provisional run-local conversation buffering
 tests/               # Test suite
 ```
 
@@ -437,7 +446,7 @@ Development proceeds in validation-gated releases:
 
 1. **Stable local runtime** (v0.1.0, shipped) — packaging, CI, typed results.
 2. **Persistent sessions and run records** (current) — atomic run lifecycle,
-   committed history, replacement fencing, and flat session forks.
+   committed history, recovery fencing, and flat session forks.
 3. **Multi-provider support** — hoist the normalized provider layer behind a
    conformance suite; Anthropic and ChatGPT-subscription providers.
 4. **Downstream app validation** — a real application built on the embedded

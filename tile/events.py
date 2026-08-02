@@ -1,28 +1,27 @@
-"""Agent run events and provider stream callable contracts.
+"""Agent run event contracts.
 
 Run lifecycle contract: every run log begins with ``RunStartEvent`` and
-ends with exactly one ``RunEndEvent`` committing the terminal outcome,
-for every in-process termination path. Only those two events are
-guaranteed. Inner events nest as
+ends with one terminal event. ``RunEndEvent`` commits a durable outcome;
+``RunFaultEvent`` exposes a failure to establish that durable ending.
+Only the run start and one of those endings are guaranteed. Inner events nest as
 ``run ⊃ agent attempt ⊃ turn ⊃ message / tool executions``; failures and
 cancellation can leave inner starts without their normal ends.
-``RunEndEvent`` terminates anything still open and its outcome explains
-why the run stopped. Provider stream fragments carried by
+The terminal run event ends anything still open. A run end's outcome explains
+why execution stopped; a run fault describes the durability failure. Provider
+stream fragments carried by
 ``MessageUpdateEvent`` are message content rather than lifecycle scopes.
 Hard process death is outside this contract because no process can emit
 after it has stopped.
 """
 
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Literal, Protocol, TypeAlias
+from collections.abc import Callable
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel
 
 from tile.result import RunOutcome
-from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import (
     AssistantTurn,
-    ConversationItem,
     ToolResultTurn,
     UserMessage,
 )
@@ -30,28 +29,7 @@ from tile.types.stream_events import StreamUpdateEvent
 from tile.types.tool_execution import ToolExecutionOutcome
 from tile.types.tools import (
     JsonObject,
-    ToolDefinition,
 )
-
-
-class StreamFn(Protocol):
-    """Callable that starts a provider stream from model-visible history.
-
-    ``provider`` names the provider identity this callable streams through,
-    declared once where the callable is constructed so run records can carry
-    provider identity before the first message finalizes.
-    """
-
-    provider: str
-
-    def __call__(
-        self,
-        history: Sequence[ConversationItem],
-        model: str,
-        *,
-        instructions: str,
-        tools: Sequence[ToolDefinition] | None,
-    ) -> Awaitable[AsyncEventStream]: ...
 
 
 class AgentEvent(BaseModel):
@@ -77,13 +55,21 @@ class RunStartEvent(AgentEvent):
 class RunEndEvent(AgentEvent):
     """Marks the end of one prompt run and commits its terminal outcome.
 
-    Exactly one run end closes every run as its final event, terminating
-    any inner lifecycle that remains open. The outcome is the same
-    discriminated value recorded on the durable run summary.
+    This closes every durably finalized run, terminating any inner lifecycle
+    that remains open. The outcome is the same discriminated value recorded
+    on the durable run summary.
     """
 
     type: Literal["run_end"] = "run_end"
     outcome: RunOutcome
+
+
+class RunFaultEvent(AgentEvent):
+    """Marks a run whose harness could not durably finish its lifecycle."""
+
+    type: Literal["run_fault"] = "run_fault"
+    exception_type: str
+    message: str
 
 
 class AgentStartEvent(AgentEvent):
@@ -170,6 +156,7 @@ class ToolExecutionEndEvent(AgentEvent):
 AgentRunEvent: TypeAlias = (
     RunStartEvent
     | RunEndEvent
+    | RunFaultEvent
     | AgentStartEvent
     | AgentEndEvent
     | TurnStartEvent

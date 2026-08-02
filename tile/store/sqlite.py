@@ -80,7 +80,7 @@ class SQLiteStore:
                     self._insert_session(record)
             except sqlite3.IntegrityError as error:
                 raise SessionAlreadyExistsError(
-                    f"Session already exists: {record.session_id}"
+                    f"Session already exists: {record.id}"
                 ) from error
         return record
 
@@ -121,9 +121,8 @@ class SQLiteStore:
         self,
         *,
         record: RunRecord,
-        replace_active: bool = False,
     ) -> StartedRun:
-        """Atomically create a run and optionally replace its active predecessor."""
+        """Atomically create a run when its session has no active run."""
 
         if record.status != "running":
             raise ValueError("start_run requires a running RunRecord.")
@@ -132,16 +131,12 @@ class SQLiteStore:
             with immediate_transaction(self._connection):
                 self._require_session(record.session_id)
                 active = self._running_run_for_session(record.session_id)
-                replaced_run_id = self._replace_active_run(
-                    active,
-                    replace_active=replace_active,
-                )
+                self._reject_active_run(active)
                 committed_history = self._history_for_session(record.session_id)
                 self._insert_run(record)
         return StartedRun(
             run=record,
             committed_history=committed_history,
-            replaced_run_id=replaced_run_id,
         )
 
     def finish_run(
@@ -161,6 +156,20 @@ class SQLiteStore:
                 record = run.finish(outcome=outcome)
                 self._update_running_run(record)
                 self._insert_history_delta(record, history_delta)
+                self._touch_session(record)
+        return record
+
+    def abort_active_run(self, session_id: str) -> RunRecord | None:
+        """Durably abort a session's active run and fence its later writes."""
+
+        with _translate_store_errors("abort_active_run"):
+            with immediate_transaction(self._connection):
+                self._require_session(session_id)
+                active = self._running_run_for_session(session_id)
+                if active is None:
+                    return None
+                record = active.finish(outcome=Aborted(reason="recovered"))
+                self._update_running_run(record)
                 self._touch_session(record)
         return record
 
@@ -200,10 +209,10 @@ class SQLiteStore:
         with _translate_store_errors("fork_session"):
             with immediate_transaction(self._connection):
                 self._require_session(source_session_id)
-                self._reject_existing_session(target.session_id)
+                self._reject_existing_session(target.id)
                 self._insert_session(target)
                 source_items = self._history_for_session(source_session_id)
-                self._copy_history_items(source_items, target.session_id)
+                self._copy_history_items(source_items, target.id)
         return target
 
     def close(self) -> None:
@@ -282,23 +291,12 @@ class SQLiteStore:
         ).fetchone()
         return None if row is None else run_from_row(cast("RunRow", row))
 
-    def _replace_active_run(
-        self,
-        active: RunRecord | None,
-        *,
-        replace_active: bool,
-    ) -> str | None:
-        """Replace an active run or reject the conflicting start."""
+    def _reject_active_run(self, active: RunRecord | None) -> None:
+        """Reject a start when its session already has an active run."""
 
         if active is None:
-            return None
-        if not replace_active:
-            raise ActiveRunError(
-                f"Session already has an active run: {active.session_id}"
-            )
-        replaced = active.finish(outcome=Aborted(reason="replaced"))
-        self._update_running_run(replaced)
-        return active.run_id
+            return
+        raise ActiveRunError(f"Session already has an active run: {active.session_id}")
 
     def _insert_run(self, record: RunRecord) -> None:
         """Insert one running run with domain error translation."""
@@ -306,9 +304,9 @@ class SQLiteStore:
         try:
             self._connection.execute(_INSERT_RUN_SQL, run_values(record))
         except sqlite3.IntegrityError as error:
-            if self._run_exists(record.run_id):
+            if self._run_exists(record.id):
                 raise RunAlreadyExistsError(
-                    f"Run already exists: {record.run_id}"
+                    f"Run already exists: {record.id}"
                 ) from error
             raise
 
@@ -340,7 +338,7 @@ class SQLiteStore:
             terminal_run_values(record),
         )
         if cursor.rowcount == 0:
-            raise StaleRunError(f"Run is no longer active: {record.run_id}")
+            raise StaleRunError(f"Run is no longer active: {record.id}")
 
     def _insert_history_delta(
         self,
@@ -356,7 +354,7 @@ class SQLiteStore:
         rows = [
             history_values(
                 item=item,
-                run_id=run.run_id,
+                run_id=run.id,
                 session_id=run.session_id,
                 position=first_position + offset,
                 created_at=created_at,
@@ -395,7 +393,8 @@ class SQLiteStore:
 
         rows = self._connection.execute(
             """
-            SELECT id, session_id, run_id, position, role, payload_json, created_at
+            SELECT id, session_id, run_id, position,
+                   role, payload_json, created_at
             FROM history_items
             WHERE session_id = ?
             ORDER BY position

@@ -31,6 +31,7 @@ from tile.events import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from tile.providers.base import Provider
 from tile.tool_executor import ToolExecutor
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import (
@@ -84,27 +85,31 @@ from tests.support.tool_results import tool_text
 TEvent = TypeVar("TEvent", bound=AgentEvent)
 
 
-class ClosingProvider:
+class ClosingProvider(Provider):
     """Provider fake that records deterministic stream closure."""
-
-    provider = "test"
 
     def __init__(self) -> None:
         """Create an open provider stream."""
 
+        super().__init__(model="gpt-5.4")
         self.closed = False
 
-    async def __call__(
+    @property
+    def name(self) -> str:
+        """Return the deterministic provider identity."""
+
+        return "test"
+
+    async def stream(
         self,
         history: Sequence[ConversationItem],
-        model: str,
         *,
         instructions: str,
         tools: Sequence[ToolDefinition] | None,
     ) -> AsyncEventStream:
         """Return a stream whose finalizer records closure."""
 
-        _ = history, model, instructions, tools
+        _ = history, instructions, tools
         return self._events()
 
     async def _events(self) -> AsyncEventStream:
@@ -221,7 +226,7 @@ def _collect_weather_tool_loop_run() -> ToolUseLoopRun:
 
     capture = collect_agent_run(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         tools=tools,
     )
     return ToolUseLoopRun(
@@ -285,7 +290,7 @@ def test_run_agent_does_not_mutate_supplied_history() -> None:
     )
     history: list[ConversationItem] = [UserMessage(content="Hello, Tile")]
 
-    events = collect_run_events(history, stream_fn=provider.fn)
+    events = collect_run_events(history, provider=provider)
 
     message_end = _expect_event_type(events[3], MessageEndEvent)
     _expect_event_type(events[-1], AgentEndEvent)
@@ -304,8 +309,7 @@ def test_run_agent_returns_terminal_result() -> None:
         return await run_agent(
             [UserMessage(content="Hello")],
             emit=lambda _event: None,
-            stream_fn=provider.fn,
-            model="gpt-5.4",
+            provider=provider,
             tool_executor=ToolExecutor(()),
             instructions="Base prompt.",
         )
@@ -350,8 +354,7 @@ def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
             await run_agent(
                 [UserMessage(content="Hello")],
                 emit=emit,
-                stream_fn=provider,
-                model="gpt-5.4",
+                provider=provider,
                 tool_executor=ToolExecutor(()),
                 instructions="Base prompt.",
             )
@@ -377,8 +380,7 @@ def test_empty_provider_stream_fails_after_agent_start() -> None:
             await run_agent(
                 [UserMessage(content="Hello")],
                 emit=events.append,
-                stream_fn=provider.fn,
-                model="gpt-5.4",
+                provider=provider,
                 tool_executor=ToolExecutor(()),
                 instructions="Base prompt.",
             )
@@ -401,8 +403,7 @@ def test_stream_exhaustion_leaves_message_and_turn_open() -> None:
             await run_agent(
                 [UserMessage(content="Hello")],
                 emit=events.append,
-                stream_fn=provider.fn,
-                model="gpt-5.4",
+                provider=provider,
                 tool_executor=ToolExecutor(()),
                 instructions="Base prompt.",
             )
@@ -576,7 +577,7 @@ def test_agent_run_sends_tool_result_history_to_follow_up_turn() -> None:
     assert second_turn_end.tool_executions == ()
 
     assert run.provider.await_count == 2
-    assert run.provider.model(0) == "gpt-5.4"
+    assert run.provider.model == "gpt-5.4"
     assert run.provider.tools(0) == tuple(run.tools)
     assert run.provider.tools(1) == tuple(run.tools)
 
@@ -614,7 +615,7 @@ def test_agent_run_executes_registered_tool_definition() -> None:
 
     events = collect_run_events(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         tools=tools,
     )
 
@@ -658,7 +659,7 @@ def test_agent_run_exposes_tool_details_outside_replay_turn() -> None:
 
     events = collect_run_events(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         tools=tools,
     )
 
@@ -702,7 +703,7 @@ def test_agent_run_continues_after_tool_execution_error() -> None:
 
     events = collect_run_events(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         tools=[failing_tool],
     )
 
@@ -751,7 +752,7 @@ def test_agent_allows_model_to_correct_invalid_tool_arguments() -> None:
 
     events = collect_run_events(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         tools=[city_tool("get_weather", "Return the weather.", weather)],
     )
 
@@ -799,7 +800,7 @@ def test_agent_run_handles_multiple_tool_use_turns() -> None:
 
     events = collect_run_events(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         tools=tools,
     )
 
@@ -833,7 +834,7 @@ def test_agent_sends_instructions_to_the_provider_verbatim() -> None:
 
     collect_run_events(
         history,
-        stream_fn=provider.fn,
+        provider=provider,
         instructions="Resolved system prompt.",
     )
 
@@ -859,8 +860,7 @@ def test_stream_error_ends_message_then_raises_turn_failure() -> None:
             await run_agent(
                 history,
                 emit=events.append,
-                stream_fn=provider.fn,
-                model="gpt-5.4",
+                provider=provider,
                 tool_executor=ToolExecutor(()),
                 instructions="Base prompt.",
             )

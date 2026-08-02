@@ -19,7 +19,7 @@ class SessionRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    session_id: str
+    id: str
     name: str | None = None
     created_at: datetime
     updated_at: datetime
@@ -28,14 +28,14 @@ class SessionRecord(BaseModel):
     def create(
         cls,
         *,
-        session_id: str,
+        id: str,
         name: str | None = None,
     ) -> SessionRecord:
         """Create a new session record at the current time."""
 
         now = datetime.now(UTC)
         return cls(
-            session_id=session_id,
+            id=id,
             name=name,
             created_at=now,
             updated_at=now,
@@ -62,7 +62,7 @@ class RunRecord(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    run_id: str
+    id: str
     session_id: str
     prompt: str
     status: RunStatus
@@ -76,7 +76,7 @@ class RunRecord(BaseModel):
     def start(
         cls,
         *,
-        run_id: str,
+        id: str,
         session_id: str,
         prompt: str,
         model: str,
@@ -85,7 +85,7 @@ class RunRecord(BaseModel):
         """Create a new running record at the current time."""
 
         return cls(
-            run_id=run_id,
+            id=id,
             session_id=session_id,
             prompt=prompt,
             status="running",
@@ -109,7 +109,7 @@ class RunRecord(BaseModel):
             raise ValueError("Only a running run can be finished.")
         terminal_time = datetime.now(UTC)
         return RunRecord(
-            run_id=self.run_id,
+            id=self.id,
             session_id=self.session_id,
             prompt=self.prompt,
             status=terminal_status_for(outcome),
@@ -194,7 +194,6 @@ class StartedRun(BaseModel):
 
     run: RunRecord
     committed_history: tuple[HistoryItem, ...]
-    replaced_run_id: str | None = None
 
 
 def terminal_status_for(outcome: RunOutcome) -> TerminalRunStatus:

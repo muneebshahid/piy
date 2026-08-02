@@ -34,7 +34,7 @@ def session_values(record: SessionRecord) -> SessionRow:
     """Serialize a session record into SQLite column values."""
 
     return (
-        record.session_id,
+        record.id,
         record.name,
         record.created_at.isoformat(),
         record.updated_at.isoformat(),
@@ -46,7 +46,7 @@ def session_from_row(row: SessionRow) -> SessionRecord:
 
     session_id, name, created_at, updated_at = row
     return SessionRecord(
-        session_id=session_id,
+        id=session_id,
         name=name,
         created_at=datetime.fromisoformat(created_at),
         updated_at=datetime.fromisoformat(updated_at),
@@ -57,7 +57,7 @@ def run_values(record: RunRecord) -> RunRow:
     """Serialize a run record into SQLite column values."""
 
     return (
-        record.run_id,
+        record.id,
         record.session_id,
         record.prompt,
         record.status,
@@ -81,7 +81,7 @@ def terminal_run_values(record: RunRecord) -> TerminalRunValues:
         record.status,
         record.ended_at.isoformat(),
         outcome_json,
-        record.run_id,
+        record.id,
     )
 
 
@@ -100,7 +100,7 @@ def run_from_row(row: RunRow) -> RunRecord:
         outcome_json,
     ) = row
     return RunRecord(
-        run_id=run_id,
+        id=run_id,
         session_id=session_id,
         prompt=prompt,
         status=cast("RunStatus", status),
@@ -136,14 +136,14 @@ def history_values(
 def history_from_row(row: HistoryRow) -> HistoryItem:
     """Deserialize one SQLite history row into a typed envelope."""
 
-    item_id, session_id, run_id, position, role, payload_json, created_at = row
+    history_item_id, session_id, run_id, position, role, payload_json, created_at = row
     item = _CONVERSATION_ITEM_ADAPTER.validate_json(payload_json)
     if item.role != role:
         raise InvalidHistoryError(
             f"Stored history role {role!r} contradicts payload role {item.role!r}."
         )
     return HistoryItem(
-        id=item_id,
+        id=history_item_id,
         session_id=session_id,
         run_id=run_id,
         position=position,

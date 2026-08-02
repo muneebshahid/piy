@@ -53,7 +53,7 @@ def run_record(
     """Build one new run through the domain factory."""
 
     return RunRecord.start(
-        run_id=run_id,
+        id=run_id,
         session_id=session_id,
         prompt=prompt,
         model="gpt-5.4",
@@ -69,5 +69,5 @@ def create_session(
 ) -> SessionRecord:
     """Create one session through the record-based Store contract."""
 
-    record = SessionRecord.create(session_id=session_id, name=name)
+    record = SessionRecord.create(id=session_id, name=name)
     return store.create_session(record=record)

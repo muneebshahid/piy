@@ -16,7 +16,8 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from tile.agent import AgentResult, run_agent
-from tile.events import EmitFn, ResultFollowUpEvent, StreamFn
+from tile.events import EmitFn, ResultFollowUpEvent
+from tile.providers.base import Provider
 from tile.prompt import build_system_prompt
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
@@ -46,8 +47,7 @@ class _ExecutionDependencies:
     history snapshot and drives only the provider and tools.
     """
 
-    stream_fn: StreamFn
-    model: str
+    provider: Provider
     instructions: str
     cwd: Path
     auto_mode: bool
@@ -128,8 +128,7 @@ async def _run_attempt(
     return await run_agent(
         history,
         emit=emit,
-        stream_fn=deps.stream_fn,
-        model=deps.model,
+        provider=deps.provider,
         tool_executor=deps.tool_executor,
         instructions=build_system_prompt(
             deps.instructions,

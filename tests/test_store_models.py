@@ -43,14 +43,14 @@ def test_session_record_validates_its_lifecycle_timestamps() -> None:
 
     with pytest.raises(ValidationError, match="timezone-aware"):
         SessionRecord(
-            session_id="session-1",
+            id="session-1",
             created_at=datetime(2026, 7, 26, 12, 0),
             updated_at=CREATED_AT,
         )
 
     with pytest.raises(ValidationError, match="updated before"):
         SessionRecord(
-            session_id="session-1",
+            id="session-1",
             created_at=CREATED_AT,
             updated_at=CREATED_AT - timedelta(seconds=1),
         )
@@ -60,10 +60,10 @@ def test_record_factories_construct_new_aggregate_states() -> None:
     """Create new session and running records inside the domain models."""
 
     before = datetime.now(UTC)
-    session = SessionRecord.create(session_id="session-1", name="Session")
+    session = SessionRecord.create(id="session-1", name="Session")
     run = RunRecord.start(
-        run_id="run-1",
-        session_id=session.session_id,
+        id="run-1",
+        session_id=session.id,
         prompt="hello",
         model="gpt-5.4",
         provider="openai",
@@ -131,9 +131,9 @@ def test_conversation_item_is_discriminated_by_role() -> None:
             id="cancelled",
         ),
         pytest.param(
-            Aborted(reason="replaced"),
+            Aborted(reason="recovered"),
             "aborted",
-            id="replaced",
+            id="recovered",
         ),
     ],
 )
@@ -213,6 +213,7 @@ def test_store_contract_exposes_only_lifecycle_operations() -> None:
     }
 
     assert methods == {
+        "abort_active_run",
         "create_session",
         "delete_session",
         "finish_run",
@@ -240,7 +241,7 @@ def _session_record() -> SessionRecord:
     """Build one deterministic session record."""
 
     return SessionRecord(
-        session_id="session-1",
+        id="session-1",
         name="Session",
         created_at=CREATED_AT,
         updated_at=CREATED_AT,
@@ -251,7 +252,7 @@ def _running_record() -> RunRecord:
     """Build one deterministic running record."""
 
     return RunRecord(
-        run_id="run-1",
+        id="run-1",
         session_id="session-1",
         prompt="hello",
         status="running",

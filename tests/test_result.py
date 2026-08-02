@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
+from tile import AgentHarness, Provider, SessionRepository
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
     NO_RESULT_REASON,
@@ -17,7 +18,6 @@ from tile.result import (
     ExecutionFailure,
     Failed,
 )
-from tile.runtime import AgentRuntime
 from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.tools.complete import CompleteDetails, tool as complete_tool
@@ -251,7 +251,7 @@ def test_agent_stops_after_terminating_tool_batch(tmp_path: Path) -> None:
 
     events = collect_run_events(
         [UserMessage(content="Weather in Munich?")],
-        stream_fn=provider.fn,
+        provider=provider,
         tools=_result_tools(),
     )
 
@@ -271,7 +271,7 @@ def test_agent_does_not_enforce_result_tool_usage(tmp_path: Path) -> None:
 
     events = collect_run_events(
         [UserMessage(content="Weather in Munich?")],
-        stream_fn=provider.fn,
+        provider=provider,
         tools=_result_tools(),
     )
 
@@ -294,21 +294,16 @@ def test_runtime_maps_fail_tool_to_failed_outcome() -> None:
         ]
     )
 
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=SQLiteStore(in_memory=True),
-        auto_mode=False,
-        cwd=Path("."),
-    )
+    harness, configured_provider = _harness(provider)
 
     async def _run() -> Failed | None:
         """Run one result prompt and return its outcome when failed."""
 
-        run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        report = await run.wait()
-        assert report.status == "failed"
-        return report.outcome if isinstance(report.outcome, Failed) else None
+        run = await harness.prompt(
+            "Weather?", provider=configured_provider, result=WeatherReport
+        )
+        outcome = await run.wait()
+        return outcome if isinstance(outcome, Failed) else None
 
     outcome = asyncio.run(_run())
 
@@ -330,7 +325,7 @@ def test_agent_retries_complete_after_validation_error(tmp_path: Path) -> None:
 
     events = collect_run_events(
         [UserMessage(content="Weather in Munich?")],
-        stream_fn=provider.fn,
+        provider=provider,
         tools=_result_tools(),
     )
 
@@ -358,25 +353,19 @@ def test_runtime_nudges_text_only_agent_run_toward_result() -> None:
     )
 
     store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=store,
-        auto_mode=False,
-        cwd=Path("."),
-    )
+    harness, configured_provider = _harness(provider, store=store, session_id="nudged")
 
     async def _run() -> tuple[list[AgentEvent], Completed | None]:
         """Collect the complete runtime event stream and typed outcome."""
 
-        run = await runtime.session(session_id="nudged").prompt(
-            "Weather in Munich?", result=WeatherReport
+        run = await harness.prompt(
+            "Weather in Munich?",
+            provider=configured_provider,
+            result=WeatherReport,
         )
-        report = await run.wait()
-        assert report.status == "completed"
+        result = await run.wait()
         events = [event async for event in run.events()]
-        outcome = report.outcome
-        return events, outcome if isinstance(outcome, Completed) else None
+        return events, result if isinstance(result, Completed) else None
 
     events, outcome = asyncio.run(_run())
 
@@ -403,21 +392,16 @@ def test_runtime_fails_after_follow_up_cap() -> None:
     ]
     provider = ProviderStreamMock(streams)
 
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=SQLiteStore(in_memory=True),
-        auto_mode=False,
-        cwd=Path("."),
-    )
+    harness, configured_provider = _harness(provider)
 
     async def _run() -> Failed | None:
         """Run until the output-contract follow-up limit is exhausted."""
 
-        run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        report = await run.wait()
-        assert report.status == "failed"
-        return report.outcome if isinstance(report.outcome, Failed) else None
+        run = await harness.prompt(
+            "Weather?", provider=configured_provider, result=WeatherReport
+        )
+        outcome = await run.wait()
+        return outcome if isinstance(outcome, Failed) else None
 
     outcome = asyncio.run(_run())
 
@@ -434,21 +418,14 @@ def test_runtime_without_contract_completes_with_text() -> None:
         ]
     )
 
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=SQLiteStore(in_memory=True),
-        auto_mode=False,
-        cwd=Path("."),
-    )
+    harness, configured_provider = _harness(provider)
 
     async def _run() -> Completed | None:
         """Run one plain prompt and return its completed outcome."""
 
-        run = await runtime.session().prompt("Weather in Munich?")
-        report = await run.wait()
-        assert report.status == "completed"
-        return report.outcome if isinstance(report.outcome, Completed) else None
+        run = await harness.prompt("Weather in Munich?", provider=configured_provider)
+        outcome = await run.wait()
+        return outcome if isinstance(outcome, Completed) else None
 
     outcome = asyncio.run(_run())
 
@@ -466,27 +443,22 @@ def test_runtime_fails_when_nudge_attempt_hits_stream_error() -> None:
     )
 
     store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=store,
-        auto_mode=False,
-        cwd=Path("."),
+    harness, configured_provider = _harness(
+        provider, store=store, session_id="nudged-error"
     )
 
     async def _run() -> None:
         """Fail the result prompt on its nudged second attempt."""
 
-        run = await runtime.session(session_id="nudged-error").prompt(
-            "Weather?", result=WeatherReport
+        run = await harness.prompt(
+            "Weather?",
+            provider=configured_provider,
+            result=WeatherReport,
         )
-        report = await run.wait()
-        assert report.status == "failed"
-        outcome = report.outcome
+        outcome = await run.wait()
         assert isinstance(outcome, Failed)
         assert isinstance(outcome.cause, ExecutionFailure)
         assert outcome.cause.message == "boom"
-        assert report.execution_error is not None
 
     asyncio.run(_run())
 
@@ -529,7 +501,7 @@ def test_agent_finishes_tool_batch_after_terminating_result(tmp_path: Path) -> N
 
     events = collect_run_events(
         [UserMessage(content="Weather?")],
-        stream_fn=provider.fn,
+        provider=provider,
         tools=[*_result_tools(), city_tool("get_weather", "Get weather.", _weather)],
     )
 
@@ -564,22 +536,24 @@ def test_runtime_keeps_terminal_text_separate_from_result_value() -> None:
         ]
     )
 
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=SQLiteStore(in_memory=True),
-        auto_mode=False,
-        cwd=Path("."),
-    )
+    harness, configured_provider = _harness(provider)
 
     async def _run() -> tuple[Completed | None, str | None]:
         """Run one result prompt and return its outcome and assistant text."""
 
-        run = await runtime.session().prompt("Weather?", result=WeatherReport)
-        report = await run.wait()
-        assert report.status == "completed"
-        outcome = report.outcome if isinstance(report.outcome, Completed) else None
-        assistant_turn = report.last_assistant_turn
+        run = await harness.prompt(
+            "Weather?", provider=configured_provider, result=WeatherReport
+        )
+        result = await run.wait()
+        outcome = result if isinstance(result, Completed) else None
+        assistant_turn = next(
+            (
+                item
+                for item in reversed(harness.session.get_history())
+                if isinstance(item, AssistantTurn)
+            ),
+            None,
+        )
         assert assistant_turn is not None
         output_text = "".join(
             block.text
@@ -606,20 +580,17 @@ def test_session_prompt_composes_result_tools_and_contract() -> None:
         ]
     )
     store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=store,
-        auto_mode=False,
-        cwd=Path("."),
+    harness, configured_provider = _harness(
+        provider, store=store, session_id="result-session"
     )
 
     async def _run() -> None:
-        session = runtime.session(session_id="result-session")
-        run = await session.prompt("Weather in Munich?", result=WeatherReport)
-        report = await run.wait()
-        assert report.status == "completed"
-        outcome = report.outcome
+        run = await harness.prompt(
+            "Weather in Munich?",
+            provider=configured_provider,
+            result=WeatherReport,
+        )
+        outcome = await run.wait()
         assert isinstance(outcome, Completed)
         assert outcome.value == WeatherReport(city="Munich", temp_c=21.0)
 
@@ -643,28 +614,22 @@ def test_session_mixes_contract_and_plain_prompts() -> None:
             final_text_stream("resp_2", "You asked about Munich."),
         ]
     )
-    runtime = AgentRuntime(
-        stream_fn=provider.fn,
-        model="gpt-5.4",
-        store=SQLiteStore(in_memory=True),
-        auto_mode=False,
-        cwd=Path("."),
-    )
+    harness, configured_provider = _harness(provider, session_id="mixed-session")
 
     async def _run() -> None:
-        session = runtime.session(session_id="mixed-session")
-        contract_run = await session.prompt("Weather in Munich?", result=WeatherReport)
-        contract_report = await contract_run.wait()
-        assert contract_report.status == "completed"
-        assert isinstance(contract_report.outcome, Completed)
-        assert contract_report.outcome.value == WeatherReport(
-            city="Munich", temp_c=21.0
+        contract_run = await harness.prompt(
+            "Weather in Munich?",
+            provider=configured_provider,
+            result=WeatherReport,
         )
+        contract_outcome = await contract_run.wait()
+        assert isinstance(contract_outcome, Completed)
+        assert contract_outcome.value == WeatherReport(city="Munich", temp_c=21.0)
 
-        plain_run = await session.prompt("Which city did I ask about?")
-        plain_report = await plain_run.wait()
-        assert plain_report.status == "completed"
-        assert plain_report.outcome == Completed(value="You asked about Munich.")
+        plain_run = await harness.prompt(
+            "Which city did I ask about?", provider=configured_provider
+        )
+        assert await plain_run.wait() == Completed(value="You asked about Munich.")
 
     asyncio.run(_run())
 
@@ -680,13 +645,23 @@ def test_session_mixes_contract_and_plain_prompts() -> None:
 def test_runtime_rejects_reserved_tool_names() -> None:
     """Refuse caller tools named after the reserved result tools."""
 
-    provider = ProviderStreamMock([])
-
     with pytest.raises(ValueError, match="reserved"):
-        AgentRuntime(
-            stream_fn=provider.fn,
-            model="gpt-5.4",
+        AgentHarness(
+            session=SessionRepository(SQLiteStore(in_memory=True)).create(),
             tools=[city_tool("complete", "Not the real complete.", _weather)],
             cwd=Path("."),
-            store=SQLiteStore(in_memory=True),
         )
+
+
+def _harness(
+    provider: ProviderStreamMock,
+    *,
+    store: SQLiteStore | None = None,
+    session_id: str | None = None,
+) -> tuple[AgentHarness, Provider]:
+    """Build a session-bound harness for result-contract tests."""
+
+    active_store = store if store is not None else SQLiteStore(in_memory=True)
+    session = SessionRepository(active_store).create(session_id=session_id)
+    harness = AgentHarness(session=session, auto_mode=False, cwd=Path("."))
+    return harness, provider

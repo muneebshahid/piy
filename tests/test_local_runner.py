@@ -3,13 +3,11 @@
 import asyncio
 import io
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from tile import Completed, RunRecord, RunReport, SQLiteStore
-from tile.events import StreamFn
+from tile import Completed, Provider, RunResult, SQLiteStore
 from tile.types.conversation import ConversationItem
 from tile.types.tools import ToolTextContent
 from examples import local_runner
@@ -49,11 +47,12 @@ def test_run_cli_reads_prompt_from_stdin(monkeypatch: pytest.MonkeyPatch) -> Non
 
     prompts: list[str] = []
 
-    async def _record_prompt(prompt: str, *, stream_fn: StreamFn) -> RunReport:
+    async def _record_prompt(prompt: str, *, provider: Provider) -> RunResult:
         """Record the prompt passed by the CLI."""
 
+        _ = provider
         prompts.append(prompt)
-        return _completed_report()
+        return Completed(value="done")
 
     monkeypatch.setattr("sys.stdin", io.StringIO("Hello from stdin\n"))
     monkeypatch.setattr(local_runner.settings, "openai_api_key", "test-key")
@@ -63,25 +62,6 @@ def test_run_cli_reads_prompt_from_stdin(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert status == 0
     assert prompts == ["Hello from stdin"]
-
-
-def _completed_report() -> RunReport:
-    """Build the successful report returned by the CLI test double."""
-
-    started_at = datetime(2026, 7, 27, 12, 0, tzinfo=UTC)
-    running = RunRecord(
-        run_id="run-1",
-        session_id="session-1",
-        prompt="hello",
-        status="running",
-        started_at=started_at,
-        model="gpt-5.4",
-        provider="test",
-    )
-    return RunReport(
-        record=running.finish(outcome=Completed(value="done")),
-        history_delta=(),
-    )
 
 
 def _run_runtime_tool_flow(
@@ -110,8 +90,7 @@ def _run_runtime_tool_flow(
     asyncio.run(
         run_prompt(
             "Read the note",
-            stream_fn=provider.fn,
-            model="gpt-5.4",
+            provider=provider,
             store=store,
             cwd=tmp_path,
             output=output,
@@ -164,9 +143,7 @@ def _assert_runtime_persisted_completed_history(
     sessions = store.list_sessions()
     assert len(sessions) == 1
     assert sessions[0].name == "local-runner"
-    history = tuple(
-        envelope.item for envelope in store.get_history(sessions[0].session_id)
-    )
+    history = tuple(envelope.item for envelope in store.get_history(sessions[0].id))
     assert [_history_role(item) for item in history] == [
         "user",
         "assistant",

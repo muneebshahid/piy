@@ -46,6 +46,12 @@ def _invoke_finish_run(store: SQLiteStore) -> None:
     )
 
 
+def _invoke_abort_active_run(store: SQLiteStore) -> None:
+    """Invoke abort_active_run for backend-error translation coverage."""
+
+    store.abort_active_run("session-1")
+
+
 def _invoke_get_run(store: SQLiteStore) -> None:
     """Invoke get_run for backend-error translation coverage."""
 
@@ -74,7 +80,7 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
         started = start_run(store)
         assert started.committed_history == ()
         finished = store.finish_run(
-            run_id=started.run.run_id,
+            run_id=started.run.id,
             outcome=Completed(value="done"),
             history_delta=[
                 UserMessage(content="hello"),
@@ -82,20 +88,20 @@ def test_sqlite_store_round_trips_sessions_runs_and_typed_history() -> None:
             ],
         )
 
-        stored_session = store.get_session(session.session_id)
-        assert stored_session.session_id == session.session_id
+        stored_session = store.get_session(session.id)
+        assert stored_session.id == session.id
         assert stored_session.name == session.name
         assert stored_session.updated_at >= session.updated_at
         assert store.list_sessions() == (stored_session,)
-        assert store.get_run(finished.run_id) == finished
-        assert store.list_runs(session.session_id) == (finished,)
-        history = store.get_history(session.session_id)
+        assert store.get_run(finished.id) == finished
+        assert store.list_runs(session.id) == (finished,)
+        history = store.get_history(session.id)
         assert [type(item.item) for item in history] == [
             UserMessage,
             AssistantTurn,
         ]
         assert [item.position for item in history] == [0, 1]
-        assert {item.run_id for item in history} == {finished.run_id}
+        assert {item.run_id for item in history} == {finished.id}
     finally:
         store.close()
 
@@ -136,11 +142,14 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
         with pytest.raises(SessionNotFoundError, match="missing"):
             store.delete_session("missing")
         with pytest.raises(SessionNotFoundError, match="missing"):
+            store.abort_active_run("missing")
+        with pytest.raises(SessionNotFoundError, match="missing"):
             store.start_run(
                 record=run_record(run_id="run-1", session_id="missing"),
             )
 
         active = start_run(store).run
+        store.abort_active_run("session-1")
         with pytest.raises(RunAlreadyExistsError, match="run-1"):
             store.start_run(
                 record=run_record(
@@ -148,11 +157,10 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
                     session_id="session-1",
                     prompt="again",
                 ),
-                replace_active=True,
             )
 
-        assert store.get_run("run-1") == active
-        assert store.list_runs("session-1") == (active,)
+        assert store.get_run("run-1").id == active.id
+        assert store.get_run("run-1").outcome == Aborted(reason="recovered")
     finally:
         store.close()
 
@@ -174,13 +182,13 @@ def test_start_run_enforces_one_active_run_per_session() -> None:
                 ),
             )
 
-        assert [run.run_id for run in store.list_runs("session-1")] == ["run-1"]
+        assert [run.id for run in store.list_runs("session-1")] == ["run-1"]
     finally:
         store.close()
 
 
-def test_start_run_rejects_terminal_record_before_replacing_active() -> None:
-    """Preserve the active run when a replacement is not a running insert."""
+def test_start_run_rejects_terminal_record_before_checking_active() -> None:
+    """Preserve the active run when the submitted record is already terminal."""
 
     store = SQLiteStore(in_memory=True)
     try:
@@ -193,38 +201,31 @@ def test_start_run_rejects_terminal_record_before_replacing_active() -> None:
         ).finish(outcome=Completed(value="already done"))
 
         with pytest.raises(ValueError, match="requires a running RunRecord"):
-            store.start_run(record=terminal, replace_active=True)
+            store.start_run(record=terminal)
 
-        assert store.get_run(active.run_id) == active
+        assert store.get_run(active.id) == active
         assert store.list_runs("session-1") == (active,)
     finally:
         store.close()
 
 
-def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
-    """Replace and create in one transaction, then reject old finalization."""
+def test_abort_active_run_finishes_the_record_and_fences_late_writes() -> None:
+    """Durably recover a session and reject finalization by its old process."""
 
     store = SQLiteStore(in_memory=True)
     try:
         create_session(store, session_id="session-1")
-        first = start_run(store)
+        active = start_run(store).run
 
-        second = store.start_run(
-            record=run_record(
-                run_id="run-2",
-                session_id="session-1",
-                prompt="replacement",
-            ),
-            replace_active=True,
-        )
+        aborted = store.abort_active_run("session-1")
 
-        assert second.replaced_run_id == first.run.run_id
-        replaced = store.get_run(first.run.run_id)
-        assert replaced.status == "aborted"
-        assert replaced.outcome == Aborted(reason="replaced")
+        assert aborted is not None
+        assert aborted.id == active.id
+        assert aborted.status == "aborted"
+        assert aborted.outcome == Aborted(reason="recovered")
         with pytest.raises(StaleRunError, match="run-1"):
             store.finish_run(
-                run_id=first.run.run_id,
+                run_id=active.id,
                 outcome=Completed(value="late"),
                 history_delta=[UserMessage(content="must not commit")],
             )
@@ -233,8 +234,8 @@ def test_replace_active_finishes_old_run_and_fences_late_writes() -> None:
         store.close()
 
 
-def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
-    """Start normally when the prior process committed before replacement."""
+def test_abort_active_run_is_idempotent_when_no_run_is_running() -> None:
+    """Return no record after completion and allow the next normal start."""
 
     store = SQLiteStore(in_memory=True)
     try:
@@ -246,16 +247,16 @@ def test_replace_active_does_not_rewrite_an_already_finished_run() -> None:
             history_delta=[UserMessage(content="hello")],
         )
 
+        aborted = store.abort_active_run("session-1")
         started = store.start_run(
             record=run_record(
                 run_id="run-2",
                 session_id="session-1",
                 prompt="next",
             ),
-            replace_active=True,
         )
 
-        assert started.replaced_run_id is None
+        assert aborted is None
         assert tuple(item.item for item in started.committed_history) == (
             UserMessage(content="hello"),
         )
@@ -334,6 +335,11 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
     [
         pytest.param("start_run", _invoke_start_run, id="start-run"),
         pytest.param("finish_run", _invoke_finish_run, id="finish-run"),
+        pytest.param(
+            "abort_active_run",
+            _invoke_abort_active_run,
+            id="abort-active-run",
+        ),
         pytest.param("get_run", _invoke_get_run, id="get-run"),
         pytest.param("delete_session", _invoke_delete_session, id="delete-session"),
     ],
@@ -380,7 +386,7 @@ def test_delete_session_rolls_back_when_owned_data_deletion_fails(
         store.delete_session("session-1")
 
     assert raised.value.operation == "delete_session"
-    assert store.get_session("session-1").session_id == "session-1"
+    assert store.get_session("session-1").id == "session-1"
     assert len(store.list_runs("session-1")) == 1
     assert len(store.get_history("session-1")) == 1
     store.close()
@@ -437,27 +443,20 @@ def test_store_translates_corrupted_run_outcome_payloads(tmp_path: Path) -> None
         store.close()
 
 
-def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
+def test_start_run_rolls_back_insert_when_history_snapshot_fails(
     tmp_path: Path,
 ) -> None:
-    """Keep the predecessor active when bootstrap history cannot be decoded."""
+    """Avoid inserting a run when bootstrap history cannot be decoded."""
 
     database_path = tmp_path / "invalid-bootstrap-history.db"
     seed = SQLiteStore(database_path)
     create_session(seed, session_id="session-1")
     first = start_run(seed)
     seed.finish_run(
-        run_id=first.run.run_id,
+        run_id=first.run.id,
         outcome=Completed(value="done"),
         history_delta=[UserMessage(content="hello")],
     )
-    active = seed.start_run(
-        record=run_record(
-            run_id="run-2",
-            session_id="session-1",
-            prompt="active",
-        ),
-    ).run
     seed.close()
     connection = sqlite3.connect(database_path)
     connection.execute("UPDATE history_items SET payload_json = 'not-json'")
@@ -474,19 +473,14 @@ def test_start_run_rolls_back_replacement_when_history_snapshot_fails(
         with pytest.raises(StorePersistenceError) as start_error:
             store.start_run(
                 record=run_record(
-                    run_id="run-3",
+                    run_id="run-2",
                     session_id="session-1",
-                    prompt="replacement",
+                    prompt="next",
                 ),
-                replace_active=True,
             )
         assert start_error.value.operation == "start_run"
         assert isinstance(start_error.value.cause, ValidationError)
 
-        assert store.get_run("run-2") == active
-        assert [run.run_id for run in store.list_runs("session-1")] == [
-            "run-1",
-            "run-2",
-        ]
+        assert [run.id for run in store.list_runs("session-1")] == ["run-1"]
     finally:
         store.close()

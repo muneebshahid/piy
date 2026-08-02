@@ -24,11 +24,11 @@ def test_fork_session_copies_all_history_with_new_envelopes() -> None:
 
         fork = store.fork_session(
             source_session_id="source",
-            target=SessionRecord.create(session_id="fork", name="Fork"),
+            target=SessionRecord.create(id="fork", name="Fork"),
         )
 
         source = store.get_history("source")
-        copied = store.get_history(fork.session_id)
+        copied = store.get_history(fork.id)
         assert len(copied) == len(source) == 2
         assert [item.id for item in copied] != [item.id for item in source]
         assert {item.session_id for item in copied} == {"fork"}

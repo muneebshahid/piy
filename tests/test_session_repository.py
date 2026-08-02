@@ -2,7 +2,7 @@
 
 import pytest
 
-from tile import Completed, RunNotFoundError, RunRecord, SessionNotFoundError
+from tile import Aborted, Completed, RunNotFoundError, RunRecord, SessionNotFoundError
 from tile.sessions import SessionRepository
 from tile.store import HistoryItem, SQLiteStore
 from tile.types import AssistantTurn, UserMessage
@@ -43,7 +43,51 @@ def test_session_reads_its_current_record_history_and_runs() -> None:
 
     assert session.get_session_record().name == "Session"
     assert session.get_history() == history
-    assert session.get_runs() == (store.get_run(started.run.run_id),)
+    assert session.get_runs() == (store.get_run(started.run.id),)
+    store.close()
+
+
+def test_session_scopes_atomic_run_lifecycle_operations() -> None:
+    """Preserve Store bootstrap state and fence records from other sessions."""
+
+    store = SQLiteStore(in_memory=True)
+    repository = SessionRepository(store)
+    session = repository.create(session_id="session-1")
+    record = RunRecord.start(
+        id="run-1",
+        session_id=session.id,
+        prompt="hello",
+        model="gpt-5.4",
+        provider="test",
+    )
+
+    started = session._start_run(record)
+    finished = session._finish_run(
+        record.id,
+        outcome=Completed(value="done"),
+        history_delta=(UserMessage(content="hello"),),
+    )
+
+    assert started.run == record
+    assert started.committed_history == ()
+    assert session._get_run(record.id) == finished
+    store.close()
+
+
+def test_repository_durably_aborts_the_active_run_by_session_id() -> None:
+    """Expose idempotent recovery without implying local task cancellation."""
+
+    store = SQLiteStore(in_memory=True)
+    repository = SessionRepository(store)
+    repository.create(session_id="session-1")
+    started = start_run(store)
+
+    aborted = repository.abort_active_run("session-1")
+
+    assert aborted is not None
+    assert aborted.id == started.run.id
+    assert aborted.outcome == Aborted(reason="recovered")
+    assert repository.abort_active_run("session-1") is None
     store.close()
 
 
@@ -91,7 +135,7 @@ def test_repository_deletes_a_session_and_all_owned_data() -> None:
     with pytest.raises(SessionNotFoundError):
         repository.get("session-1")
     with pytest.raises(RunNotFoundError):
-        store.get_run(started.run.run_id)
+        store.get_run(started.run.id)
     store.close()
 
 

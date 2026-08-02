@@ -43,6 +43,7 @@ StoreOperation: TypeAlias = Literal[
     "delete_session",
     "start_run",
     "finish_run",
+    "abort_active_run",
     "get_history",
     "get_run",
     "list_runs",
@@ -98,7 +99,6 @@ class Store(Protocol):
         self,
         *,
         record: RunRecord,
-        replace_active: bool = False,
     ) -> StartedRun:
         """Atomically start a run and snapshot its committed session history.
 
@@ -106,7 +106,7 @@ class Store(Protocol):
         inputs to this insert operation.
 
         The returned history must come from the same consistency boundary as
-        the accepted run and optional predecessor replacement.
+        the accepted run.
         """
         ...
 
@@ -122,6 +122,14 @@ class Store(Protocol):
         The caller owns the terminal outcome and valid history delta.
         Implementations load the authoritative run identity and own terminal
         record construction, stale-run fencing, and all-or-nothing persistence.
+        """
+        ...
+
+    def abort_active_run(self, session_id: str) -> RunRecord | None:
+        """Durably abort a session's active run without controlling its process.
+
+        Return the aborted record, or ``None`` when the session has no active
+        run. Implementations must fence later writes from an aborted run.
         """
         ...
 
