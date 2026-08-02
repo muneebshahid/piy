@@ -4,13 +4,11 @@ import asyncio
 from collections.abc import Sequence
 from pathlib import Path
 
-import pytest
-
-from tile import Completed, RunOutcome, RunRecord, StorePersistenceError
+from tile import Aborted, Completed, RunOutcome, RunRecord, StorePersistenceError
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent
 from tile.result import Faulted
 from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.run_execution import RunExecution, _terminal_outcome
+from tile.runtime.run_execution import RunExecution
 from tile.runtime.run_handle import RunHandle
 from tile.sessions import SessionRepository
 from tile.store import SQLiteStore
@@ -109,21 +107,34 @@ def test_run_execution_closes_after_an_unexpected_finalization_crash() -> None:
     store.close()
 
 
-def test_cancelled_execution_requires_an_explicit_abort_reason() -> None:
-    """Reject cancellation that bypasses the run execution lifecycle."""
+def test_cancelled_execution_defaults_a_missing_abort_reason() -> None:
+    """Classify cancellation safely when no explicit reason was recorded."""
 
-    async def run() -> None:
-        """Cancel a raw outcome task and classify its terminal state."""
+    store = SQLiteStore(in_memory=True)
+    session = SessionRepository(store).create(session_id="session-1")
+    transport = ProviderStreamMock([])
+    transport.mock.side_effect = asyncio.CancelledError()
 
-        task: asyncio.Task[Completed] = asyncio.create_task(_pending_outcome())
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+    async def run() -> tuple[RunHandle, RunOutcome | Faulted, list[AgentEvent]]:
+        """Let provider cancellation bypass the explicit handle abort path."""
 
-        with pytest.raises(RuntimeError, match="missing an abort reason"):
-            _terminal_outcome(task, abort_reason=None)
+        handle = RunHandle(
+            RunExecution.start(
+                session=session,
+                prompt="hello",
+                result=None,
+                dependencies=_dependencies(transport),
+            )
+        )
+        result, events = await _wait_and_collect(handle)
+        return handle, result, events
 
-    asyncio.run(run())
+    handle, result, events = asyncio.run(run())
+
+    assert result == Aborted(reason="cancelled")
+    assert isinstance(events[-1], RunEndEvent)
+    assert store.get_run(handle.id).outcome == result
+    store.close()
 
 
 async def _wait_and_collect(
@@ -134,13 +145,6 @@ async def _wait_and_collect(
     result = await handle.wait()
     events = [event async for event in handle.events()]
     return result, events
-
-
-async def _pending_outcome() -> Completed:
-    """Remain pending until the test cancels the task."""
-
-    await asyncio.Event().wait()
-    return Completed(value="unreachable")
 
 
 def _dependencies(transport: ProviderStreamMock) -> _ExecutionDependencies:

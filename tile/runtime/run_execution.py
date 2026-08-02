@@ -14,7 +14,6 @@ from tile.result import (
     AbortReason,
     Aborted,
     ExecutionFailure,
-    ExecutionFailureOrigin,
     Failed,
     Faulted,
     RunOutcome,
@@ -167,7 +166,7 @@ class RunExecution:
     def _finish(self, task: asyncio.Task[RunOutcome]) -> RunResult:
         """Derive, heal, and durably commit one terminal outcome."""
 
-        outcome = _terminal_outcome(task, abort_reason=self._abort_reason)
+        outcome = self._terminal_outcome(task)
         self._history.heal()
         try:
             record = self._session._finish_run(
@@ -180,6 +179,16 @@ class RunExecution:
         if record.outcome is None:
             raise RuntimeError("Store returned a running record after finalization.")
         return record.outcome
+
+    def _terminal_outcome(self, task: asyncio.Task[RunOutcome]) -> RunOutcome:
+        """Derive a serializable outcome from this execution's task state."""
+
+        if task.cancelled():
+            return Aborted(reason=self._abort_reason or "cancelled")
+        error = task.exception()
+        if error is not None:
+            return Failed(cause=_execution_failure(error))
+        return task.result()
 
     def _reconcile_stale(self, stale_error: StaleRunError) -> RunResult:
         """Return the authoritative terminal outcome after a stale write."""
@@ -203,42 +212,11 @@ class RunExecution:
         self._emit(RunEndEvent(outcome=result))
 
 
-def _terminal_outcome(
-    task: asyncio.Task[RunOutcome],
-    *,
-    abort_reason: AbortReason | None,
-) -> RunOutcome:
-    """Derive a serializable outcome from task completion."""
-
-    if task.cancelled():
-        return _aborted_outcome(abort_reason)
-    error = task.exception()
-    if error is not None:
-        return Failed(cause=_execution_failure(error))
-    return task.result()
-
-
-def _aborted_outcome(abort_reason: AbortReason | None) -> Aborted:
-    """Require cancellation to originate from an explicit lifecycle action."""
-
-    if abort_reason is None:
-        raise RuntimeError("Cancelled run is missing an abort reason")
-    return Aborted(reason=abort_reason)
-
-
 def _execution_failure(error: BaseException) -> ExecutionFailure:
     """Serialize one runtime exception without retaining it in persistence."""
 
     return ExecutionFailure(
-        origin=_execution_failure_origin(error),
+        origin="turn" if isinstance(error, TurnFailedError) else "execution",
         exception_type=type(error).__name__,
         message=str(error),
     )
-
-
-def _execution_failure_origin(error: BaseException) -> ExecutionFailureOrigin:
-    """Classify an execution failure at the narrowest known boundary."""
-
-    if isinstance(error, TurnFailedError):
-        return "turn"
-    return "execution"
