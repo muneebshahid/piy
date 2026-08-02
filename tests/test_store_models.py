@@ -1,6 +1,7 @@
 """Tests for the persistence-first domain models and Store boundary."""
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -12,12 +13,19 @@ from tile import (
     ExecutionFailure,
     Failed,
     HistoryItem,
+    InvalidHistoryError,
     RunRecord,
     SessionRecord,
 )
-from tile.store import TerminalRunStatus
+from tile.store import SQLiteStore, TerminalRunStatus
 from tile.types import ConversationItem, UserMessage
-from tests.support.store import STARTED_AT
+from tests.support.store import (
+    STARTED_AT,
+    corrupt_column,
+    create_session,
+    persist_outcome,
+    start_run,
+)
 
 
 def _session_record() -> SessionRecord:
@@ -122,6 +130,49 @@ def test_conversation_item_is_discriminated_by_role() -> None:
         adapter.validate_python({"role": "unknown", "content": "hello"})
 
 
+def test_history_item_rejects_a_negative_position() -> None:
+    """Reject envelopes placed before the start of committed history."""
+
+    with pytest.raises(ValidationError, match="negative"):
+        HistoryItem(
+            id="history-1",
+            session_id="session-1",
+            run_id="run-1",
+            position=-1,
+            item=UserMessage(content="hello"),
+            created_at=STARTED_AT,
+        )
+
+
+def test_get_history_rejects_a_persisted_role_contradicting_its_payload(
+    tmp_path: Path,
+) -> None:
+    """Surface stored role and payload disagreement as InvalidHistoryError."""
+
+    database_path = tmp_path / "contradicting-role.db"
+    store = SQLiteStore(database_path)
+    try:
+        create_session(store, session_id="session-1")
+        start_run(store)
+        persist_outcome(
+            store,
+            outcome=Completed(value="done"),
+            history_delta=[UserMessage(content="hello")],
+        )
+    finally:
+        store.close()
+    corrupt_column(
+        database_path, table="history_items", column="role", value="assistant"
+    )
+
+    reopened = SQLiteStore(database_path)
+    try:
+        with pytest.raises(InvalidHistoryError, match="contradicts"):
+            reopened.get_history("session-1")
+    finally:
+        reopened.close()
+
+
 @pytest.mark.parametrize(
     ("outcome", "expected_status"),
     [
@@ -174,6 +225,21 @@ def test_run_record_accepts_every_consistent_terminal_outcome(
             id="terminal-status-without-end",
         ),
         pytest.param(
+            _running_record().model_dump()
+            | {"ended_at": STARTED_AT + timedelta(seconds=1)},
+            "terminal data",
+            id="running-with-terminal-data",
+        ),
+        pytest.param(
+            _terminal_record(
+                outcome=Completed(value="done"),
+                status="completed",
+            ).model_dump()
+            | {"ended_at": STARTED_AT - timedelta(seconds=1)},
+            "end before",
+            id="ends-before-start",
+        ),
+        pytest.param(
             _terminal_record(
                 outcome=Completed(value="done"),
                 status="completed",
@@ -184,11 +250,11 @@ def test_run_record_accepts_every_consistent_terminal_outcome(
         ),
     ],
 )
-def test_terminal_run_rejects_inconsistent_lifecycle_snapshots(
+def test_run_record_rejects_inconsistent_lifecycle_snapshots(
     values: dict[str, object],
     match: str,
 ) -> None:
-    """Reject terminal snapshots whose redundant lifecycle facts disagree."""
+    """Reject run snapshots whose redundant lifecycle facts disagree."""
 
     with pytest.raises(ValidationError, match=match):
         RunRecord.model_validate(values)

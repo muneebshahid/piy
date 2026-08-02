@@ -289,6 +289,23 @@ def test_fork_session_copies_all_history_with_new_envelopes(
     assert store.list_runs("fork") == ()
 
 
+def test_fork_session_requires_an_existing_source_session(store: SQLiteStore) -> None:
+    """Reject forking from a session id that was never created."""
+
+    with pytest.raises(SessionNotFoundError, match="missing"):
+        store.fork_session(source_session_id="missing", target_session_id="fork")
+
+
+def test_fork_session_rejects_an_existing_target_session(store: SQLiteStore) -> None:
+    """Reject forking onto a target session id that already exists."""
+
+    create_session(store, session_id="source")
+    create_session(store, session_id="target")
+
+    with pytest.raises(SessionAlreadyExistsError, match="target"):
+        store.fork_session(source_session_id="source", target_session_id="target")
+
+
 def test_finish_run_rolls_back_status_when_history_insert_fails(
     tmp_path: Path,
 ) -> None:

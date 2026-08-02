@@ -1,6 +1,7 @@
 """Tests for store-bound sessions and the session repository."""
 
 from collections.abc import Iterator
+from uuid import UUID
 
 import pytest
 
@@ -112,3 +113,17 @@ def test_repository_forks_committed_history_without_loading_it(
     assert fork.get_session_record().id == "fork"
     assert fork.get_history() == history
     assert observed_store.history_reads == 1
+
+
+def test_repository_fork_generates_a_target_session_id_when_omitted(
+    store: SQLiteStore,
+) -> None:
+    """Fork onto a fresh generated session id when no target id is given."""
+
+    repository = SessionRepository(store)
+    repository.create(session_id="source")
+
+    fork = repository.fork("source")
+
+    assert UUID(fork.id).version == 4
+    assert fork.get_session_record().id == fork.id

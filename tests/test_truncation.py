@@ -78,6 +78,16 @@ def test_truncate_to_byte_limit_keeps_complete_lines() -> None:
             id="head-first-line-too-long",
         ),
         pytest.param(
+            truncation.truncate_head,
+            "abcd\nefgh\nijkl",
+            2,
+            6,
+            "abcd",
+            "bytes",
+            {"output_lines": 1, "total_lines": 3, "total_bytes": 14},
+            id="head-both-limits-bytes-bind-first",
+        ),
+        pytest.param(
             truncation.truncate_tail,
             "a\nb\nc",
             2,

@@ -156,6 +156,29 @@ async def test_fn_reports_match_limit_in_details(execution: AsyncMock) -> None:
 
 
 @pytest.mark.usefixtures("rg_available")
+async def test_fn_clamps_limit_to_one(execution: AsyncMock) -> None:
+    """Keep the match limit positive even when callers pass a low limit."""
+
+    execution.return_value = "\n".join(
+        [
+            _event("match", "one.txt", 1, "needle one\n"),
+            _event("match", "two.txt", 2, "needle two\n"),
+        ]
+    )
+
+    tool_result = await grep.fn(
+        grep.GrepInput(pattern="needle", limit=0),
+        cwd=Path.cwd(),
+    )
+
+    assert tool_text(tool_result) == (
+        "one.txt:1: needle one\n\n"
+        "[1 matches limit reached. Use limit=2 for more, or refine pattern]"
+    )
+    assert details_of(tool_result, GrepDetails).match_limit_reached == 1
+
+
+@pytest.mark.usefixtures("rg_available")
 async def test_fn_reports_byte_truncation_in_details(execution: AsyncMock) -> None:
     """Return grep details when formatted output exceeds the byte limit."""
 

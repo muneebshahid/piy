@@ -91,6 +91,23 @@ def test_unified_store_rejects_incompatible_schema_versions(
         SQLiteStore(database_path)
 
 
+def test_unified_store_rejects_an_unversioned_database_with_foreign_tables(
+    tmp_path: Path,
+) -> None:
+    """Refuse to build the schema inside an unrelated populated database."""
+
+    database_path = tmp_path / "foreign.db"
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute("CREATE TABLE notes (id TEXT PRIMARY KEY)")
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(SQLiteStoreSchemaError, match="notes"):
+        SQLiteStore(database_path)
+
+
 def test_unified_schema_declares_required_foreign_keys(tmp_path: Path) -> None:
     """Tie runs and history to their persistent aggregate records."""
 

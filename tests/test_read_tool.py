@@ -112,6 +112,18 @@ async def test_read_handles_offset_and_limit_together(tmp_path: Path) -> None:
     assert details.output.total_lines == 60
 
 
+async def test_read_clamps_limit_to_one(tmp_path: Path) -> None:
+    """Treat a non-positive caller limit as a one-line read."""
+
+    file_path = _write_lines(tmp_path / "sample.txt", ["one", "two", "three"])
+
+    result = tool_text(
+        await read.fn(read.ReadInput(path=str(file_path), limit=0), cwd=Path.cwd())
+    )
+
+    assert result == "one\n\n[Showing lines 1-1 of 3. Use offset=2 to continue.]"
+
+
 async def test_read_raises_when_offset_is_beyond_file(tmp_path: Path) -> None:
     """Raise a clear error when offset is beyond the file length."""
 
@@ -230,6 +242,11 @@ async def test_read_expands_home_directory(
             "Capture d’ecran.txt",
             lambda path: str(path).replace("’", "'"),
             id="curly-quote",
+        ),
+        pytest.param(
+            unicodedata.normalize("NFD", "Capture d’écran.txt"),
+            lambda path: str(path.with_name("Capture d'écran.txt")),
+            id="nfd-curly-quote",
         ),
     ],
 )

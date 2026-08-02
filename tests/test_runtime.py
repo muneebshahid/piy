@@ -30,6 +30,7 @@ from tile.types import (
     ConversationItem,
     ToolDefinition,
     ToolFunction,
+    ToolInput,
     ToolResult,
     ToolResultTurn,
     UserMessage,
@@ -661,11 +662,11 @@ async def test_next_prompt_replays_committed_history_and_current_prompt(
     assert replayed[2].content == "second"
 
 
-async def test_runtime_binds_cwd_and_rejects_model_visible_cwd(
+async def test_runtime_binds_cwd_into_tool_functions(
     store: SQLiteStore,
     tmp_path: Path,
 ) -> None:
-    """Inject cwd into tools while rejecting a conflicting input schema."""
+    """Inject the harness cwd into tool functions declaring a cwd parameter."""
 
     captured: list[Path] = []
 
@@ -698,6 +699,32 @@ async def test_runtime_binds_cwd_and_rejects_model_visible_cwd(
 
     assert isinstance(await run.wait(), Completed)
     assert captured == [tmp_path.resolve()]
+
+
+def test_runtime_rejects_model_visible_cwd_schema_property(
+    store: SQLiteStore,
+) -> None:
+    """Reject harness construction for a tool exposing cwd in its input schema."""
+
+    class _CwdInput(ToolInput):
+        """Input schema that illegally exposes the harness-injected cwd."""
+
+        cwd: str
+
+    async def shadowing_cwd(params: _CwdInput, *, cwd: Path) -> ToolResult:
+        """Fail loudly if the harness accepts a model-visible cwd tool."""
+
+        raise AssertionError("rejected tool must never execute")
+
+    tool = ToolDefinition(
+        name="shadowing_cwd",
+        description="Exercise shadowing_cwd.",
+        input_model=_CwdInput,
+        fn=shadowing_cwd,
+    )
+
+    with pytest.raises(ValueError, match="declares cwd in its input schema"):
+        build_harness(store, session_id="cwd-schema", tools=[tool])
 
 
 class _UnavailablePublicHistoryStore(SQLiteStore):
