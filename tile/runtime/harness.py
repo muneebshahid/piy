@@ -34,6 +34,8 @@ class AgentHarness:
         instructions: str = DEFAULT_INSTRUCTIONS,
         auto_mode: bool = True,
     ) -> None:
+        """Configure one session with its tools, instructions, and working directory."""
+
         _reject_reserved_tool_names(tools)
         normalized_cwd = normalize_cwd(cwd)
         self._session = session

@@ -37,7 +37,7 @@ result = await run.wait()
 
 Prompt admission persists the running `RunRecord` before a handle is returned
 or provider work begins. A start-write failure raises to the caller, returns no
-handle, and faults the harness.
+handle, and leaves the harness reusable after the persistence issue is resolved.
 
 Persistent records are Store results. `SessionRepository.create()` supplies a
 session id and receives the Store-created `SessionRecord`; it does not construct

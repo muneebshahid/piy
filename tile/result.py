@@ -100,7 +100,7 @@ class Failed(BaseModel):
 
 
 class Aborted(BaseModel):
-    """Terminal outcome for a cancelled or atomically replaced run."""
+    """Terminal outcome for a cancelled run."""
 
     model_config = ConfigDict(frozen=True)
 

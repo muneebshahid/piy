@@ -32,7 +32,7 @@ concrete guarantees:
   unanswered tool calls are healed, and the next prompt works;
 - every accepted prompt has a durable running record before execution begins;
 - every durable run log closes with `RunEndEvent`; a durability failure closes
-  the local stream with `RunFaultEvent` and faults its harness;
+  the local stream with `RunFaultEvent` without retaining harness fault state;
 - providers normalize into one event and history contract;
 - prompts may require explicit, typed success or failure outcomes.
 
