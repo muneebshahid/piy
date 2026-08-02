@@ -179,7 +179,7 @@ def terminal_run_record(
         ended_at=max(terminal_time, running.started_at),
         model=running.model,
         provider=running.provider,
-        outcome=outcome,
+        outcome=outcome.model_copy(deep=True),
     )
 
 
