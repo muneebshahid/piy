@@ -1,6 +1,5 @@
 """Tests for the documented public import surface."""
 
-import asyncio
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 from typing import get_args
@@ -45,7 +44,7 @@ from tile.types import (
 )
 
 
-def test_documented_public_imports_run_fake_prompt() -> None:
+async def test_documented_public_imports_run_fake_prompt() -> None:
     """Run one prompt using only documented public imports."""
 
     store: Store = SQLiteStore(in_memory=True)
@@ -57,7 +56,7 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     )
     provider = _FakeProvider()
 
-    events = asyncio.run(_collect_prompt_events(harness, provider))
+    events = await _collect_prompt_events(harness, provider)
 
     assert isinstance(events[-1], RunEndEvent)
     assert any(isinstance(event, MessageEndEvent) for event in events)

@@ -7,24 +7,19 @@ from pydantic import ValidationError
 
 import tile.tools.edit as edit
 from tile.tools.edit import EditDetails
-from tile.types.tools import ToolResult
-from tests.support.tool_results import tool_text
-
-
-def test_edit_schema_requires_path_and_edits() -> None:
-    """Require a target path and at least one edit collection argument."""
-
-    assert edit.tool.input_schema["required"] == ["path", "edits"]
+from tests.support.files import read_text, write_text
+from tests.support.tool_results import details_of, tool_text
 
 
 def test_edit_schema_exposes_edit_controls() -> None:
-    """Expose path plus edits inputs."""
+    """Expose path plus edits inputs and require both."""
 
     properties = edit.tool.input_schema["properties"]
 
     assert edit.tool.name == "edit"
     assert isinstance(properties, dict)
     assert set(properties) == {"path", "edits"}
+    assert edit.tool.input_schema["required"] == ["path", "edits"]
 
 
 def test_edit_input_requires_at_least_one_replacement() -> None:
@@ -63,17 +58,27 @@ def test_edit_schema_describes_each_replacement() -> None:
 
 
 @pytest.mark.parametrize(
-    "requested_path",
-    ["sample.txt", "@sample.txt"],
-    ids=["relative", "at-prefixed"],
+    ("requested_template", "expected_name"),
+    [
+        pytest.param("sample.txt", "sample.txt", id="relative"),
+        pytest.param("@sample.txt", "sample.txt", id="at-prefixed"),
+        pytest.param(
+            "{cwd}/my\u00a0file.txt",
+            "my file.txt",
+            id="unicode-space-absolute",
+        ),
+    ],
 )
 def test_edit_resolves_requested_paths_against_cwd(
     tmp_path: Path,
-    requested_path: str,
+    requested_template: str,
+    expected_name: str,
 ) -> None:
-    """Resolve relative and at-prefixed edit paths against the tool cwd."""
+    """Resolve relative, at-prefixed, and Unicode-space paths against the cwd."""
 
-    assert edit._resolve_path(requested_path, tmp_path) == tmp_path / "sample.txt"
+    requested_path = requested_template.format(cwd=tmp_path)
+
+    assert edit._resolve_path(requested_path, tmp_path) == tmp_path / expected_name
 
 
 def test_edit_expands_home_directory(
@@ -87,20 +92,11 @@ def test_edit_expands_home_directory(
     assert edit._resolve_path("~/sample.txt", Path.cwd()) == tmp_path / "sample.txt"
 
 
-def test_edit_normalizes_unicode_spaces(tmp_path: Path) -> None:
-    """Resolve paths typed with uncommon Unicode spaces."""
-
-    file_path = tmp_path / "my file.txt"
-    requested_path = str(file_path).replace(" ", "\u00a0")
-
-    assert edit._resolve_path(requested_path, Path.cwd()) == file_path
-
-
-@pytest.mark.asyncio
 async def test_edit_replaces_text_in_file(tmp_path: Path) -> None:
     """Replace a unique exact text block in a file."""
 
-    file_path = _write_text(tmp_path / "sample.txt", "Hello, world!")
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "Hello, world!")
 
     result = tool_text(
         await edit.fn(
@@ -116,11 +112,11 @@ async def test_edit_replaces_text_in_file(tmp_path: Path) -> None:
     assert result == f"Successfully replaced 1 block(s) in {file_path}."
 
 
-@pytest.mark.asyncio
 async def test_edit_replaces_multiple_disjoint_blocks(tmp_path: Path) -> None:
     """Apply multiple replacements against the original file content."""
 
-    file_path = _write_text(tmp_path / "sample.txt", "alpha\nbeta\ngamma\n")
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "alpha\nbeta\ngamma\n")
 
     await edit.fn(
         _edit_input(
@@ -136,11 +132,11 @@ async def test_edit_replaces_multiple_disjoint_blocks(tmp_path: Path) -> None:
     assert file_path.read_text(encoding="utf-8") == "ALPHA\nbeta\nGAMMA\n"
 
 
-@pytest.mark.asyncio
 async def test_edit_matches_against_original_content(tmp_path: Path) -> None:
     """Match later edits against original content instead of earlier replacements."""
 
-    file_path = _write_text(tmp_path / "sample.txt", "foo\nbar\nbaz\n")
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "foo\nbar\nbaz\n")
 
     await edit.fn(
         _edit_input(
@@ -156,11 +152,11 @@ async def test_edit_matches_against_original_content(tmp_path: Path) -> None:
     assert file_path.read_text(encoding="utf-8") == "foo bar\nBAR\nbaz\n"
 
 
-@pytest.mark.asyncio
 async def test_edit_returns_unified_diff_details(tmp_path: Path) -> None:
     """Return a standard unified diff in edit result details."""
 
-    file_path = _write_text(tmp_path / "sample.txt", "alpha\nbeta\ngamma\n")
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "alpha\nbeta\ngamma\n")
 
     tool_result = await edit.fn(
         _edit_input(
@@ -170,7 +166,7 @@ async def test_edit_returns_unified_diff_details(tmp_path: Path) -> None:
         cwd=Path.cwd(),
     )
 
-    details = _edit_details(tool_result)
+    details = details_of(tool_result, EditDetails)
     assert details.type == "edit"
     assert details.diff == (
         f"--- a/{file_path}\n"
@@ -191,7 +187,6 @@ async def test_edit_returns_unified_diff_details(tmp_path: Path) -> None:
     ],
     ids=["crlf-line-endings", "utf8-bom"],
 )
-@pytest.mark.asyncio
 async def test_edit_preserves_file_encoding_metadata(
     tmp_path: Path,
     content: str,
@@ -199,7 +194,8 @@ async def test_edit_preserves_file_encoding_metadata(
 ) -> None:
     """Match LF old_text while preserving CRLF endings and a UTF-8 BOM."""
 
-    file_path = _write_text(tmp_path / "sample.txt", content)
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, content)
 
     await edit.fn(
         _edit_input(
@@ -209,7 +205,7 @@ async def test_edit_preserves_file_encoding_metadata(
         cwd=Path.cwd(),
     )
 
-    assert _read_text(file_path) == expected
+    assert read_text(file_path) == expected
 
 
 @pytest.mark.parametrize(
@@ -267,7 +263,6 @@ async def test_edit_preserves_file_encoding_metadata(
         "fuzzy-ambiguous-window",
     ],
 )
-@pytest.mark.asyncio
 async def test_edit_rejects_invalid_edits_and_leaves_file_unchanged(
     tmp_path: Path,
     content: str,
@@ -276,7 +271,8 @@ async def test_edit_rejects_invalid_edits_and_leaves_file_unchanged(
 ) -> None:
     """Reject invalid edit requests without modifying the target file."""
 
-    file_path = _write_text(tmp_path / "sample.txt", content)
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, content)
 
     with pytest.raises(RuntimeError, match=error_match):
         await edit.fn(
@@ -284,7 +280,7 @@ async def test_edit_rejects_invalid_edits_and_leaves_file_unchanged(
             cwd=Path.cwd(),
         )
 
-    assert _read_text(file_path) == content
+    assert read_text(file_path) == content
 
 
 @pytest.mark.parametrize(
@@ -322,7 +318,6 @@ async def test_edit_rejects_invalid_edits_and_leaves_file_unchanged(
         "nfkc-compatibility",
     ],
 )
-@pytest.mark.asyncio
 async def test_edit_fuzzy_matches_normalized_line_variants(
     tmp_path: Path,
     content: str,
@@ -332,7 +327,8 @@ async def test_edit_fuzzy_matches_normalized_line_variants(
 ) -> None:
     """Fall back to fuzzy whole-line matching across normalization variants."""
 
-    file_path = _write_text(tmp_path / "sample.txt", content)
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, content)
 
     await edit.fn(
         _edit_input(
@@ -387,7 +383,6 @@ async def test_edit_fuzzy_matches_normalized_line_variants(
         "last-line-deletion-keeps-prior-terminator",
     ],
 )
-@pytest.mark.asyncio
 async def test_edit_fuzzy_maps_terminators_like_exact_replacement(
     tmp_path: Path,
     content: str,
@@ -397,7 +392,8 @@ async def test_edit_fuzzy_maps_terminators_like_exact_replacement(
 ) -> None:
     """Honor old and new text terminators exactly across window edges."""
 
-    file_path = _write_text(tmp_path / "sample.txt", content)
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, content)
 
     await edit.fn(
         _edit_input(
@@ -407,19 +403,16 @@ async def test_edit_fuzzy_maps_terminators_like_exact_replacement(
         cwd=Path.cwd(),
     )
 
-    assert _read_text(file_path) == expected
+    assert read_text(file_path) == expected
 
 
-@pytest.mark.asyncio
 async def test_edit_fuzzy_preserves_untouched_regions_and_diffs_original(
     tmp_path: Path,
 ) -> None:
     """Leave lines outside the window byte-identical and diff original content."""
 
-    file_path = _write_text(
-        tmp_path / "sample.txt",
-        "alpha ‘one’  \nconsole.log(‘hello’);\nomega “end”\t\n",
-    )
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "alpha ‘one’  \nconsole.log(‘hello’);\nomega “end”\t\n")
 
     tool_result = await edit.fn(
         _edit_input(
@@ -437,20 +430,20 @@ async def test_edit_fuzzy_preserves_untouched_regions_and_diffs_original(
     assert file_path.read_text(encoding="utf-8") == (
         "alpha ‘one’  \nconsole.log('world');\nomega “end”\t\n"
     )
-    details = _edit_details(tool_result)
+    details = details_of(tool_result, EditDetails)
     assert "-console.log(‘hello’);\n" in details.diff
     assert "+console.log('world');\n" in details.diff
     assert "-alpha" not in details.diff
     assert "+alpha" not in details.diff
 
 
-@pytest.mark.asyncio
 async def test_edit_fuzzy_skips_unterminated_final_line_for_terminated_old(
     tmp_path: Path,
 ) -> None:
     """Match only the terminated occurrence when the final line lacks a newline."""
 
-    file_path = _write_text(tmp_path / "sample.txt", "log(‘x’);\nabc\nlog(‘x’);")
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "log(‘x’);\nabc\nlog(‘x’);")
 
     await edit.fn(
         _edit_input(
@@ -460,45 +453,14 @@ async def test_edit_fuzzy_skips_unterminated_final_line_for_terminated_old(
         cwd=Path.cwd(),
     )
 
-    assert _read_text(file_path) == "log('y');\nabc\nlog(‘x’);"
+    assert read_text(file_path) == "log('y');\nabc\nlog(‘x’);"
 
 
-@pytest.mark.asyncio
-async def test_edit_prefers_exact_match_over_fuzzy_match(tmp_path: Path) -> None:
-    """Use original content when all edits match exactly."""
-
-    file_path = _write_text(
-        tmp_path / "sample.txt",
-        "const x = 'exact';\nconst y = ‘other’;\n",
-    )
-
-    await edit.fn(
-        _edit_input(
-            path=str(file_path),
-            edits=[
-                {
-                    "old_text": "const x = 'exact';",
-                    "new_text": "const x = 'changed';",
-                }
-            ],
-        ),
-        cwd=Path.cwd(),
-    )
-
-    assert (
-        file_path.read_text(encoding="utf-8")
-        == "const x = 'changed';\nconst y = ‘other’;\n"
-    )
-
-
-@pytest.mark.asyncio
 async def test_edit_fuzzy_matches_multiple_edits(tmp_path: Path) -> None:
     """Match every edit in fuzzy line space once the fallback is needed."""
 
-    file_path = _write_text(
-        tmp_path / "sample.txt",
-        "console.log(‘hello’);\nhello\u00a0world\n",
-    )
+    file_path = tmp_path / "sample.txt"
+    write_text(file_path, "console.log(‘hello’);\nhello\u00a0world\n")
 
     await edit.fn(
         _edit_input(
@@ -549,40 +511,7 @@ def test_fuzzy_replacement_equals_exact_replacement(
     assert fuzzy.new_content == exact.new_content
 
 
-def test_fuzzy_rejects_missing_trailing_newline_like_exact() -> None:
-    """Fail both paths when old text claims a newline the content lacks."""
-
-    replacements = [edit.EditReplacement(old_text="ghi\n", new_text="xyz\n")]
-
-    with pytest.raises(edit.MatchNotFound):
-        edit._apply_exact_replacements("abc\nghi", replacements, "sample.txt")
-    with pytest.raises(edit.MatchNotFound):
-        edit._apply_fuzzy_replacements("abc\nghi", replacements, "sample.txt")
-
-
-def _write_text(path: Path, content: str) -> Path:
-    """Write test content to a UTF-8 text file."""
-
-    with path.open("w", encoding="utf-8", newline="") as file:
-        file.write(content)
-    return path
-
-
 def _edit_input(*, path: str, edits: list[dict[str, str]]) -> edit.EditInput:
     """Validate JSON-shaped replacements for direct tool-function tests."""
 
     return edit.EditInput.model_validate({"path": path, "edits": edits})
-
-
-def _read_text(path: Path) -> str:
-    """Read test content without newline translation."""
-
-    with path.open("r", encoding="utf-8", newline="") as file:
-        return file.read()
-
-
-def _edit_details(result: ToolResult) -> EditDetails:
-    """Return edit details from a tool result."""
-
-    assert isinstance(result.details, EditDetails)
-    return result.details

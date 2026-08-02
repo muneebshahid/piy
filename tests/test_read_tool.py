@@ -2,6 +2,7 @@
 
 import base64
 import unicodedata
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -9,18 +10,12 @@ import pytest
 import tile.tools.read as read
 import tile.tools.support.truncation as truncation
 from tile.tools.read import ReadDetails
-from tile.types.tools import ToolError, ToolImageContent, ToolResult, ToolTextContent
-from tests.support.tool_results import tool_text
-
-
-def test_read_schema_requires_only_path() -> None:
-    """Require only path so callers can omit optional offset and limit."""
-
-    assert read.tool.input_schema["required"] == ["path"]
+from tile.types.tools import ToolError, ToolImageContent, ToolTextContent
+from tests.support.tool_results import details_of, tool_text
 
 
 def test_read_schema_exposes_text_read_controls() -> None:
-    """Expose the text file read inputs from the schema."""
+    """Expose the text read inputs, requiring only path with a default limit."""
 
     properties = read.tool.input_schema["properties"]
 
@@ -28,9 +23,9 @@ def test_read_schema_exposes_text_read_controls() -> None:
     assert isinstance(properties, dict)
     assert set(properties) == {"path", "offset", "limit"}
     assert properties["limit"]["default"] == truncation.OUTPUT_LINE_LIMIT
+    assert read.tool.input_schema["required"] == ["path"]
 
 
-@pytest.mark.asyncio
 async def test_read_returns_file_contents(tmp_path: Path) -> None:
     """Return full file contents when no limit is reached."""
 
@@ -43,7 +38,6 @@ async def test_read_returns_file_contents(tmp_path: Path) -> None:
     assert tool_result.details is None
 
 
-@pytest.mark.asyncio
 async def test_read_resolves_relative_path_against_supplied_cwd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -62,7 +56,6 @@ async def test_read_resolves_relative_path_against_supplied_cwd(
     assert result == "content"
 
 
-@pytest.mark.asyncio
 async def test_read_starts_from_one_indexed_offset(tmp_path: Path) -> None:
     """Treat offset as a 1-indexed starting line number."""
 
@@ -75,7 +68,6 @@ async def test_read_starts_from_one_indexed_offset(tmp_path: Path) -> None:
     assert result == "two\nthree"
 
 
-@pytest.mark.asyncio
 async def test_read_reports_remaining_lines_after_limit(tmp_path: Path) -> None:
     """Report line truncation when a caller limit stops before end of file."""
 
@@ -91,7 +83,7 @@ async def test_read_reports_remaining_lines_after_limit(tmp_path: Path) -> None:
         "\n".join(f"line {index}" for index in range(1, 11))
         + "\n\n[Showing lines 1-10 of 100. Use offset=11 to continue.]"
     )
-    details = _read_details(tool_result)
+    details = details_of(tool_result, ReadDetails)
     assert details.output.truncated is True
     assert details.output.truncated_by == "lines"
     assert details.output.output_lines == 10
@@ -99,7 +91,6 @@ async def test_read_reports_remaining_lines_after_limit(tmp_path: Path) -> None:
     assert details.output.max_lines == 10
 
 
-@pytest.mark.asyncio
 async def test_read_handles_offset_and_limit_together(tmp_path: Path) -> None:
     """Apply offset before applying the caller line limit."""
 
@@ -115,13 +106,12 @@ async def test_read_handles_offset_and_limit_together(tmp_path: Path) -> None:
         "\n".join(f"line {index}" for index in range(41, 61))
         + "\n\n[Showing lines 41-60 of 100. Use offset=61 to continue.]"
     )
-    details = _read_details(tool_result)
+    details = details_of(tool_result, ReadDetails)
     assert details.output.truncated_by == "lines"
     assert details.output.output_lines == 20
     assert details.output.total_lines == 60
 
 
-@pytest.mark.asyncio
 async def test_read_raises_when_offset_is_beyond_file(tmp_path: Path) -> None:
     """Raise a clear error when offset is beyond the file length."""
 
@@ -134,28 +124,6 @@ async def test_read_raises_when_offset_is_beyond_file(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.asyncio
-async def test_read_reports_line_truncation(tmp_path: Path) -> None:
-    """Append a continuation notice when automatic line truncation occurs."""
-
-    file_path = _write_numbered_lines(
-        tmp_path / "sample.txt",
-        count=truncation.OUTPUT_LINE_LIMIT + 1,
-    )
-
-    tool_result = await read.fn(read.ReadInput(path=str(file_path)), cwd=Path.cwd())
-    result = tool_text(tool_result)
-
-    assert result.endswith(
-        "\n\n[Showing lines 1-2000 of 2001. Use offset=2001 to continue.]"
-    )
-    details = _read_details(tool_result)
-    assert details.output.truncated_by == "lines"
-    assert details.output.output_lines == truncation.OUTPUT_LINE_LIMIT
-    assert details.output.total_lines == truncation.OUTPUT_LINE_LIMIT + 1
-
-
-@pytest.mark.asyncio
 async def test_read_reports_byte_truncation(tmp_path: Path) -> None:
     """Append a continuation notice when automatic byte truncation occurs."""
 
@@ -166,13 +134,12 @@ async def test_read_reports_byte_truncation(tmp_path: Path) -> None:
 
     assert "50.0KB limit" in result
     assert result.endswith("to continue.]")
-    details = _read_details(tool_result)
+    details = details_of(tool_result, ReadDetails)
     assert details.output.truncated_by == "bytes"
     assert details.output.output_bytes <= truncation.OUTPUT_BYTE_LIMIT
     assert details.output.total_bytes > truncation.OUTPUT_BYTE_LIMIT
 
 
-@pytest.mark.asyncio
 async def test_read_reports_first_line_exceeds_byte_limit(tmp_path: Path) -> None:
     """Return a bash fallback notice when the first selected line is too large."""
 
@@ -185,13 +152,12 @@ async def test_read_reports_first_line_exceeds_byte_limit(tmp_path: Path) -> Non
         f"[Line 1 is 50.0KB, exceeds 50.0KB limit. Use bash: "
         f"sed -n '1p' {file_path} | head -c 51200]"
     )
-    details = _read_details(tool_result)
+    details = details_of(tool_result, ReadDetails)
     assert details.output.truncated_by == "bytes"
     assert details.output.edge_line_exceeds_limit is True
     assert details.output.output_lines == 0
 
 
-@pytest.mark.asyncio
 async def test_read_returns_image_content_for_supported_image(tmp_path: Path) -> None:
     """Return text and base64 image blocks for supported image files."""
 
@@ -211,7 +177,6 @@ async def test_read_returns_image_content_for_supported_image(tmp_path: Path) ->
     assert result.details is None
 
 
-@pytest.mark.asyncio
 async def test_read_raises_when_path_does_not_exist(tmp_path: Path) -> None:
     """Raise filesystem errors so the agent can mark tool execution as failed."""
 
@@ -222,20 +187,6 @@ async def test_read_raises_when_path_does_not_exist(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.asyncio
-async def test_read_strips_at_prefix_for_referenced_paths(tmp_path: Path) -> None:
-    """Resolve paths with a leading at sign."""
-
-    file_path = _write_lines(tmp_path / "sample.txt", ["content"])
-
-    result = tool_text(
-        await read.fn(read.ReadInput(path=f"@{file_path}"), cwd=Path.cwd())
-    )
-
-    assert result == "content"
-
-
-@pytest.mark.asyncio
 async def test_read_expands_home_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -252,61 +203,47 @@ async def test_read_expands_home_directory(
     assert result == "content"
 
 
-@pytest.mark.asyncio
-async def test_read_normalizes_unicode_spaces(tmp_path: Path) -> None:
-    """Resolve paths typed with uncommon Unicode spaces."""
+@pytest.mark.parametrize(
+    ("stored_name", "spell_request"),
+    [
+        pytest.param(
+            "sample.txt",
+            lambda path: f"@{path}",
+            id="at-prefix",
+        ),
+        pytest.param(
+            "my file.txt",
+            lambda path: str(path).replace(" ", "\u00a0"),
+            id="unicode-space",
+        ),
+        pytest.param(
+            "Screenshot 2026-05-28 at 10.30.00\u202fAM.png",
+            lambda path: str(path).replace("\u202fAM.", " AM."),
+            id="screenshot-ampm-space",
+        ),
+        pytest.param(
+            unicodedata.normalize("NFD", "café.txt"),
+            lambda path: str(path.with_name("café.txt")),
+            id="nfd-filename",
+        ),
+        pytest.param(
+            "Capture d’ecran.txt",
+            lambda path: str(path).replace("’", "'"),
+            id="curly-quote",
+        ),
+    ],
+)
+async def test_read_resolves_path_spelling_variants(
+    tmp_path: Path,
+    stored_name: str,
+    spell_request: Callable[[Path], str],
+) -> None:
+    """Resolve requested spellings that differ from the stored filename."""
 
-    file_path = _write_lines(tmp_path / "my file.txt", ["content"])
-    requested_path = str(file_path).replace(" ", "\u00a0")
-
-    result = tool_text(
-        await read.fn(read.ReadInput(path=requested_path), cwd=Path.cwd())
-    )
-
-    assert result == "content"
-
-
-@pytest.mark.asyncio
-async def test_read_tries_macos_screenshot_ampm_spacing(tmp_path: Path) -> None:
-    """Resolve macOS screenshot names that use narrow no-break spaces."""
-
-    file_path = _write_lines(
-        tmp_path / "Screenshot 2026-05-28 at 10.30.00\u202fAM.png",
-        ["content"],
-    )
-    requested_path = str(file_path).replace("\u202fAM.", " AM.")
-
-    result = tool_text(
-        await read.fn(read.ReadInput(path=requested_path), cwd=Path.cwd())
-    )
-
-    assert result == "content"
-
-
-@pytest.mark.asyncio
-async def test_read_tries_nfd_filename_variant(tmp_path: Path) -> None:
-    """Resolve filenames stored in decomposed Unicode form."""
-
-    decomposed_name = unicodedata.normalize("NFD", "café.txt")
-    file_path = _write_lines(tmp_path / decomposed_name, ["content"])
-    requested_path = str(file_path.with_name("café.txt"))
-
-    result = tool_text(
-        await read.fn(read.ReadInput(path=requested_path), cwd=Path.cwd())
-    )
-
-    assert result == "content"
-
-
-@pytest.mark.asyncio
-async def test_read_tries_curly_quote_filename_variant(tmp_path: Path) -> None:
-    """Resolve filenames that use a curly apostrophe."""
-
-    file_path = _write_lines(tmp_path / "Capture d\u2019ecran.txt", ["content"])
-    requested_path = str(file_path).replace("\u2019", "'")
+    file_path = _write_lines(tmp_path / stored_name, ["content"])
 
     result = tool_text(
-        await read.fn(read.ReadInput(path=requested_path), cwd=Path.cwd())
+        await read.fn(read.ReadInput(path=spell_request(file_path)), cwd=Path.cwd())
     )
 
     assert result == "content"
@@ -347,10 +284,3 @@ def _write_numbered_lines(path: Path, count: int) -> Path:
     """Write numbered lines to a UTF-8 test file and return its path."""
 
     return _write_lines(path, [f"line {index}" for index in range(1, count + 1)])
-
-
-def _read_details(result: ToolResult) -> ReadDetails:
-    """Return read details from a tool result."""
-
-    assert isinstance(result.details, ReadDetails)
-    return result.details

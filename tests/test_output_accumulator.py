@@ -3,7 +3,6 @@
 import pytest
 
 from tile.tools.support.output_accumulator import OutputAccumulator
-from tile.tools.support.truncation import truncate_tail
 
 
 def test_accumulate_decodes_split_utf8_characters() -> None:
@@ -20,57 +19,47 @@ def test_accumulate_decodes_split_utf8_characters() -> None:
     assert snapshot.truncation.truncated is False
 
 
-def test_accumulate_keeps_bounded_tail_with_global_totals() -> None:
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        pytest.param([b"one\ntwo\nthree"], id="single-chunk"),
+        pytest.param([b"one\n", b"two\n", b"three"], id="per-line-chunks"),
+    ],
+)
+def test_accumulate_keeps_bounded_tail_with_global_totals(chunks: list[bytes]) -> None:
     """Keep only rolling tail text while preserving full output totals."""
 
-    text = "one\ntwo\nthree"
     output = OutputAccumulator(
         max_lines=100,
         max_bytes=6,
     )
 
-    output.accumulate(text.encode("utf-8"))
+    for chunk in chunks:
+        output.accumulate(chunk)
     snapshot = output.finish()
 
     assert snapshot.content == "three"
     assert snapshot.truncation.truncated is True
     assert snapshot.truncation.truncated_by == "bytes"
     assert snapshot.truncation.total_lines == 3
-    assert snapshot.truncation.total_bytes == len(text.encode("utf-8"))
-
-
-def test_accumulate_trims_combined_tail_across_chunks() -> None:
-    """Trim after appending the incoming chunk to the existing tail."""
-
-    output = OutputAccumulator(
-        max_lines=100,
-        max_bytes=6,
-    )
-
-    output.accumulate("one\n".encode("utf-8"))
-    output.accumulate("two\n".encode("utf-8"))
-    output.accumulate("three".encode("utf-8"))
-    snapshot = output.finish()
-
-    assert snapshot.content == "three"
-    assert snapshot.truncation.total_lines == 3
+    assert snapshot.truncation.total_bytes == len(b"".join(chunks))
 
 
 def test_accumulate_reports_global_line_truncation_when_snapshot_fits() -> None:
     """Report line truncation when rolling trim already dropped earlier lines."""
 
+    max_lines, max_bytes = 2, 10
     output = OutputAccumulator(
-        max_lines=2,
-        max_bytes=10,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
     )
 
     output.accumulate(b"aaaaaaaaaaaaaaaaaaaaaaaa\nx\ny")
     snapshot = output.finish()
-    tail_truncation = truncate_tail(output._snapshot_text(), max_lines=2, max_bytes=10)
 
     assert snapshot.content == "x\ny"
-    assert tail_truncation.truncated is False
-    assert tail_truncation.truncated_by is None
+    assert len(snapshot.content.split("\n")) <= max_lines
+    assert len(snapshot.content.encode("utf-8")) <= max_bytes
     assert snapshot.truncation.truncated is True
     assert snapshot.truncation.truncated_by == "lines"
     assert snapshot.truncation.total_lines == 3
@@ -80,20 +69,18 @@ def test_accumulate_reports_global_line_truncation_when_snapshot_fits() -> None:
 def test_accumulate_reports_global_byte_truncation_when_snapshot_fits() -> None:
     """Report byte truncation when line-boundary cleanup leaves a small snapshot."""
 
+    max_lines, max_bytes = 100, 10
     output = OutputAccumulator(
-        max_lines=100,
-        max_bytes=10,
+        max_lines=max_lines,
+        max_bytes=max_bytes,
     )
 
     output.accumulate(b"aaaaaaaaaaaaaaaaaaaaaaaa\nok")
     snapshot = output.finish()
-    tail_truncation = truncate_tail(
-        output._snapshot_text(), max_lines=100, max_bytes=10
-    )
 
     assert snapshot.content == "ok"
-    assert tail_truncation.truncated is False
-    assert tail_truncation.truncated_by is None
+    assert len(snapshot.content.split("\n")) <= max_lines
+    assert len(snapshot.content.encode("utf-8")) <= max_bytes
     assert snapshot.truncation.truncated is True
     assert snapshot.truncation.truncated_by == "bytes"
     assert snapshot.truncation.total_bytes == 27

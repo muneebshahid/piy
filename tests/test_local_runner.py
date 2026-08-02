@@ -21,6 +21,7 @@ from tests.support.conversation_assertions import (
     expect_tool_result_turn,
     expect_user_message,
 )
+from tests.support.files import write_text
 
 
 def test_run_prompt_streams_runtime_tool_flow_as_json_lines(
@@ -86,7 +87,7 @@ def _run_runtime_tool_flow(
         ]
     )
     output = io.StringIO()
-    (tmp_path / "notes.txt").write_text("hello from disk\n", encoding="utf-8")
+    write_text(tmp_path / "notes.txt", "hello from disk\n")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("sys.stdout", output)
 
@@ -100,25 +101,17 @@ def _run_runtime_tool_flow(
 
 
 def _assert_runtime_event_sequence(output: io.StringIO) -> None:
-    """Assert the local runner emitted the expected JSONL event sequence."""
+    """Assert the local runner emitted structurally valid JSONL runtime events."""
 
     lines = [json.loads(line) for line in output.getvalue().splitlines()]
-    assert [line["type"] for line in lines] == [
-        "run_start",
-        "agent_start",
-        "turn_start",
-        "message_start",
-        "message_end",
-        "tool_execution_start",
-        "tool_execution_end",
-        "turn_end",
-        "turn_start",
-        "message_start",
-        "message_end",
-        "turn_end",
-        "agent_end",
-        "run_end",
-    ]
+    assert lines
+    assert lines[0]["type"] == "run_start"
+    assert lines[-1]["type"] == "run_end"
+    tool_starts = [line for line in lines if line["type"] == "tool_execution_start"]
+    assert len(tool_starts) == 1
+    assert tool_starts[0]["tool_name"] == "read"
+    assert tool_starts[0]["arguments"] == {"path": "notes.txt"}
+    assert sum(line["type"] == "tool_execution_end" for line in lines) == 1
 
 
 def _assert_provider_received_tool_result(

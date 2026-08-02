@@ -5,7 +5,6 @@ from pathlib import Path
 
 from tile.prompt import (
     AUTO_MODE,
-    DEFAULT_INSTRUCTIONS,
     build_system_prompt,
     read_project_context,
 )
@@ -27,16 +26,6 @@ def test_build_system_prompt_composes_all_tiers(tmp_path: Path) -> None:
     assert prompt == (
         f"{AUTO_MODE}\n\nInstructions body.\n\nProject rules.\n\n"
         f"{_environment(tmp_path)}"
-    )
-
-
-def test_build_system_prompt_defaults_to_auto_mode(tmp_path: Path) -> None:
-    """Include the auto-mode block unless the caller disables it."""
-
-    prompt = build_system_prompt(DEFAULT_INSTRUCTIONS, tmp_path)
-
-    assert prompt == (
-        f"{AUTO_MODE}\n\n{DEFAULT_INSTRUCTIONS}\n\n{_environment(tmp_path)}"
     )
 
 

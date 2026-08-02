@@ -6,7 +6,6 @@ events while the assistant message is streaming, finalizes history on ``done``
 or ``error``, and executes tools before starting a follow-up assistant turn.
 """
 
-import asyncio
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -59,7 +58,6 @@ from tile.tools.read import ReadDetails
 from tile.tool_truncation import ToolOutputDetails
 from tile.types.tools import (
     ToolDefinition,
-    ToolInput,
     ToolResult,
 )
 from tests.support.agent_streams import (
@@ -79,7 +77,7 @@ from tests.support.conversation_assertions import (
     expect_user_message,
 )
 from tests.support.stream_assertions import expect_stream_event
-from tests.support.tool_definitions import CityInput, city_tool
+from tests.support.tool_definitions import CityInput, NoInput, city_tool
 from tests.support.tool_results import tool_text
 
 TEvent = TypeVar("TEvent", bound=AgentEvent)
@@ -175,7 +173,7 @@ async def _raise_tool_error(params: CityInput) -> ToolResult:
     raise RuntimeError("boom")
 
 
-async def _read_file(params: ToolInput) -> ToolResult:
+async def _read_file(params: NoInput) -> ToolResult:
     """Return a deterministic file read result with runtime metadata."""
 
     _ = params
@@ -202,8 +200,9 @@ def _tool_output_details() -> ToolOutputDetails:
     )
 
 
-def _collect_weather_tool_loop_run() -> ToolUseLoopRun:
-    """Run a two-turn weather tool loop and capture its observable state."""
+@pytest.fixture(scope="module")
+def weather_tool_loop_run() -> ToolUseLoopRun:
+    """Run the two-turn weather tool loop once and share its immutable capture."""
 
     tools = _sample_tools()
     reasoning_block = ReasoningBlock(summary_text="Thinking about weather")
@@ -280,8 +279,8 @@ def _weather_follow_up_stream(
     ]
 
 
-def test_run_agent_does_not_mutate_supplied_history() -> None:
-    """Keep caller-owned history unchanged while emitting stable events."""
+def test_run_agent_completes_a_simple_run() -> None:
+    """Return a terminal result without mutating caller-owned history."""
 
     provider = ProviderStreamMock(
         [
@@ -290,40 +289,22 @@ def test_run_agent_does_not_mutate_supplied_history() -> None:
     )
     history: list[ConversationItem] = [UserMessage(content="Hello, Tile")]
 
-    events = collect_run_events(history, provider=provider)
+    capture = collect_agent_run(history, provider=provider)
 
-    message_end = _expect_event_type(events[3], MessageEndEvent)
-    _expect_event_type(events[-1], AgentEndEvent)
+    message_end = _expect_event_type(capture.events[3], MessageEndEvent)
+    _expect_event_type(capture.events[-1], AgentEndEvent)
     assert history == [UserMessage(content="Hello, Tile")]
     assert message_end.assistant_turn.response_id == "resp_done"
+    assert capture.result.last_turn.response_id == "resp_done"
+    assert capture.result.tool_executions == ()
 
 
-def test_run_agent_returns_terminal_result() -> None:
-    """Return the last assistant turn independently from emitted events."""
-
-    provider = ProviderStreamMock([final_text_stream("resp_done", "Done")])
-
-    async def _run() -> AgentResult:
-        """Run the agent while discarding its observable events."""
-
-        return await run_agent(
-            [UserMessage(content="Hello")],
-            emit=lambda _event: None,
-            provider=provider,
-            tool_executor=ToolExecutor(()),
-            instructions="Base prompt.",
-        )
-
-    result = asyncio.run(_run())
-
-    assert result.last_turn.response_id == "resp_done"
-    assert result.tool_executions == ()
-
-
-def test_run_agent_returns_accumulated_tool_executions() -> None:
+def test_run_agent_returns_accumulated_tool_executions(
+    weather_tool_loop_run: ToolUseLoopRun,
+) -> None:
     """Return tool outcomes accumulated across a multi-turn tool loop."""
 
-    run = _collect_weather_tool_loop_run()
+    run = weather_tool_loop_run
 
     assert run.result.last_turn.response_id == "resp_follow_up"
     assert len(run.result.tool_executions) == 1
@@ -336,7 +317,7 @@ def test_run_agent_returns_accumulated_tool_executions() -> None:
     )
 
 
-def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
+async def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
     """Close the acquired provider stream when event emission raises."""
 
     provider = ClosingProvider()
@@ -347,80 +328,59 @@ def test_run_agent_closes_provider_stream_when_emit_fails() -> None:
         if isinstance(event, MessageStartEvent):
             raise RuntimeError("event sink unavailable")
 
-    async def _run() -> None:
-        """Run the agent through the failing event sink."""
-
-        with pytest.raises(RuntimeError, match="event sink unavailable"):
-            await run_agent(
-                [UserMessage(content="Hello")],
-                emit=emit,
-                provider=provider,
-                tool_executor=ToolExecutor(()),
-                instructions="Base prompt.",
-            )
-
-    asyncio.run(_run())
+    with pytest.raises(RuntimeError, match="event sink unavailable"):
+        await run_agent(
+            [UserMessage(content="Hello")],
+            emit=emit,
+            provider=provider,
+            tool_executor=ToolExecutor(()),
+            instructions="Base prompt.",
+        )
 
     assert provider.closed
 
 
-def test_empty_provider_stream_fails_after_agent_start() -> None:
-    """Reject an empty provider stream before opening a turn or message."""
+@pytest.mark.parametrize(
+    ("stream_events", "expected_event_types"),
+    [
+        pytest.param([], ["agent_start"], id="empty-stream"),
+        pytest.param(
+            [stream_start("resp_quiet")],
+            ["agent_start", "turn_start", "message_start"],
+            id="unterminated-stream",
+        ),
+    ],
+)
+async def test_stream_exhaustion_fails_at_the_open_lifecycle_depth(
+    stream_events: list[ProviderStreamEvent],
+    expected_event_types: list[str],
+) -> None:
+    """Reject a provider stream that ends without its terminal event."""
 
-    provider = ProviderStreamMock([[]])
+    provider = ProviderStreamMock([stream_events])
     events: list[AgentEvent] = []
 
-    async def _run() -> None:
-        """Run one empty provider stream."""
+    with pytest.raises(
+        ProviderStreamProtocolError,
+        match="ended without StreamDoneEvent or StreamErrorEvent",
+    ):
+        await run_agent(
+            [UserMessage(content="Hello")],
+            emit=events.append,
+            provider=provider,
+            tool_executor=ToolExecutor(()),
+            instructions="Base prompt.",
+        )
 
-        with pytest.raises(
-            ProviderStreamProtocolError,
-            match="ended without StreamDoneEvent or StreamErrorEvent",
-        ):
-            await run_agent(
-                [UserMessage(content="Hello")],
-                emit=events.append,
-                provider=provider,
-                tool_executor=ToolExecutor(()),
-                instructions="Base prompt.",
-            )
-
-    asyncio.run(_run())
-
-    assert [event.type for event in events] == ["agent_start"]
+    assert [event.type for event in events] == expected_event_types
 
 
-def test_stream_exhaustion_leaves_message_and_turn_open() -> None:
-    """Reject a started provider stream that omits its terminal event."""
-
-    provider = ProviderStreamMock([[stream_start("resp_quiet")]])
-    events: list[AgentEvent] = []
-
-    async def _run() -> None:
-        """Run one unterminated provider stream."""
-
-        with pytest.raises(ProviderStreamProtocolError):
-            await run_agent(
-                [UserMessage(content="Hello")],
-                emit=events.append,
-                provider=provider,
-                tool_executor=ToolExecutor(()),
-                instructions="Base prompt.",
-            )
-
-    asyncio.run(_run())
-
-    assert [event.type for event in events] == [
-        "agent_start",
-        "turn_start",
-        "message_start",
-    ]
-
-
-def test_agent_run_emits_expected_event_sequence_for_tool_use_loop() -> None:
+def test_agent_run_emits_expected_event_sequence_for_tool_use_loop(
+    weather_tool_loop_run: ToolUseLoopRun,
+) -> None:
     """Emit the expected event sequence for a tool-use loop."""
 
-    run = _collect_weather_tool_loop_run()
+    run = weather_tool_loop_run
 
     assert [event.type for event in run.events] == [
         "agent_start",
@@ -447,10 +407,12 @@ def test_agent_run_emits_expected_event_sequence_for_tool_use_loop() -> None:
     ]
 
 
-def test_agent_run_emits_current_tool_use_stream_events() -> None:
-    """Forward first-turn reasoning and tool-call stream events."""
+def test_agent_run_forwards_provider_stream_events(
+    weather_tool_loop_run: ToolUseLoopRun,
+) -> None:
+    """Forward reasoning, tool-call, and follow-up text stream events."""
 
-    run = _collect_weather_tool_loop_run()
+    run = weather_tool_loop_run
     events = run.events
 
     first_message_start = _expect_event_type(events[2], MessageStartEvent)
@@ -492,13 +454,6 @@ def test_agent_run_emits_current_tool_use_stream_events() -> None:
         == run.tool_call_block
     )
 
-
-def test_agent_run_emits_current_follow_up_stream_events() -> None:
-    """Forward second-turn text stream events after tool execution."""
-
-    run = _collect_weather_tool_loop_run()
-    events = run.events
-
     second_message_start = _expect_event_type(events[14], MessageStartEvent)
     second_text_start = _expect_event_type(events[15], MessageUpdateEvent)
     second_text_delta = _expect_event_type(events[16], MessageUpdateEvent)
@@ -519,10 +474,12 @@ def test_agent_run_emits_current_follow_up_stream_events() -> None:
     )
 
 
-def test_agent_run_emits_tool_execution_outcome_for_tool_use_loop() -> None:
+def test_agent_run_emits_tool_execution_outcome_for_tool_use_loop(
+    weather_tool_loop_run: ToolUseLoopRun,
+) -> None:
     """Emit tool execution details and attach them to the completed turn."""
 
-    run = _collect_weather_tool_loop_run()
+    run = weather_tool_loop_run
     events = run.events
 
     first_message_end = _expect_event_type(events[9], MessageEndEvent)
@@ -550,17 +507,14 @@ def test_agent_run_emits_tool_execution_outcome_for_tool_use_loop() -> None:
     assert first_turn_end.assistant_turn.blocks == [run.tool_call_block]
     assert first_turn_end.tool_executions == (tool_execution_outcome,)
     assert first_turn_end.tool_result_turns == (tool_result_turn,)
-    first_turn_outcome = first_turn_end.tool_executions[0]
-    assert first_turn_outcome.tool_result_turn.call_id == "call_123"
-    assert first_turn_outcome.tool_result_turn.tool_name == "get_weather"
-    assert first_turn_outcome.tool_result_turn.content == tool_result_turn.content
-    assert first_turn_outcome.tool_result_turn.is_error is False
 
 
-def test_agent_run_sends_tool_result_history_to_follow_up_turn() -> None:
+def test_agent_run_sends_tool_result_history_to_follow_up_turn(
+    weather_tool_loop_run: ToolUseLoopRun,
+) -> None:
     """Send assistant and tool result turns into the follow-up model request."""
 
-    run = _collect_weather_tool_loop_run()
+    run = weather_tool_loop_run
     events = run.events
 
     second_message_end = _expect_event_type(events[18], MessageEndEvent)
@@ -595,42 +549,8 @@ def test_agent_run_sends_tool_result_history_to_follow_up_turn() -> None:
     )
 
 
-def test_agent_run_executes_registered_tool_definition() -> None:
-    """Execute a registered tool and expose its result through agent events."""
-
-    tools = _sample_tools()
-    provider = ProviderStreamMock(
-        [
-            tool_call_stream(
-                response_id="resp_tool_call",
-                call_id="call_123",
-                tool_name="get_weather",
-                arguments={"city": "Munich"},
-                provider_item_id="fc_123",
-            ),
-            empty_stream("resp_follow_up"),
-        ]
-    )
-    history = [UserMessage(content="What is the weather in Munich?")]
-
-    events = collect_run_events(
-        history,
-        provider=provider,
-        tools=tools,
-    )
-
-    tool_execution_end = _expect_event_type(events[5], ToolExecutionEndEvent)
-    assert tool_text(tool_execution_end.outcome.tool_result_turn) == (
-        '{"temperature_c": 18, "condition": "sunny", "city": "Munich"}'
-    )
-    assert tool_execution_end.outcome.tool_result_turn.is_error is False
-
-
 def test_agent_run_exposes_tool_details_outside_replay_turn() -> None:
     """Expose non-replay tool details through execution outcomes."""
-
-    class NoInput(ToolInput):
-        """Strict empty input for the deterministic read tool."""
 
     tools = [
         ToolDefinition(
@@ -770,7 +690,6 @@ def test_agent_allows_model_to_correct_invalid_tool_arguments() -> None:
     )
     corrected_result = expect_tool_result_turn(provider.history(2)[-1])
     assert corrected_result.is_error is False
-    assert "details" not in ToolResultTurn.model_fields
 
 
 def test_agent_run_handles_multiple_tool_use_turns() -> None:
@@ -841,7 +760,7 @@ def test_agent_sends_instructions_to_the_provider_verbatim() -> None:
     assert provider.instructions() == "Resolved system prompt."
 
 
-def test_stream_error_ends_message_then_raises_turn_failure() -> None:
+async def test_stream_error_ends_message_then_raises_turn_failure() -> None:
     """Retain the provider-finalized error message before failing the turn."""
 
     provider = ProviderStreamMock(
@@ -853,20 +772,15 @@ def test_stream_error_ends_message_then_raises_turn_failure() -> None:
 
     events: list[AgentEvent] = []
 
-    async def _run() -> TurnFailedError:
-        """Run until the provider-finalized turn fails."""
-
-        with pytest.raises(TurnFailedError, match="Socket closed") as captured:
-            await run_agent(
-                history,
-                emit=events.append,
-                provider=provider,
-                tool_executor=ToolExecutor(()),
-                instructions="Base prompt.",
-            )
-        return captured.value
-
-    error = asyncio.run(_run())
+    with pytest.raises(TurnFailedError, match="Socket closed") as captured:
+        await run_agent(
+            history,
+            emit=events.append,
+            provider=provider,
+            tool_executor=ToolExecutor(()),
+            instructions="Base prompt.",
+        )
+    error = captured.value
 
     assert [event.type for event in events] == [
         "agent_start",

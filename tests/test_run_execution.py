@@ -1,12 +1,13 @@
-"""Tests for run execution ownership and its caller-facing handle."""
+"""Tests for run execution ownership, its handle, and process-local results."""
 
 import asyncio
 from collections.abc import Sequence
 from pathlib import Path
+from typing import get_args
 
-from tile import Aborted, Completed, RunOutcome, RunRecord, StorePersistenceError
+from tile import Aborted, Completed, RunOutcome, RunRecord
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent
-from tile.result import Faulted
+from tile.result import Faulted, RunResult
 from tile.runtime.execution import _ExecutionDependencies
 from tile.runtime.run_execution import RunExecution
 from tile.runtime.run_handle import RunHandle
@@ -15,33 +16,25 @@ from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.types import ConversationItem
 from tests.support.agent_streams import ProviderStreamMock, final_text_stream
-from tests.support.store import FailingFinishStore
 
 
-def test_run_execution_persists_before_provider_and_returns_only_outcome() -> None:
+async def test_run_execution_persists_before_provider_and_returns_only_outcome(
+    store: SQLiteStore,
+) -> None:
     """Own durable admission, execution, finalization, and terminal events."""
 
-    store = SQLiteStore(in_memory=True)
     session = SessionRepository(store).create(session_id="session-1")
     transport = ProviderStreamMock([final_text_stream("response-1", "done")])
 
-    async def run() -> tuple[RunHandle, RunOutcome | Faulted, list[AgentEvent]]:
-        """Start and finish execution inside its owning event loop."""
-
-        execution = RunExecution.start(
-            session=session,
-            prompt="hello",
-            result=None,
-            dependencies=_dependencies(transport),
-        )
-        handle = RunHandle(execution)
-        assert (
-            store.get_run(session_id=session.id, run_id=handle.id).status == "running"
-        )
-        result, events = await _wait_and_collect(handle)
-        return handle, result, events
-
-    handle, result, events = asyncio.run(run())
+    execution = RunExecution.start(
+        session=session,
+        prompt="hello",
+        result=None,
+        dependencies=_dependencies(transport),
+    )
+    handle = RunHandle(execution)
+    assert store.get_run(session_id=session.id, run_id=handle.id).status == "running"
+    result, events = await _wait_and_collect(handle)
 
     assert result == Completed(value="done")
     assert isinstance(events[-1], RunEndEvent)
@@ -49,49 +42,15 @@ def test_run_execution_persists_before_provider_and_returns_only_outcome() -> No
     assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
     assert [item.role for item in session.get_history()] == ["user", "assistant"]
     assert tuple(vars(handle)) == ("_execution",)
-    store.close()
 
 
-def test_run_execution_returns_faulted_when_finalization_is_not_durable() -> None:
-    """Replace a candidate outcome with Faulted after Store failure."""
-
-    store = FailingFinishStore(in_memory=True)
-    session = SessionRepository(store).create(session_id="session-1")
-    transport = ProviderStreamMock([final_text_stream("response-1", "lost")])
-
-    async def run() -> tuple[RunHandle, RunOutcome | Faulted, list[AgentEvent]]:
-        """Start and fault execution inside its owning event loop."""
-
-        handle = RunHandle(
-            RunExecution.start(
-                session=session,
-                prompt="hello",
-                result=None,
-                dependencies=_dependencies(transport),
-            )
-        )
-        result, events = await _wait_and_collect(handle)
-        return handle, result, events
-
-    handle, result, events = asyncio.run(run())
-
-    assert isinstance(result, Faulted)
-    assert isinstance(result.error, StorePersistenceError)
-    assert isinstance(events[-1], RunFaultEvent)
-    assert store.get_run(session_id=session.id, run_id=handle.id).status == "running"
-    assert session.get_history() == ()
-    store.close()
-
-
-def test_run_execution_closes_after_an_unexpected_finalization_crash() -> None:
+async def test_run_execution_closes_after_an_unexpected_finalization_crash() -> None:
     """Release waiters and event subscribers for every finalization failure."""
 
     store = _CrashingFinishStore(in_memory=True)
-    session = SessionRepository(store).create(session_id="session-1")
-    transport = ProviderStreamMock([final_text_stream("response-1", "lost")])
-
-    async def run() -> tuple[RunOutcome | Faulted, list[AgentEvent]]:
-        """Wait for the crash to become a terminal local fault."""
+    try:
+        session = SessionRepository(store).create(session_id="session-1")
+        transport = ProviderStreamMock([final_text_stream("response-1", "lost")])
 
         handle = RunHandle(
             RunExecution.start(
@@ -101,44 +60,61 @@ def test_run_execution_closes_after_an_unexpected_finalization_crash() -> None:
                 dependencies=_dependencies(transport),
             )
         )
-        return await asyncio.wait_for(_wait_and_collect(handle), timeout=1)
+        result, events = await asyncio.wait_for(_wait_and_collect(handle), timeout=1)
 
-    result, events = asyncio.run(run())
+        assert isinstance(result, Faulted)
+        assert isinstance(result.error, _FinalizationCrash)
+        assert isinstance(events[-1], RunFaultEvent)
+    finally:
+        store.close()
 
-    assert isinstance(result, Faulted)
-    assert isinstance(result.error, _FinalizationCrash)
-    assert isinstance(events[-1], RunFaultEvent)
-    store.close()
 
-
-def test_cancelled_execution_defaults_a_missing_abort_reason() -> None:
+async def test_cancelled_execution_defaults_a_missing_abort_reason(
+    store: SQLiteStore,
+) -> None:
     """Classify cancellation safely when no explicit reason was recorded."""
 
-    store = SQLiteStore(in_memory=True)
     session = SessionRepository(store).create(session_id="session-1")
     transport = ProviderStreamMock([])
     transport.mock.side_effect = asyncio.CancelledError()
 
-    async def run() -> tuple[RunHandle, RunOutcome | Faulted, list[AgentEvent]]:
-        """Let provider cancellation bypass the explicit handle abort path."""
-
-        handle = RunHandle(
-            RunExecution.start(
-                session=session,
-                prompt="hello",
-                result=None,
-                dependencies=_dependencies(transport),
-            )
+    handle = RunHandle(
+        RunExecution.start(
+            session=session,
+            prompt="hello",
+            result=None,
+            dependencies=_dependencies(transport),
         )
-        result, events = await _wait_and_collect(handle)
-        return handle, result, events
-
-    handle, result, events = asyncio.run(run())
+    )
+    result, events = await _wait_and_collect(handle)
 
     assert result == Aborted(reason="cancelled")
     assert isinstance(events[-1], RunEndEvent)
     assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
-    store.close()
+
+
+def test_run_result_adds_faulted_without_expanding_persisted_outcomes() -> None:
+    """Keep durability faults outside the RunRecord outcome contract."""
+
+    error = OSError("disk full")
+    result = Faulted(error=error)
+
+    assert result.error is error
+    assert result.type == "faulted"
+    assert Faulted not in get_args(RunOutcome)
+    assert Faulted in get_args(RunResult)
+
+
+def test_run_fault_event_carries_serializable_error_details() -> None:
+    """Expose a live terminal fault without serializing its exception object."""
+
+    event = RunFaultEvent(exception_type="OSError", message="disk full")
+
+    assert event.model_dump() == {
+        "type": "run_fault",
+        "exception_type": "OSError",
+        "message": "disk full",
+    }
 
 
 async def _wait_and_collect(
