@@ -138,11 +138,12 @@ class RunExecution:
     def _cancel(self, *, reason: AbortReason) -> None:
         """Cancel unfinished execution with its durable abort reason."""
 
-        task = self._require_task()
-        if task.done():
+        if self._task is None:
+            raise RuntimeError("Run execution has not started.")
+        if self._task.done():
             return
         self._abort_reason = reason
-        task.cancel()
+        self._task.cancel()
 
     def _emit(self, event: AgentEvent) -> None:
         """Publish one event and project its replayable history item."""
@@ -200,13 +201,6 @@ class RunExecution:
             )
             return
         self._emit(RunEndEvent(outcome=result))
-
-    def _require_task(self) -> asyncio.Task[RunOutcome]:
-        """Return the started execution task."""
-
-        if self._task is None:
-            raise RuntimeError("Run execution has not started.")
-        return self._task
 
 
 def _terminal_outcome(
