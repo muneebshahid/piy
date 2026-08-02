@@ -15,12 +15,10 @@ from tile import (
     RunResult,
     SessionRepository,
     SQLiteStore,
-    Store,
 )
 from tile.events import AgentEvent
 from tile.providers.openai import OpenAIProvider
 from tile.tools import BUILTIN_TOOLS
-from tile.types import ToolDefinition
 from examples.settings import settings
 
 
@@ -51,37 +49,24 @@ async def run_prompt(
     prompt: str,
     *,
     provider: Provider,
-    tools: Sequence[ToolDefinition] | None = None,
-    store: Store | None = None,
-    cwd: Path | str | None = None,
-    output: TextIO | None = None,
 ) -> RunResult:
     """Run one prompt through a session-bound harness and write JSON events."""
 
-    active_tools = tuple(tools) if tools is not None else BUILTIN_TOOLS
-    if store is None:
-        owned_store: SQLiteStore | None = SQLiteStore(in_memory=True)
-        active_store: Store = owned_store
-    else:
-        owned_store = None
-        active_store = store
+    store = SQLiteStore(in_memory=True)
     try:
-        session = SessionRepository(active_store).create()
+        session = SessionRepository(store).create()
         harness = AgentHarness(
             session=session,
-            tools=active_tools,
-            cwd=cwd if cwd is not None else Path.cwd(),
+            tools=BUILTIN_TOOLS,
+            cwd=Path.cwd(),
         )
-        event_output = output or sys.stdout
 
         run = await harness.prompt(prompt, provider=provider)
         async for event in run.events():
-            event_output.write(_serialize_event(event))
-            event_output.write("\n")
+            print(_serialize_event(event))
         return await run.wait()
     finally:
-        if owned_store is not None:
-            owned_store.close()
+        store.close()
 
 
 def _read_prompt(argv: Sequence[str], stdin: TextIO) -> str:

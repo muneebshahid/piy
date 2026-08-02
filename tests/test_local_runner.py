@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from tile import Completed, Provider, RunResult, SQLiteStore
+from tile import Completed, Provider, RunResult
 from tile.types.conversation import ConversationItem
 from tile.types.tools import ToolTextContent
 from examples import local_runner
@@ -18,20 +18,21 @@ from tests.support.agent_streams import (
     tool_call_stream,
 )
 from tests.support.conversation_assertions import (
-    expect_assistant_turn,
     expect_tool_result_turn,
     expect_user_message,
 )
 
 
-def test_run_prompt_streams_runtime_tool_flow_as_json_lines(tmp_path: Path) -> None:
+def test_run_prompt_streams_runtime_tool_flow_as_json_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Run one prompt through the local runtime with a deterministic file tool."""
 
-    provider, store, output = _run_runtime_tool_flow(tmp_path)
+    provider, output = _run_runtime_tool_flow(tmp_path, monkeypatch)
 
     _assert_runtime_event_sequence(output)
     _assert_provider_received_tool_result(provider)
-    _assert_runtime_persisted_completed_history(store)
 
 
 def test_run_cli_rejects_empty_prompt() -> None:
@@ -66,7 +67,8 @@ def test_run_cli_reads_prompt_from_stdin(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def _run_runtime_tool_flow(
     tmp_path: Path,
-) -> tuple[ProviderStreamMock, SQLiteStore, io.StringIO]:
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[ProviderStreamMock, io.StringIO]:
     """Run the local runner through a fake provider and real read tool."""
 
     provider = ProviderStreamMock(
@@ -83,20 +85,18 @@ def _run_runtime_tool_flow(
             ),
         ]
     )
-    store = SQLiteStore(in_memory=True)
     output = io.StringIO()
     (tmp_path / "notes.txt").write_text("hello from disk\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.stdout", output)
 
     asyncio.run(
         run_prompt(
             "Read the note",
             provider=provider,
-            store=store,
-            cwd=tmp_path,
-            output=output,
         )
     )
-    return provider, store, output
+    return provider, output
 
 
 def _assert_runtime_event_sequence(output: io.StringIO) -> None:
@@ -135,25 +135,6 @@ def _assert_provider_received_tool_result(
     assert _expect_tool_text(follow_up_request_history[2]) == "hello from disk\n"
 
 
-def _assert_runtime_persisted_completed_history(
-    store: SQLiteStore,
-) -> None:
-    """Assert runtime history contains the completed local-runner turn."""
-
-    sessions = store.list_sessions()
-    assert len(sessions) == 1
-    history = tuple(envelope.item for envelope in store.get_history(sessions[0].id))
-    assert [_history_role(item) for item in history] == [
-        "user",
-        "assistant",
-        "tool_result",
-        "assistant",
-    ]
-    assert expect_assistant_turn(history[1]).response_id == "resp_read"
-    assert expect_tool_result_turn(history[2]).call_id == "call_read"
-    assert expect_assistant_turn(history[3]).response_id == "resp_final"
-
-
 def _expect_tool_text(item: ConversationItem) -> str:
     """Assert and return the first text block from a tool result item."""
 
@@ -161,9 +142,3 @@ def _expect_tool_text(item: ConversationItem) -> str:
     content = tool_result.content[0]
     assert isinstance(content, ToolTextContent)
     return content.text
-
-
-def _history_role(item: ConversationItem) -> str:
-    """Return the provider-neutral conversation role for assertions."""
-
-    return item.role
