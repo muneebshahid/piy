@@ -67,6 +67,15 @@ class ProviderStreamMock(Provider):
 
         return self.mock.await_count
 
+    async def wait_for_calls(self, expected: int = 1) -> None:
+        """Wait until the expected number of provider calls were awaited."""
+
+        for _ in range(100):
+            if self.mock.await_count >= expected:
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"Expected {expected} provider invocation(s).")
+
     def assert_awaited_once(self) -> None:
         """Assert the provider stream was awaited exactly once."""
 

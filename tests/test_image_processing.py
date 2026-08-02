@@ -12,6 +12,46 @@ from tile.tools.support.image_processing import (
     ProcessedImage,
     process_image,
 )
+from tile.types.tools import ImageMimeType
+
+
+def _jpeg(width: int, height: int) -> bytes:
+    """Return JPEG bytes for a solid-color image."""
+
+    image = Image.new("RGB", (width, height), "red")
+    output = BytesIO()
+    image.save(output, format="JPEG")
+    return output.getvalue()
+
+
+def _jpeg_with_orientation(width: int, height: int, orientation: int) -> bytes:
+    """Return JPEG bytes containing an EXIF orientation tag."""
+
+    image = Image.new("RGB", (width, height), "red")
+    exif = Image.Exif()
+    exif[274] = orientation
+    output = BytesIO()
+    image.save(output, format="JPEG", exif=exif)
+    return output.getvalue()
+
+
+def _png(width: int, height: int) -> bytes:
+    """Return PNG bytes for a deterministic image."""
+
+    image = Image.new("RGB", (width, height))
+    for x in range(width):
+        for y in range(height):
+            image.putpixel((x, y), ((x * 17) % 256, (y * 31) % 256, (x * y) % 256))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
+
+
+def _processed(result: ProcessedImage | ImageProcessingError) -> ProcessedImage:
+    """Return a processed image from a pipeline result."""
+
+    assert isinstance(result, ProcessedImage)
+    return result
 
 
 def test_process_image_applies_jpeg_exif_orientation() -> None:
@@ -28,26 +68,23 @@ def test_process_image_applies_jpeg_exif_orientation() -> None:
         assert processed.was_resized is False
 
 
-def test_process_image_preserves_jpeg_without_exif_orientation() -> None:
-    """Leave JPEG bytes unchanged when there is no EXIF orientation work."""
+@pytest.mark.parametrize(
+    ("original", "mime_type"),
+    [
+        pytest.param(_jpeg(width=2, height=3), "image/jpeg", id="jpeg-no-exif"),
+        pytest.param(_png(width=2, height=3), "image/png", id="small-png"),
+    ],
+)
+def test_process_image_preserves_fitting_image_bytes(
+    original: bytes,
+    mime_type: ImageMimeType,
+) -> None:
+    """Leave image bytes unchanged when they fit all limits with no EXIF work."""
 
-    original = _jpeg(width=2, height=3)
-
-    processed = _processed(process_image(original, "image/jpeg"))
-
-    assert processed.data == original
-    assert processed.mime_type == "image/jpeg"
-
-
-def test_process_image_preserves_small_png_bytes() -> None:
-    """Leave small PNG image bytes unchanged when they fit all limits."""
-
-    original = _png(width=2, height=3)
-
-    processed = _processed(process_image(original, "image/png"))
+    processed = _processed(process_image(original, mime_type))
 
     assert processed.data == original
-    assert processed.mime_type == "image/png"
+    assert processed.mime_type == mime_type
 
 
 def test_process_image_resizes_to_dimension_limits() -> None:
@@ -94,8 +131,8 @@ def test_process_image_reduces_until_base64_payload_fits() -> None:
     assert len(base64.b64encode(processed.data)) < 800
 
 
-def test_process_image_returns_omission_when_no_candidate_fits() -> None:
-    """Return an omission result when even the smallest image is too large."""
+def test_process_image_raises_when_no_candidate_fits() -> None:
+    """Raise a processing error when even the smallest image is too large."""
 
     original = _png(width=8, height=8)
 
@@ -130,42 +167,3 @@ def test_process_image_wraps_decompression_bomb_rejection(
         process_image(_png(width=8, height=8), "image/png")
 
     assert isinstance(error.value.__cause__, Image.DecompressionBombError)
-
-
-def _jpeg(width: int, height: int) -> bytes:
-    """Return JPEG bytes for a solid-color image."""
-
-    image = Image.new("RGB", (width, height), "red")
-    output = BytesIO()
-    image.save(output, format="JPEG")
-    return output.getvalue()
-
-
-def _jpeg_with_orientation(width: int, height: int, orientation: int) -> bytes:
-    """Return JPEG bytes containing an EXIF orientation tag."""
-
-    image = Image.new("RGB", (width, height), "red")
-    exif = Image.Exif()
-    exif[274] = orientation
-    output = BytesIO()
-    image.save(output, format="JPEG", exif=exif)
-    return output.getvalue()
-
-
-def _png(width: int, height: int) -> bytes:
-    """Return PNG bytes for a deterministic image."""
-
-    image = Image.new("RGB", (width, height))
-    for x in range(width):
-        for y in range(height):
-            image.putpixel((x, y), ((x * 17) % 256, (y * 31) % 256, (x * y) % 256))
-    output = BytesIO()
-    image.save(output, format="PNG")
-    return output.getvalue()
-
-
-def _processed(result: ProcessedImage | ImageProcessingError) -> ProcessedImage:
-    """Return a processed image from a pipeline result."""
-
-    assert isinstance(result, ProcessedImage)
-    return result

@@ -7,28 +7,11 @@ accumulates assistant blocks, and emits provider stream events such as
 ``text_start``, ``text_delta``, ``text_end``, and ``stream_done``.
 """
 
-import asyncio
 from collections.abc import Sequence
 
-from tile.providers.openai.normalized_events import (
-    CompletedNormalizedEvent,
-    CreatedNormalizedEvent,
-    FailedNormalizedEvent,
-    IncompleteNormalizedEvent,
-    MessageAddedNormalizedEvent,
-    MessageDoneNormalizedEvent,
-    MessageTextDeltaNormalizedEvent,
-    ReasoningAddedNormalizedEvent,
-    ReasoningDeltaNormalizedEvent,
-    ReasoningDoneNormalizedEvent,
-    NormalizedEvent,
-    NormalizedEventType,
-    ToolCallAddedNormalizedEvent,
-    ToolCallArgumentsDeltaNormalizedEvent,
-    ToolCallArgumentsDoneNormalizedEvent,
-    ToolCallDoneNormalizedEvent,
-)
-from tile.providers.openai.normalized_events import Phase
+import pytest
+
+from tile.providers.openai.normalized_events import NormalizedEvent
 from tile.providers.openai.stream_assembler import assemble_stream
 from tile.types.stream_events import (
     ProviderSource,
@@ -39,7 +22,6 @@ from tile.types.stream_events import (
     StreamDoneEvent,
     StreamErrorEvent,
     StreamStartEvent,
-    StopReason,
     TextDeltaEvent,
     TextEndEvent,
     TextStartEvent,
@@ -47,8 +29,23 @@ from tile.types.stream_events import (
     ToolCallEndEvent,
     ToolCallStartEvent,
 )
-from tile.types.tools import JsonObject
 from tests.support.async_streams import async_stream
+from tests.support.normalized_events import (
+    completed_event,
+    created_event,
+    failed_event,
+    incomplete_event,
+    message_added_event,
+    message_done_event,
+    message_text_delta_event,
+    reasoning_added_event,
+    reasoning_delta_event,
+    reasoning_done_event,
+    tool_call_added_event,
+    tool_call_arguments_delta_event,
+    tool_call_arguments_done_event,
+    tool_call_done_event,
+)
 from tests.support.stream_assertions import (
     expect_metadata_string as _expect_metadata_string,
     expect_reasoning_block as _expect_reasoning_block,
@@ -58,34 +55,46 @@ from tests.support.stream_assertions import (
 )
 
 
-def test_assemble_stream_accumulates_reasoning_and_text_blocks() -> None:
+async def test_assemble_stream_accumulates_reasoning_and_text_blocks() -> None:
     """Accumulates reasoning and text blocks onto the terminal stream event."""
 
-    events = _collect_stream_events(_reasoning_text_events())
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream(_reasoning_text_events()),
+            source=_source(),
+        )
+    ]
 
     _assert_reasoning_text_event_sequence(events)
     _assert_reasoning_text_stream_content(events)
     _assert_reasoning_text_terminal_blocks(events)
 
 
-def test_assemble_stream_preserves_reasoning_deltas_when_done_summary_is_empty() -> (
+async def test_assemble_stream_preserves_reasoning_deltas_when_done_summary_is_empty() -> (
     None
 ):
     """Preserves accumulated reasoning deltas when the done event has no summary."""
 
-    events = _collect_stream_events(
-        [
-            _created_event("resp_reasoning_empty_done"),
-            _reasoning_added_event("rs_123"),
-            _reasoning_delta_event("Draft summary"),
-            _reasoning_done_event(
-                item_id="rs_123",
-                summary_text="",
-                reasoning_signature='{"id":"rs_123"}',
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream(
+                [
+                    created_event("resp_reasoning_empty_done"),
+                    reasoning_added_event("rs_123"),
+                    reasoning_delta_event("Draft summary"),
+                    reasoning_done_event(
+                        item_id="rs_123",
+                        summary_text="",
+                        reasoning_signature='{"id":"rs_123"}',
+                    ),
+                    completed_event("stop"),
+                ]
             ),
-            _completed_event("stop"),
-        ]
-    )
+            source=_source(),
+        )
+    ]
 
     reasoning_end = _expect_event_type(events[3], ReasoningEndEvent)
     done = _expect_event_type(events[4], StreamDoneEvent)
@@ -103,47 +112,24 @@ def test_assemble_stream_preserves_reasoning_deltas_when_done_summary_is_empty()
     assert done_reasoning_block.summary_text == "Draft summary"
 
 
-def test_assemble_stream_emits_text_deltas_without_prior_content_part_event() -> None:
-    """Text deltas are appended and emitted with no preceding content-part event."""
+async def test_assemble_stream_message_done_text_overrides_accumulated_deltas() -> None:
+    """MESSAGE_DONE text overrides accumulated deltas on the finalized text block."""
 
-    events = _collect_stream_events(
-        [
-            _created_event("resp_no_part"),
-            _message_added_event("msg_no_part"),
-            _message_text_delta_event("Hello"),
-            _message_done_event("msg_no_part", "Hello"),
-            _completed_event("stop"),
-        ]
-    )
-
-    text_delta = _expect_event_type(events[2], TextDeltaEvent)
-    text_end = _expect_event_type(events[3], TextEndEvent)
-    done = _expect_event_type(events[4], StreamDoneEvent)
-
-    assert [event.type for event in events] == [
-        "stream_start",
-        "text_start",
-        "text_delta",
-        "text_end",
-        "stream_done",
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream(
+                [
+                    created_event("resp_refusal"),
+                    message_added_event("msg_refusal"),
+                    message_text_delta_event("No"),
+                    message_done_event("msg_refusal", "No thanks"),
+                    completed_event("stop"),
+                ]
+            ),
+            source=_source(),
+        )
     ]
-    assert text_delta.delta == "Hello"
-    assert _expect_text_block(text_end.block).text == "Hello"
-    assert _expect_text_block(done.blocks[0]).text == "Hello"
-
-
-def test_assemble_stream_maps_refusal_deltas() -> None:
-    """Accumulates refusal deltas onto the active text block."""
-
-    events = _collect_stream_events(
-        [
-            _created_event("resp_refusal"),
-            _message_added_event("msg_refusal"),
-            _message_text_delta_event("No"),
-            _message_done_event("msg_refusal", "No thanks"),
-            _completed_event("stop"),
-        ]
-    )
 
     text_start = _expect_event_type(events[1], TextStartEvent)
     text_delta = _expect_event_type(events[2], TextDeltaEvent)
@@ -167,45 +153,79 @@ def test_assemble_stream_maps_refusal_deltas() -> None:
     assert done_text_block.text == "No thanks"
 
 
-def test_assemble_stream_maps_tool_call_events() -> None:
+async def test_assemble_stream_maps_tool_call_events() -> None:
     """Accumulates tool-call events onto terminal stream blocks."""
 
-    events = _collect_stream_events(_tool_call_events())
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream(_tool_call_events()),
+            source=_source(),
+        )
+    ]
 
     _assert_tool_call_event_sequence(events)
     _assert_tool_call_stream_content(events)
 
 
-def test_assemble_stream_maps_failed_response_into_error_event() -> None:
-    """Builds an error stream event for failed responses."""
+@pytest.mark.parametrize(
+    ("terminal_event", "expected_message"),
+    [
+        pytest.param(
+            failed_event("Model overloaded"),
+            "Model overloaded",
+            id="failed",
+        ),
+        pytest.param(
+            incomplete_event(
+                "error",
+                "OpenAI response was truncated by the content filter.",
+            ),
+            "OpenAI response was truncated by the content filter.",
+            id="incomplete-error",
+        ),
+    ],
+)
+async def test_assemble_stream_maps_terminal_failures_into_error_events(
+    terminal_event: NormalizedEvent,
+    expected_message: str,
+) -> None:
+    """Builds an error stream event for failed and incomplete-error responses."""
 
-    events = _collect_stream_events(
-        [
-            _created_event("resp_failed"),
-            _failed_event("Model overloaded"),
-        ]
-    )
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream([created_event("resp_error"), terminal_event]),
+            source=_source(),
+        )
+    ]
 
     error = _expect_event_type(events[1], StreamErrorEvent)
 
     assert [event.type for event in events] == ["stream_start", "stream_error"]
-    assert error.error_message == "Model overloaded"
+    assert error.error_message == expected_message
     assert error.stop_reason == "error"
-    assert error.response_id == "resp_failed"
+    assert error.response_id == "resp_error"
 
 
-def test_assemble_stream_maps_incomplete_length_into_done() -> None:
+async def test_assemble_stream_maps_incomplete_length_into_done() -> None:
     """Builds a done event for non-error incomplete responses."""
 
-    events = _collect_stream_events(
-        [
-            _created_event("resp_incomplete"),
-            _message_added_event("msg_incomplete"),
-            _message_text_delta_event("Partial answer"),
-            _message_done_event("msg_incomplete", "Partial answer"),
-            _incomplete_event("length", "OpenAI response incomplete."),
-        ]
-    )
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream(
+                [
+                    created_event("resp_incomplete"),
+                    message_added_event("msg_incomplete"),
+                    message_text_delta_event("Partial answer"),
+                    message_done_event("msg_incomplete", "Partial answer"),
+                    incomplete_event("length", "OpenAI response incomplete."),
+                ]
+            ),
+            source=_source(),
+        )
+    ]
 
     done = _expect_event_type(events[-1], StreamDoneEvent)
 
@@ -220,37 +240,23 @@ def test_assemble_stream_maps_incomplete_length_into_done() -> None:
     assert _expect_text_block(done.blocks[0]).text == "Partial answer"
 
 
-def test_assemble_stream_maps_incomplete_error_into_error_event() -> None:
-    """Builds an error event for incomplete responses with an error stop reason."""
-
-    events = _collect_stream_events(
-        [
-            _created_event("resp_filtered"),
-            _incomplete_event(
-                "error",
-                "OpenAI response was truncated by the content filter.",
-            ),
-        ]
-    )
-
-    error = _expect_event_type(events[1], StreamErrorEvent)
-
-    assert [event.type for event in events] == ["stream_start", "stream_error"]
-    assert error.error_message == "OpenAI response was truncated by the content filter."
-    assert error.stop_reason == "error"
-
-
-def test_assemble_stream_stops_consuming_events_after_terminal_event() -> None:
+async def test_assemble_stream_stops_consuming_events_after_terminal_event() -> None:
     """Stops assembly once a terminal normalized event has been emitted."""
 
-    events = _collect_stream_events(
-        [
-            _created_event("resp_done"),
-            _completed_event("stop"),
-            _message_added_event("msg_after_done"),
-            _message_text_delta_event("ignored"),
-        ]
-    )
+    events = [
+        event
+        async for event in assemble_stream(
+            async_stream(
+                [
+                    created_event("resp_done"),
+                    completed_event("stop"),
+                    message_added_event("msg_after_done"),
+                    message_text_delta_event("ignored"),
+                ]
+            ),
+            source=_source(),
+        )
+    ]
 
     done = _expect_event_type(events[1], StreamDoneEvent)
 
@@ -263,23 +269,23 @@ def _reasoning_text_events() -> list[NormalizedEvent]:
     """Build normalized events for a reasoning-plus-text response."""
 
     return [
-        _created_event("resp_success"),
-        _reasoning_added_event("rs_123"),
-        _reasoning_delta_event("Exploring "),
-        _reasoning_delta_event("reasoning traces"),
-        _reasoning_delta_event("\n\n"),
-        _reasoning_delta_event("Formulating "),
-        _reasoning_delta_event("reasoning traces"),
-        _reasoning_done_event(
+        created_event("resp_success"),
+        reasoning_added_event("rs_123"),
+        reasoning_delta_event("Exploring "),
+        reasoning_delta_event("reasoning traces"),
+        reasoning_delta_event("\n\n"),
+        reasoning_delta_event("Formulating "),
+        reasoning_delta_event("reasoning traces"),
+        reasoning_done_event(
             item_id="rs_123",
             summary_text=_combined_reasoning_summary(),
             reasoning_signature='{"id":"rs_123"}',
         ),
-        _message_added_event("msg_123"),
-        _message_text_delta_event("Hello"),
-        _message_text_delta_event(" world"),
-        _message_done_event("msg_123", "Hello world"),
-        _completed_event("stop"),
+        message_added_event("msg_123"),
+        message_text_delta_event("Hello"),
+        message_text_delta_event(" world"),
+        message_done_event("msg_123", "Hello world"),
+        completed_event("stop"),
     ]
 
 
@@ -377,23 +383,23 @@ def _tool_call_events() -> list[NormalizedEvent]:
     """Build normalized events for a tool-call response."""
 
     return [
-        _created_event("resp_tool_call"),
-        _tool_call_added_event(
+        created_event("resp_tool_call"),
+        tool_call_added_event(
             provider_item_id="fc_123",
             call_id="call_123",
             name="get_weather",
             arguments={},
         ),
-        _tool_call_arguments_delta_event('{"'),
-        _tool_call_arguments_delta_event('city":"Munich"}'),
-        _tool_call_arguments_done_event({"city": "Munich"}),
-        _tool_call_done_event(
+        tool_call_arguments_delta_event('{"'),
+        tool_call_arguments_delta_event('city":"Munich"}'),
+        tool_call_arguments_done_event({"city": "Munich"}),
+        tool_call_done_event(
             provider_item_id="fc_123",
             call_id="call_123",
             name="get_weather",
             arguments={"city": "Munich"},
         ),
-        _completed_event("tool_use"),
+        completed_event("tool_use"),
     ]
 
 
@@ -439,192 +445,7 @@ def _combined_reasoning_summary() -> str:
     return "Exploring reasoning traces\n\nFormulating reasoning traces"
 
 
-def _collect_stream_events(
-    normalized_events: Sequence[NormalizedEvent],
-) -> list[ProviderStreamEvent]:
-    """Collects stream events emitted by the assembler."""
-
-    async def _collect() -> list[ProviderStreamEvent]:
-        return [
-            event
-            async for event in assemble_stream(
-                async_stream(normalized_events),
-                source=_source(),
-            )
-        ]
-
-    return asyncio.run(_collect())
-
-
 def _source() -> ProviderSource:
     """Build a deterministic provider source for assembler tests."""
 
     return ProviderSource(provider="openai", model="gpt-5.4")
-
-
-def _created_event(response_id: str) -> CreatedNormalizedEvent:
-    """Builds a created normalized event."""
-
-    return {
-        "type": NormalizedEventType.CREATED,
-        "response_id": response_id,
-    }
-
-
-def _reasoning_added_event(item_id: str) -> ReasoningAddedNormalizedEvent:
-    """Builds a reasoning-added normalized event."""
-
-    return {
-        "type": NormalizedEventType.REASONING_ADDED,
-        "item_id": item_id,
-    }
-
-
-def _reasoning_delta_event(delta: str) -> ReasoningDeltaNormalizedEvent:
-    """Builds a reasoning-delta normalized event."""
-
-    return {
-        "type": NormalizedEventType.REASONING_DELTA,
-        "delta": delta,
-    }
-
-
-def _reasoning_done_event(
-    item_id: str,
-    summary_text: str,
-    reasoning_signature: str | None,
-) -> ReasoningDoneNormalizedEvent:
-    """Builds a reasoning-done normalized event."""
-
-    return {
-        "type": NormalizedEventType.REASONING_DONE,
-        "item_id": item_id,
-        "summary_text": summary_text,
-        "reasoning_signature": reasoning_signature,
-    }
-
-
-def _message_added_event(
-    item_id: str,
-    phase: Phase | None = None,
-) -> MessageAddedNormalizedEvent:
-    """Builds a message-added normalized event."""
-
-    return {
-        "type": NormalizedEventType.MESSAGE_ADDED,
-        "item_id": item_id,
-        "phase": phase,
-    }
-
-
-def _message_text_delta_event(
-    delta: str,
-) -> MessageTextDeltaNormalizedEvent:
-    """Builds a message text-delta normalized event."""
-
-    return {
-        "type": NormalizedEventType.MESSAGE_TEXT_DELTA,
-        "delta": delta,
-    }
-
-
-def _message_done_event(
-    item_id: str,
-    text: str,
-    phase: Phase | None = None,
-) -> MessageDoneNormalizedEvent:
-    """Builds a message-done normalized event."""
-
-    return {
-        "type": NormalizedEventType.MESSAGE_DONE,
-        "item_id": item_id,
-        "text": text,
-        "phase": phase,
-    }
-
-
-def _tool_call_added_event(
-    provider_item_id: str | None,
-    call_id: str,
-    name: str,
-    arguments: JsonObject,
-) -> ToolCallAddedNormalizedEvent:
-    """Builds a tool-call added normalized event."""
-
-    return {
-        "type": NormalizedEventType.TOOL_CALL_ADDED,
-        "provider_item_id": provider_item_id,
-        "call_id": call_id,
-        "name": name,
-        "arguments": arguments,
-    }
-
-
-def _tool_call_arguments_delta_event(
-    delta: str,
-) -> ToolCallArgumentsDeltaNormalizedEvent:
-    """Builds a tool-call arguments delta normalized event."""
-
-    return {
-        "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
-        "delta": delta,
-    }
-
-
-def _tool_call_arguments_done_event(
-    arguments: JsonObject,
-) -> ToolCallArgumentsDoneNormalizedEvent:
-    """Builds a tool-call arguments done normalized event."""
-
-    return {
-        "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
-        "arguments": arguments,
-    }
-
-
-def _tool_call_done_event(
-    provider_item_id: str | None,
-    call_id: str,
-    name: str,
-    arguments: JsonObject,
-) -> ToolCallDoneNormalizedEvent:
-    """Builds a tool-call done normalized event."""
-
-    return {
-        "type": NormalizedEventType.TOOL_CALL_DONE,
-        "provider_item_id": provider_item_id,
-        "call_id": call_id,
-        "name": name,
-        "arguments": arguments,
-    }
-
-
-def _completed_event(stop_reason: StopReason) -> CompletedNormalizedEvent:
-    """Builds a completed normalized event."""
-
-    return {
-        "type": NormalizedEventType.COMPLETED,
-        "stop_reason": stop_reason,
-    }
-
-
-def _incomplete_event(
-    stop_reason: StopReason,
-    error_message: str | None,
-) -> IncompleteNormalizedEvent:
-    """Builds an incomplete normalized event."""
-
-    return {
-        "type": NormalizedEventType.INCOMPLETE,
-        "stop_reason": stop_reason,
-        "error_message": error_message,
-    }
-
-
-def _failed_event(message: str) -> FailedNormalizedEvent:
-    """Builds a failed normalized event."""
-
-    return {
-        "type": NormalizedEventType.FAILED,
-        "message": message,
-    }

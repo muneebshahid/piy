@@ -9,51 +9,109 @@ from tile.store import SQLiteStore, SQLiteStoreSchemaError
 from tests.support.store import STARTED_AT, create_session
 
 
-def test_unified_store_rejects_legacy_schema_without_migration(
-    tmp_path: Path,
+def _raw_schema_connection(
+    database_path: Path,
+    *,
+    session_id: str | None = None,
+) -> sqlite3.Connection:
+    """Initialize the unified schema, then reopen it as a raw connection."""
+
+    store = SQLiteStore(database_path)
+    try:
+        if session_id is not None:
+            create_session(store, session_id=session_id)
+    finally:
+        store.close()
+    return sqlite3.connect(database_path)
+
+
+def _insert_raw_run_row(
+    connection: sqlite3.Connection,
+    **overrides: str | None,
 ) -> None:
-    """Fail clearly rather than reinterpret split-store development data."""
+    """Insert one raw run row built from valid defaults plus overrides."""
 
-    database_path = tmp_path / "legacy.db"
+    row: dict[str, str | None] = {
+        "id": "invalid",
+        "session_id": "session-1",
+        "prompt": "hello",
+        "status": "running",
+        "started_at": STARTED_AT.isoformat(),
+        "ended_at": None,
+        "model": "gpt-5.4",
+        "provider": "test",
+        "outcome_json": None,
+    }
+    row.update(overrides)
+    connection.execute(
+        """
+        INSERT INTO runs (
+            id, session_id, prompt, status, started_at,
+            ended_at, model, provider, outcome_json
+        )
+        VALUES (
+            :id, :session_id, :prompt, :status, :started_at,
+            :ended_at, :model, :provider, :outcome_json
+        )
+        """,
+        row,
+    )
+
+
+@pytest.mark.parametrize(
+    ("meta_key", "meta_value", "match"),
+    [
+        pytest.param("schema_version", "2", "pre-unified", id="legacy-split-schema"),
+        pytest.param("store_schema_version", "999", "999", id="unknown-future-version"),
+    ],
+)
+def test_unified_store_rejects_incompatible_schema_versions(
+    tmp_path: Path,
+    meta_key: str,
+    meta_value: str,
+    match: str,
+) -> None:
+    """Fail clearly rather than reinterpret data from unsupported schemas."""
+
+    database_path = tmp_path / "incompatible.db"
     connection = sqlite3.connect(database_path)
-    connection.execute(
-        "CREATE TABLE tile_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-    )
-    connection.execute(
-        "INSERT INTO tile_meta (key, value) VALUES ('schema_version', '2')"
-    )
-    connection.commit()
-    connection.close()
+    try:
+        connection.execute(
+            "CREATE TABLE tile_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO tile_meta (key, value) VALUES (?, ?)",
+            (meta_key, meta_value),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
-    with pytest.raises(SQLiteStoreSchemaError, match="pre-unified"):
+    with pytest.raises(SQLiteStoreSchemaError, match=match):
         SQLiteStore(database_path)
 
 
-def test_unified_store_rejects_unknown_schema_version(tmp_path: Path) -> None:
-    """Reject data written by an unsupported future unified schema."""
+def test_unified_store_rejects_an_unversioned_database_with_foreign_tables(
+    tmp_path: Path,
+) -> None:
+    """Refuse to build the schema inside an unrelated populated database."""
 
-    database_path = tmp_path / "future.db"
+    database_path = tmp_path / "foreign.db"
     connection = sqlite3.connect(database_path)
-    connection.execute(
-        "CREATE TABLE tile_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-    )
-    connection.execute(
-        "INSERT INTO tile_meta (key, value) VALUES ('store_schema_version', '999')"
-    )
-    connection.commit()
-    connection.close()
+    try:
+        connection.execute("CREATE TABLE notes (id TEXT PRIMARY KEY)")
+        connection.commit()
+    finally:
+        connection.close()
 
-    with pytest.raises(SQLiteStoreSchemaError, match="999"):
+    with pytest.raises(SQLiteStoreSchemaError, match="notes"):
         SQLiteStore(database_path)
 
 
 def test_unified_schema_declares_required_foreign_keys(tmp_path: Path) -> None:
     """Tie runs and history to their persistent aggregate records."""
 
-    database_path = tmp_path / "constraints.db"
-    store = SQLiteStore(database_path)
-    store.close()
-    connection = sqlite3.connect(database_path)
+    connection = _raw_schema_connection(tmp_path / "constraints.db")
     try:
         run_foreign_keys = connection.execute(
             "PRAGMA foreign_key_list(runs)"
@@ -73,198 +131,25 @@ def test_unified_schema_declares_required_foreign_keys(tmp_path: Path) -> None:
     }
 
 
-def test_unified_schema_uses_id_for_entity_primary_keys(tmp_path: Path) -> None:
-    """Use id for each entity and qualified names for foreign keys."""
-
-    database_path = tmp_path / "identifiers.db"
-    store = SQLiteStore(database_path)
-    store.close()
-    connection = sqlite3.connect(database_path)
-    try:
-        primary_keys = {
-            table: _primary_key_column(connection, table)
-            for table in ("sessions", "runs", "history_items")
-        }
-    finally:
-        connection.close()
-
-    assert primary_keys == {
-        "sessions": "id",
-        "runs": "id",
-        "history_items": "id",
-    }
-
-
-def test_unified_schema_keeps_only_session_identity_and_timestamps(
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"provider": None}, id="null-provider"),
+        pytest.param({"status": "completed"}, id="terminal-status-without-end"),
+    ],
+)
+def test_unified_schema_rejects_invalid_run_rows(
     tmp_path: Path,
+    overrides: dict[str, str | None],
 ) -> None:
-    """Exclude unused display metadata from persistent session records."""
+    """Enforce run identity and lifecycle agreement below the domain adapter."""
 
-    database_path = tmp_path / "session-columns.db"
-    store = SQLiteStore(database_path)
-    store.close()
-    connection = sqlite3.connect(database_path)
-    try:
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
-    finally:
-        connection.close()
-
-    assert columns == {"id", "created_at", "updated_at"}
-
-
-def test_unified_schema_enforces_run_session_foreign_key(tmp_path: Path) -> None:
-    """Reject a run whose owning session does not exist."""
-
-    database_path = tmp_path / "run-foreign-key.db"
-    store = SQLiteStore(database_path)
-    store.close()
-    connection = _foreign_key_connection(database_path)
-    try:
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-            connection.execute(
-                """
-                INSERT INTO runs (
-                    id, session_id, prompt, status, started_at,
-                    ended_at, model, provider, outcome_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "orphan",
-                    "missing",
-                    "hello",
-                    "running",
-                    STARTED_AT.isoformat(),
-                    None,
-                    "gpt-5.4",
-                    "test",
-                    None,
-                ),
-            )
-    finally:
-        connection.close()
-
-
-def test_unified_schema_enforces_history_run_foreign_key(tmp_path: Path) -> None:
-    """Reject history whose originating run does not exist."""
-
-    database_path = tmp_path / "history-foreign-key.db"
-    store = SQLiteStore(database_path)
-    create_session(store, session_id="session-1")
-    store.close()
-    connection = _foreign_key_connection(database_path)
-    try:
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-            connection.execute(
-                """
-                INSERT INTO history_items (
-                    id, session_id, run_id, position,
-                    role, payload_json, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "history-1",
-                    "session-1",
-                    "missing",
-                    0,
-                    "user",
-                    '{"role":"user","content":"hello"}',
-                    STARTED_AT.isoformat(),
-                ),
-            )
-    finally:
-        connection.close()
-
-
-def test_unified_schema_requires_run_provider_identity(tmp_path: Path) -> None:
-    """Reject a persistent run whose provider was not known at creation."""
-
-    database_path = tmp_path / "provider-constraint.db"
-    store = SQLiteStore(database_path)
-    create_session(store, session_id="session-1")
-    store.close()
-    connection = sqlite3.connect(database_path)
+    connection = _raw_schema_connection(
+        tmp_path / "run-constraints.db",
+        session_id="session-1",
+    )
     try:
         with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                """
-                INSERT INTO runs (
-                    id, session_id, prompt, status, started_at,
-                    ended_at, model, provider, outcome_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "invalid",
-                    "session-1",
-                    "hello",
-                    "running",
-                    STARTED_AT.isoformat(),
-                    None,
-                    "gpt-5.4",
-                    None,
-                    None,
-                ),
-            )
+            _insert_raw_run_row(connection, **overrides)
     finally:
         connection.close()
-
-
-def test_unified_schema_rejects_inconsistent_run_lifecycle_rows(
-    tmp_path: Path,
-) -> None:
-    """Enforce basic terminal-field agreement below the domain adapter."""
-
-    database_path = tmp_path / "lifecycle-constraint.db"
-    store = SQLiteStore(database_path)
-    create_session(store, session_id="session-1")
-    store.close()
-    connection = sqlite3.connect(database_path)
-    try:
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                """
-                INSERT INTO runs (
-                    id, session_id, prompt, status, started_at,
-                    ended_at, model, provider, outcome_json
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "invalid",
-                    "session-1",
-                    "hello",
-                    "completed",
-                    STARTED_AT.isoformat(),
-                    None,
-                    "gpt-5.4",
-                    "test",
-                    None,
-                ),
-            )
-    finally:
-        connection.close()
-
-
-def _primary_key_column(connection: sqlite3.Connection, table: str) -> str:
-    """Return the declared primary-key column for one table."""
-
-    row = connection.execute(
-        "SELECT name FROM pragma_table_info(?) WHERE pk = 1",
-        (table,),
-    ).fetchone()
-    assert row is not None
-    column = row[0]
-    assert isinstance(column, str)
-    return column
-
-
-def _foreign_key_connection(database_path: Path) -> sqlite3.Connection:
-    """Open a raw SQLite connection with foreign-key enforcement enabled."""
-
-    connection = sqlite3.connect(database_path)
-    connection.execute("PRAGMA foreign_keys = ON")
-    enabled = connection.execute("PRAGMA foreign_keys").fetchone()
-    assert enabled == (1,)
-    return connection

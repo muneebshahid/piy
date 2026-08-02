@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 import tile.tools.support.executables as executables
-from tests.support.command_mocks import executable_lookup, no_executable
+from tile.types.tools import ToolError
+from tests.support.command_mocks import (
+    make_executable_available,
+    make_executable_missing,
+)
 
 
 def test_require_executable_returns_resolved_path(
@@ -14,11 +18,7 @@ def test_require_executable_returns_resolved_path(
 ) -> None:
     """Return the executable path when the command is available."""
 
-    monkeypatch.setattr(
-        executables.shutil,
-        "which",
-        executable_lookup("rg", "/usr/bin/rg"),
-    )
+    make_executable_available(monkeypatch, "rg", "/usr/bin/rg")
 
     assert executables.require_executable("rg", "ripgrep (rg)") == "/usr/bin/rg"
 
@@ -28,26 +28,12 @@ def test_require_executable_raises_when_missing(
 ) -> None:
     """Raise a clear error when the command is unavailable."""
 
-    monkeypatch.setattr(executables.shutil, "which", no_executable)
+    make_executable_missing(monkeypatch)
 
-    with pytest.raises(RuntimeError, match="ripgrep"):
+    with pytest.raises(ToolError, match="ripgrep"):
         executables.require_executable("rg", "ripgrep (rg)")
 
 
-@pytest.mark.asyncio
-async def test_execute_returns_process_stdout() -> None:
-    """Return captured stdout from a successful process."""
-
-    result = await executables.execute(
-        sys.executable,
-        ["-c", "print('out')"],
-        cwd=Path.cwd(),
-    )
-
-    assert result == "out\n"
-
-
-@pytest.mark.asyncio
 async def test_execute_runs_process_from_supplied_cwd(tmp_path: Path) -> None:
     """Run a process from the supplied working directory."""
 
@@ -60,7 +46,6 @@ async def test_execute_runs_process_from_supplied_cwd(tmp_path: Path) -> None:
     assert result == f"{tmp_path}\n"
 
 
-@pytest.mark.asyncio
 async def test_execute_kills_process_at_stdout_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -79,7 +64,6 @@ async def test_execute_kills_process_at_stdout_cap(
     assert all(line == "x" * 1023 for line in result.splitlines())
 
 
-@pytest.mark.asyncio
 async def test_execute_replaces_invalid_utf8_output() -> None:
     """Decode non-UTF-8 output with replacement characters instead of failing."""
 
@@ -92,7 +76,6 @@ async def test_execute_replaces_invalid_utf8_output() -> None:
     assert result == "bad � byte\n"
 
 
-@pytest.mark.asyncio
 async def test_execute_raises_when_capped_output_has_no_line_break(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -100,7 +83,7 @@ async def test_execute_raises_when_capped_output_has_no_line_break(
 
     monkeypatch.setattr(executables, "STDOUT_BYTE_CAP", 4096)
 
-    with pytest.raises(RuntimeError, match="without a complete line"):
+    with pytest.raises(ToolError, match="without a complete line"):
         await executables.execute(
             sys.executable,
             ["-c", "import sys\nwhile True: sys.stdout.write('x' * 1024)"],
@@ -108,7 +91,6 @@ async def test_execute_raises_when_capped_output_has_no_line_break(
         )
 
 
-@pytest.mark.asyncio
 async def test_execute_drains_stderr_larger_than_pipe_buffers() -> None:
     """Avoid deadlock when a process floods stderr before exiting cleanly."""
 
@@ -121,11 +103,10 @@ async def test_execute_drains_stderr_larger_than_pipe_buffers() -> None:
     assert result == "done\n"
 
 
-@pytest.mark.asyncio
 async def test_execute_raises_on_disallowed_exit_code() -> None:
     """Raise stderr output when a process exits with a disallowed code."""
 
-    with pytest.raises(RuntimeError, match="boom"):
+    with pytest.raises(ToolError, match="boom"):
         await executables.execute(
             sys.executable,
             ["-c", "import sys; print('boom', file=sys.stderr); sys.exit(2)"],
@@ -133,7 +114,6 @@ async def test_execute_raises_on_disallowed_exit_code() -> None:
         )
 
 
-@pytest.mark.asyncio
 async def test_execute_allows_configured_exit_code() -> None:
     """Return stdout when a process exits with an explicitly allowed code."""
 

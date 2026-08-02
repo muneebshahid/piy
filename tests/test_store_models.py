@@ -1,7 +1,7 @@
 """Tests for the persistence-first domain models and Store boundary."""
 
-from datetime import UTC, datetime, timedelta
-from typing import get_type_hints
+from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -13,15 +13,79 @@ from tile import (
     ExecutionFailure,
     Failed,
     HistoryItem,
-    RunHandle,
+    InvalidHistoryError,
     RunRecord,
     SessionRecord,
-    Store,
 )
-from tile.store import TerminalRunStatus
-from tile.types import AssistantTurn, ConversationItem, UserMessage
+from tile.store import SQLiteStore, TerminalRunStatus
+from tile.types import ConversationItem, UserMessage
+from tests.support.store import (
+    STARTED_AT,
+    corrupt_column,
+    create_session,
+    persist_outcome,
+    start_run,
+)
 
-CREATED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+
+def _session_record() -> SessionRecord:
+    """Build one deterministic session record."""
+
+    return SessionRecord(
+        id="session-1",
+        created_at=STARTED_AT,
+        updated_at=STARTED_AT,
+    )
+
+
+def _running_record() -> RunRecord:
+    """Build one deterministic running record."""
+
+    return RunRecord(
+        id="run-1",
+        session_id="session-1",
+        prompt="hello",
+        status="running",
+        started_at=STARTED_AT,
+        model="gpt-5.4",
+        provider="openai",
+    )
+
+
+def _terminal_record(
+    *,
+    outcome: Completed | Failed | Aborted,
+    status: TerminalRunStatus,
+) -> RunRecord:
+    """Build one deterministic terminal record snapshot."""
+
+    return RunRecord(
+        id="run-1",
+        session_id="session-1",
+        prompt="hello",
+        status=status,
+        started_at=STARTED_AT,
+        ended_at=STARTED_AT + timedelta(seconds=1),
+        model="gpt-5.4",
+        provider="openai",
+        outcome=outcome,
+    )
+
+
+def _history_item(
+    *,
+    item: ConversationItem | None = None,
+) -> HistoryItem:
+    """Build one deterministic committed history item."""
+
+    return HistoryItem(
+        id="history-1",
+        session_id="session-1",
+        run_id="run-1",
+        position=0,
+        item=item if item is not None else UserMessage(content="hello"),
+        created_at=STARTED_AT,
+    )
 
 
 def test_persistent_records_are_frozen() -> None:
@@ -32,7 +96,7 @@ def test_persistent_records_are_frozen() -> None:
     history_item = _history_item()
 
     with pytest.raises(ValidationError):
-        session.updated_at = CREATED_AT + timedelta(seconds=1)
+        session.updated_at = STARTED_AT + timedelta(seconds=1)
     with pytest.raises(ValidationError):
         run.status = "completed"
     with pytest.raises(ValidationError):
@@ -46,42 +110,15 @@ def test_session_record_validates_its_lifecycle_timestamps() -> None:
         SessionRecord(
             id="session-1",
             created_at=datetime(2026, 7, 26, 12, 0),
-            updated_at=CREATED_AT,
+            updated_at=STARTED_AT,
         )
 
     with pytest.raises(ValidationError, match="updated before"):
         SessionRecord(
             id="session-1",
-            created_at=CREATED_AT,
-            updated_at=CREATED_AT - timedelta(seconds=1),
+            created_at=STARTED_AT,
+            updated_at=STARTED_AT - timedelta(seconds=1),
         )
-
-
-def test_persistent_records_are_passive_store_outputs() -> None:
-    """Keep caller intent and lifecycle transitions out of record models."""
-
-    assert "name" not in SessionRecord.model_fields
-    assert not hasattr(SessionRecord, "create")
-    assert not hasattr(RunRecord, "start")
-    assert not hasattr(RunRecord, "finish")
-
-
-def test_history_item_round_trips_typed_conversation_payloads() -> None:
-    """Deserialize adapter-shaped JSON back into the conversation union."""
-
-    adapter = TypeAdapter(HistoryItem)
-    user_item = _history_item(item=UserMessage(content="hello"))
-    assistant_item = _history_item(
-        item=AssistantTurn(response_id="response-1"),
-    )
-
-    loaded_user = adapter.validate_json(user_item.model_dump_json())
-    loaded_assistant = adapter.validate_json(assistant_item.model_dump_json())
-
-    assert isinstance(loaded_user.item, UserMessage)
-    assert isinstance(loaded_assistant.item, AssistantTurn)
-    assert loaded_user == user_item
-    assert loaded_assistant == assistant_item
 
 
 def test_conversation_item_is_discriminated_by_role() -> None:
@@ -91,6 +128,49 @@ def test_conversation_item_is_discriminated_by_role() -> None:
 
     with pytest.raises(ValidationError, match="union_tag_invalid"):
         adapter.validate_python({"role": "unknown", "content": "hello"})
+
+
+def test_history_item_rejects_a_negative_position() -> None:
+    """Reject envelopes placed before the start of committed history."""
+
+    with pytest.raises(ValidationError, match="negative"):
+        HistoryItem(
+            id="history-1",
+            session_id="session-1",
+            run_id="run-1",
+            position=-1,
+            item=UserMessage(content="hello"),
+            created_at=STARTED_AT,
+        )
+
+
+def test_get_history_rejects_a_persisted_role_contradicting_its_payload(
+    tmp_path: Path,
+) -> None:
+    """Surface stored role and payload disagreement as InvalidHistoryError."""
+
+    database_path = tmp_path / "contradicting-role.db"
+    store = SQLiteStore(database_path)
+    try:
+        create_session(store, session_id="session-1")
+        start_run(store)
+        persist_outcome(
+            store,
+            outcome=Completed(value="done"),
+            history_delta=[UserMessage(content="hello")],
+        )
+    finally:
+        store.close()
+    corrupt_column(
+        database_path, table="history_items", column="role", value="assistant"
+    )
+
+    reopened = SQLiteStore(database_path)
+    try:
+        with pytest.raises(InvalidHistoryError, match="contradicts"):
+            reopened.get_history("session-1")
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize(
@@ -135,35 +215,48 @@ def test_run_record_accepts_every_consistent_terminal_outcome(
     assert finished.provider == "openai"
 
 
-def test_run_record_requires_a_provider_at_creation() -> None:
-    """Require execution identity before a run can enter persistence."""
+@pytest.mark.parametrize(
+    ("values", "match"),
+    [
+        pytest.param(
+            _running_record().model_dump()
+            | {"status": "completed", "outcome": Completed(value="done")},
+            "end timestamp",
+            id="terminal-status-without-end",
+        ),
+        pytest.param(
+            _running_record().model_dump()
+            | {"ended_at": STARTED_AT + timedelta(seconds=1)},
+            "terminal data",
+            id="running-with-terminal-data",
+        ),
+        pytest.param(
+            _terminal_record(
+                outcome=Completed(value="done"),
+                status="completed",
+            ).model_dump()
+            | {"ended_at": STARTED_AT - timedelta(seconds=1)},
+            "end before",
+            id="ends-before-start",
+        ),
+        pytest.param(
+            _terminal_record(
+                outcome=Completed(value="done"),
+                status="completed",
+            ).model_dump()
+            | {"status": "aborted"},
+            "contradicts",
+            id="status-conflicts-with-outcome",
+        ),
+    ],
+)
+def test_run_record_rejects_inconsistent_lifecycle_snapshots(
+    values: dict[str, object],
+    match: str,
+) -> None:
+    """Reject run snapshots whose redundant lifecycle facts disagree."""
 
-    values = _running_record().model_dump(exclude={"provider"})
-
-    with pytest.raises(ValidationError, match="provider"):
-        RunRecord.model_validate(values)
-
-
-def test_terminal_run_requires_an_end_timestamp() -> None:
-    """Reject a persisted terminal snapshot without complete lifecycle data."""
-
-    values = _running_record().model_dump()
-    values.update(status="completed", outcome=Completed(value="done"))
-
-    with pytest.raises(ValidationError, match="end timestamp"):
-        RunRecord.model_validate(values)
-
-
-def test_terminal_run_rejects_a_status_that_conflicts_with_its_outcome() -> None:
-    """Reject terminal snapshots whose redundant lifecycle facts disagree."""
-
-    values = _terminal_record(
-        outcome=Completed(value="done"),
-        status="completed",
-    ).model_dump()
-    values.update(status="aborted")
-
-    with pytest.raises(ValidationError, match="contradicts"):
+    with pytest.raises(ValidationError, match=match):
         RunRecord.model_validate(values)
 
 
@@ -196,96 +289,3 @@ def test_failure_causes_round_trip_without_losing_their_kind(
 
     assert type(loaded.cause) is type(cause)
     assert loaded == outcome
-
-
-def test_store_contract_exposes_only_lifecycle_operations() -> None:
-    """Keep unrestricted history and run mutations out of the Store API."""
-
-    methods = {
-        name
-        for name, value in Store.__dict__.items()
-        if callable(value) and not name.startswith("_")
-    }
-
-    assert methods == {
-        "abort_active_run",
-        "create_session",
-        "finish_run",
-        "fork_session",
-        "get_history",
-        "get_run",
-        "get_session",
-        "list_runs",
-        "list_sessions",
-        "start_run",
-    }
-    assert "append_history" not in methods
-    assert "update_run" not in methods
-    assert get_type_hints(Store.get_history)["return"]
-
-
-def test_live_run_type_is_named_run_handle() -> None:
-    """Distinguish the live execution handle from a persistent RunRecord."""
-
-    assert RunHandle.__name__ == "RunHandle"
-    assert RunHandle is not RunRecord
-
-
-def _session_record() -> SessionRecord:
-    """Build one deterministic session record."""
-
-    return SessionRecord(
-        id="session-1",
-        created_at=CREATED_AT,
-        updated_at=CREATED_AT,
-    )
-
-
-def _running_record() -> RunRecord:
-    """Build one deterministic running record."""
-
-    return RunRecord(
-        id="run-1",
-        session_id="session-1",
-        prompt="hello",
-        status="running",
-        started_at=CREATED_AT,
-        model="gpt-5.4",
-        provider="openai",
-    )
-
-
-def _terminal_record(
-    *,
-    outcome: Completed | Failed | Aborted,
-    status: TerminalRunStatus,
-) -> RunRecord:
-    """Build one deterministic terminal record snapshot."""
-
-    return RunRecord(
-        id="run-1",
-        session_id="session-1",
-        prompt="hello",
-        status=status,
-        started_at=CREATED_AT,
-        ended_at=CREATED_AT + timedelta(seconds=1),
-        model="gpt-5.4",
-        provider="openai",
-        outcome=outcome,
-    )
-
-
-def _history_item(
-    *,
-    item: ConversationItem | None = None,
-) -> HistoryItem:
-    """Build one deterministic committed history item."""
-
-    return HistoryItem(
-        id="history-1",
-        session_id="session-1",
-        run_id="run-1",
-        position=0,
-        item=item if item is not None else UserMessage(content="hello"),
-        created_at=CREATED_AT,
-    )

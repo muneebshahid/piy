@@ -1,8 +1,6 @@
 """Tests for raw OpenAI SDK event normalization."""
 
-import asyncio
 import json
-from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -10,6 +8,7 @@ from openai.types.responses import ResponseStreamEvent
 
 from tile.providers.openai.normalized_events import NormalizedEvent, NormalizedEventType
 from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
+from tests.support import normalized_events as normalized
 from tests.support.openai_response_events import (
     content_part_added_event,
     function_tool_call_added_event,
@@ -75,10 +74,7 @@ def _build_response_start_cases() -> list[NormalizationCase]:
             raw_event=response_created_event(
                 sequence_number=1, response_id="resp_created"
             ),
-            expected_event={
-                "type": NormalizedEventType.CREATED,
-                "response_id": "resp_created",
-            },
+            expected_event=normalized.created_event("resp_created"),
         ),
     ]
 
@@ -93,10 +89,7 @@ def _build_response_completion_cases() -> list[NormalizationCase]:
                 sequence_number=2,
                 response_id="resp_completed",
             ),
-            expected_event={
-                "type": NormalizedEventType.COMPLETED,
-                "stop_reason": "stop",
-            },
+            expected_event=normalized.completed_event("stop"),
         ),
         NormalizationCase(
             name="response.completed.tool_use",
@@ -114,10 +107,7 @@ def _build_response_completion_cases() -> list[NormalizationCase]:
                     }
                 ],
             ),
-            expected_event={
-                "type": NormalizedEventType.COMPLETED,
-                "stop_reason": "tool_use",
-            },
+            expected_event=normalized.completed_event("tool_use"),
         ),
     ]
 
@@ -133,11 +123,9 @@ def _build_response_incomplete_cases() -> list[NormalizationCase]:
                 response_id="resp_incomplete",
                 reason="max_output_tokens",
             ),
-            expected_event={
-                "type": NormalizedEventType.INCOMPLETE,
-                "stop_reason": "length",
-                "error_message": "OpenAI response incomplete.",
-            },
+            expected_event=normalized.incomplete_event(
+                "length", "OpenAI response incomplete."
+            ),
         ),
         NormalizationCase(
             name="response.incomplete.content_filter",
@@ -146,11 +134,9 @@ def _build_response_incomplete_cases() -> list[NormalizationCase]:
                 response_id="resp_filtered",
                 reason="content_filter",
             ),
-            expected_event={
-                "type": NormalizedEventType.INCOMPLETE,
-                "stop_reason": "error",
-                "error_message": "OpenAI response was truncated by the content filter.",
-            },
+            expected_event=normalized.incomplete_event(
+                "error", "OpenAI response was truncated by the content filter."
+            ),
         ),
     ]
 
@@ -175,10 +161,7 @@ def _build_reasoning_start_cases() -> list[NormalizationCase]:
                 sequence_number=6,
                 item_id="rs_added",
             ),
-            expected_event={
-                "type": NormalizedEventType.REASONING_ADDED,
-                "item_id": "rs_added",
-            },
+            expected_event=normalized.reasoning_added_event("rs_added"),
         ),
     ]
 
@@ -195,10 +178,7 @@ def _build_reasoning_delta_cases() -> list[NormalizationCase]:
                 summary_index=0,
                 delta="Thinking...",
             ),
-            expected_event={
-                "type": NormalizedEventType.REASONING_DELTA,
-                "delta": "Thinking...",
-            },
+            expected_event=normalized.reasoning_delta_event("Thinking..."),
         ),
         NormalizationCase(
             name="response.reasoning_text.delta",
@@ -208,10 +188,7 @@ def _build_reasoning_delta_cases() -> list[NormalizationCase]:
                 content_index=0,
                 delta="Thinking with text...",
             ),
-            expected_event={
-                "type": NormalizedEventType.REASONING_DELTA,
-                "delta": "Thinking with text...",
-            },
+            expected_event=normalized.reasoning_delta_event("Thinking with text..."),
         ),
     ]
 
@@ -227,11 +204,10 @@ def _build_reasoning_done_cases() -> list[NormalizationCase]:
                 item_id="rs_done",
                 summary_texts=["step one", "step two"],
             ),
-            expected_event={
-                "type": NormalizedEventType.REASONING_DONE,
-                "item_id": "rs_done",
-                "summary_text": "step one\n\nstep two",
-                "reasoning_signature": json.dumps(
+            expected_event=normalized.reasoning_done_event(
+                item_id="rs_done",
+                summary_text="step one\n\nstep two",
+                reasoning_signature=json.dumps(
                     {
                         "id": "rs_done",
                         "summary": [
@@ -242,7 +218,7 @@ def _build_reasoning_done_cases() -> list[NormalizationCase]:
                         "status": "completed",
                     }
                 ),
-            },
+            ),
         ),
     ]
 
@@ -269,11 +245,9 @@ def _build_message_start_cases() -> list[NormalizationCase]:
                 output_index=0,
                 phase="commentary",
             ),
-            expected_event={
-                "type": NormalizedEventType.MESSAGE_ADDED,
-                "item_id": "msg_added",
-                "phase": "commentary",
-            },
+            expected_event=normalized.message_added_event(
+                "msg_added", phase="commentary"
+            ),
         ),
     ]
 
@@ -290,10 +264,7 @@ def _build_message_delta_cases() -> list[NormalizationCase]:
                 delta="Hello",
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.MESSAGE_TEXT_DELTA,
-                "delta": "Hello",
-            },
+            expected_event=normalized.message_text_delta_event("Hello"),
         ),
         NormalizationCase(
             name="response.refusal.delta",
@@ -303,10 +274,7 @@ def _build_message_delta_cases() -> list[NormalizationCase]:
                 delta="No",
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.MESSAGE_TEXT_DELTA,
-                "delta": "No",
-            },
+            expected_event=normalized.message_text_delta_event("No"),
         ),
     ]
 
@@ -327,12 +295,9 @@ def _build_message_done_cases() -> list[NormalizationCase]:
                     {"type": "refusal", "refusal": " there"},
                 ],
             ),
-            expected_event={
-                "type": NormalizedEventType.MESSAGE_DONE,
-                "item_id": "msg_done",
-                "text": "Hello there",
-                "phase": "final_answer",
-            },
+            expected_event=normalized.message_done_event(
+                "msg_done", "Hello there", phase="final_answer"
+            ),
         ),
     ]
 
@@ -361,13 +326,12 @@ def _build_tool_call_start_cases() -> list[NormalizationCase]:
                 arguments='{"city":"Berlin"}',
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_ADDED,
-                "provider_item_id": "fc_added",
-                "call_id": "call_added",
-                "name": "get_weather",
-                "arguments": {"city": "Berlin"},
-            },
+            expected_event=normalized.tool_call_added_event(
+                provider_item_id="fc_added",
+                call_id="call_added",
+                name="get_weather",
+                arguments={"city": "Berlin"},
+            ),
         ),
         NormalizationCase(
             name="response.output_item.added.function_call.blank_arguments",
@@ -379,13 +343,12 @@ def _build_tool_call_start_cases() -> list[NormalizationCase]:
                 arguments="",
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_ADDED,
-                "provider_item_id": "fc_added_blank",
-                "call_id": "call_added_blank",
-                "name": "get_weather",
-                "arguments": {},
-            },
+            expected_event=normalized.tool_call_added_event(
+                provider_item_id="fc_added_blank",
+                call_id="call_added_blank",
+                name="get_weather",
+                arguments={},
+            ),
         ),
     ]
 
@@ -402,10 +365,7 @@ def _build_tool_call_argument_cases() -> list[NormalizationCase]:
                 delta='{"city"',
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
-                "delta": '{"city"',
-            },
+            expected_event=normalized.tool_call_arguments_delta_event('{"city"'),
         ),
         NormalizationCase(
             name="response.function_call_arguments.done",
@@ -416,10 +376,9 @@ def _build_tool_call_argument_cases() -> list[NormalizationCase]:
                 arguments='{"city":"Berlin"}',
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
-                "arguments": {"city": "Berlin"},
-            },
+            expected_event=normalized.tool_call_arguments_done_event(
+                {"city": "Berlin"}
+            ),
         ),
         NormalizationCase(
             name="response.function_call_arguments.done.malformed_arguments",
@@ -430,10 +389,7 @@ def _build_tool_call_argument_cases() -> list[NormalizationCase]:
                 arguments='{"city"',
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
-                "arguments": {},
-            },
+            expected_event=normalized.tool_call_arguments_done_event({}),
         ),
     ]
 
@@ -452,13 +408,12 @@ def _build_tool_call_done_cases() -> list[NormalizationCase]:
                 arguments='{"city":"Berlin"}',
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_DONE,
-                "provider_item_id": "fc_done",
-                "call_id": "call_done",
-                "name": "get_weather",
-                "arguments": {"city": "Berlin"},
-            },
+            expected_event=normalized.tool_call_done_event(
+                provider_item_id="fc_done",
+                call_id="call_done",
+                name="get_weather",
+                arguments={"city": "Berlin"},
+            ),
         ),
         NormalizationCase(
             name="response.output_item.done.function_call.non_object_arguments",
@@ -470,13 +425,12 @@ def _build_tool_call_done_cases() -> list[NormalizationCase]:
                 arguments='["Berlin"]',
                 output_index=0,
             ),
-            expected_event={
-                "type": NormalizedEventType.TOOL_CALL_DONE,
-                "provider_item_id": "fc_done_non_object",
-                "call_id": "call_done_non_object",
-                "name": "get_weather",
-                "arguments": {},
-            },
+            expected_event=normalized.tool_call_done_event(
+                provider_item_id="fc_done_non_object",
+                call_id="call_done_non_object",
+                name="get_weather",
+                arguments={},
+            ),
         ),
     ]
 
@@ -491,10 +445,7 @@ def _build_failure_cases() -> list[NormalizationCase]:
                 sequence_number=24,
                 message="Socket closed",
             ),
-            expected_event={
-                "type": NormalizedEventType.FAILED,
-                "message": "Socket closed",
-            },
+            expected_event=normalized.failed_event("Socket closed"),
         ),
         NormalizationCase(
             name="response.failed",
@@ -503,26 +454,9 @@ def _build_failure_cases() -> list[NormalizationCase]:
                 response_id="resp_failed",
                 message="Model overloaded",
             ),
-            expected_event={
-                "type": NormalizedEventType.FAILED,
-                "message": "Model overloaded",
-            },
+            expected_event=normalized.failed_event("Model overloaded"),
         ),
     ]
-
-
-def _collect_normalized_events(
-    raw_events: Sequence[ResponseStreamEvent],
-) -> list[NormalizedEvent]:
-    """Collects normalized provider events from the public async adapter."""
-
-    async def _collect() -> list[NormalizedEvent]:
-        return [
-            event
-            async for event in normalize_sdk_events(raw_response_stream(raw_events))
-        ]
-
-    return asyncio.run(_collect())
 
 
 @pytest.mark.parametrize(
@@ -530,12 +464,17 @@ def _collect_normalized_events(
     _build_normalization_cases(),
     ids=lambda case: case.name,
 )
-def test_normalize_sdk_events_maps_each_supported_raw_event(
+async def test_normalize_sdk_events_maps_each_supported_raw_event(
     case: NormalizationCase,
 ) -> None:
     """Normalizes every supported raw SDK event into the expected provider event."""
 
-    assert _collect_normalized_events([case.raw_event]) == [case.expected_event]
+    events = [
+        event
+        async for event in normalize_sdk_events(raw_response_stream([case.raw_event]))
+    ]
+
+    assert events == [case.expected_event]
 
 
 @pytest.mark.parametrize(
@@ -555,15 +494,22 @@ def test_normalize_sdk_events_maps_each_supported_raw_event(
         "content_part_unsupported",
     ],
 )
-def test_normalize_sdk_events_ignores_unmapped_raw_events(
+async def test_normalize_sdk_events_ignores_unmapped_raw_events(
     ignored_event: ResponseStreamEvent,
 ) -> None:
     """Drop raw SDK events that have no normalized mapping."""
 
-    assert _collect_normalized_events([ignored_event]) == []
+    events = [
+        event
+        async for event in normalize_sdk_events(raw_response_stream([ignored_event]))
+    ]
+
+    assert events == []
 
 
-def test_normalize_sdk_events_passes_summary_parts_through_without_separators() -> None:
+async def test_normalize_sdk_events_passes_summary_parts_through_without_separators() -> (
+    None
+):
     """Forward reasoning deltas verbatim and drop summary part boundaries.
 
     Part boundaries are not synthesized into the delta stream; the
@@ -571,15 +517,17 @@ def test_normalize_sdk_events_passes_summary_parts_through_without_separators() 
     authoritative text.
     """
 
-    events = _collect_normalized_events(
-        [
-            reasoning_summary_delta_event(1, "rs_2", 0, "Part one"),
-            reasoning_summary_part_done_event(2, "rs_2", 0, "Part one"),
-            reasoning_summary_delta_event(3, "rs_2", 1, "Part two"),
-            reasoning_summary_part_done_event(4, "rs_2", 1, "Part two"),
-            reasoning_done_event(5, "rs_2", ["Part one", "Part two"]),
-        ]
-    )
+    raw_events = [
+        reasoning_summary_delta_event(1, "rs_2", 0, "Part one"),
+        reasoning_summary_part_done_event(2, "rs_2", 0, "Part one"),
+        reasoning_summary_delta_event(3, "rs_2", 1, "Part two"),
+        reasoning_summary_part_done_event(4, "rs_2", 1, "Part two"),
+        reasoning_done_event(5, "rs_2", ["Part one", "Part two"]),
+    ]
+
+    events = [
+        event async for event in normalize_sdk_events(raw_response_stream(raw_events))
+    ]
 
     assert events[:2] == [
         {"type": NormalizedEventType.REASONING_DELTA, "delta": "Part one"},

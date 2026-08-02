@@ -1,7 +1,9 @@
 """Shared builders for SQLite Store behavior tests."""
 
+import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 from tile import (
     Aborted,
@@ -115,3 +117,38 @@ def create_session(
     """Create one session from its caller-owned identity."""
 
     return store.create_session(session_id=session_id)
+
+
+def seed_database(
+    database_path: Path,
+    *,
+    session_id: str = "session-1",
+    running_run: bool = False,
+    run_id: str = "run-1",
+) -> None:
+    """Seed a file-backed database, then close the seeding store."""
+
+    seed = SQLiteStore(database_path)
+    try:
+        create_session(seed, session_id=session_id)
+        if running_run:
+            start_run(seed, session_id=session_id, run_id=run_id)
+    finally:
+        seed.close()
+
+
+def corrupt_column(
+    database_path: Path,
+    *,
+    table: str,
+    column: str,
+    value: str = "not-json",
+) -> None:
+    """Overwrite one persisted column with raw corrupt data."""
+
+    connection = sqlite3.connect(database_path)
+    try:
+        connection.execute(f"UPDATE {table} SET {column} = ?", (value,))  # noqa: S608
+        connection.commit()
+    finally:
+        connection.close()

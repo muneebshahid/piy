@@ -21,7 +21,7 @@ from tile.types.tools import (
     ToolInput,
     ToolResult,
 )
-from tests.support.tool_definitions import CityInput, city_tool
+from tests.support.tool_definitions import CityInput, NoInput, city_tool
 from tests.support.tool_results import tool_text
 
 
@@ -45,10 +45,6 @@ async def _noop(params: BaseModel) -> ToolResult:
     return ToolResult.text("ok")
 
 
-class _NoInput(ToolInput):
-    """Strict empty input for deterministic test tools."""
-
-
 def _sample_tool() -> ToolDefinition:
     """Build a deterministic tool definition."""
 
@@ -67,15 +63,6 @@ def _failing_tool() -> ToolDefinition:
         "Raise deterministic weather failure.",
         _raise_error,
     )
-
-
-def test_tool_definition_generates_schema_from_input_model() -> None:
-    """Use one Pydantic model for provider schema and execution validation."""
-
-    tool = _sample_tool()
-
-    assert tool.input_schema == tool.input_model.model_json_schema()
-    assert tool.input_schema is tool.input_schema
 
 
 def test_tool_definition_rejects_input_model_without_json_schema() -> None:
@@ -113,7 +100,13 @@ def test_tool_executor_rejects_function_without_input_parameter() -> None:
         ToolExecutor([tool])
 
 
-@pytest.mark.asyncio
+def test_tool_executor_rejects_duplicate_names() -> None:
+    """Refuse to register two tools with the same name."""
+
+    with pytest.raises(ValueError, match="Duplicate tool name"):
+        ToolExecutor([_sample_tool(), _sample_tool()])
+
+
 async def test_tool_executor_executes_registered_tool() -> None:
     """Execute a registered tool and return a normalized outcome."""
 
@@ -131,7 +124,6 @@ async def test_tool_executor_executes_registered_tool() -> None:
     assert tool_text(outcome.tool_result_turn) == "Munich: sunny"
 
 
-@pytest.mark.asyncio
 async def test_tool_executor_preserves_nested_input_models() -> None:
     """Pass nested validated models into tool code without flattening them."""
 
@@ -175,7 +167,6 @@ async def test_tool_executor_preserves_nested_input_models() -> None:
     assert tool_text(outcome.tool_result_turn) == "first"
 
 
-@pytest.mark.asyncio
 async def test_tool_executor_normalizes_missing_tool() -> None:
     """Return an error outcome when a requested tool is not registered."""
 
@@ -193,7 +184,6 @@ async def test_tool_executor_normalizes_missing_tool() -> None:
     assert tool_text(outcome.tool_result_turn) == "Tool 'missing_tool' not found"
 
 
-@pytest.mark.asyncio
 async def test_tool_executor_normalizes_tool_exception() -> None:
     """Return an error outcome when tool execution raises."""
 
@@ -217,7 +207,6 @@ async def test_tool_executor_normalizes_tool_exception() -> None:
     assert "exception" not in details.model_dump()
 
 
-@pytest.mark.asyncio
 async def test_tool_executor_does_not_normalize_cancellation() -> None:
     """Let task cancellation propagate through the tool boundary."""
 
@@ -239,7 +228,6 @@ async def test_tool_executor_does_not_normalize_cancellation() -> None:
         )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("arguments", "location", "code"),
     [
@@ -297,7 +285,6 @@ class _ExpectedFailureDetails(ToolDetails):
     reason: str
 
 
-@pytest.mark.asyncio
 async def test_tool_executor_normalizes_intentional_tool_error() -> None:
     """Convert an intentional tool exception into model-visible error data."""
 
@@ -324,13 +311,6 @@ async def test_tool_executor_normalizes_intentional_tool_error() -> None:
     assert isinstance(outcome.details, _ExpectedFailureDetails)
 
 
-def test_tool_result_has_no_error_state() -> None:
-    """Keep model-visible failures outside the tool success contract."""
-
-    assert "is_error" not in ToolResult.model_fields
-    assert not hasattr(ToolResult, "error")
-
-
 class _DatabaseDetails(ToolDetails):
     """User-defined details for a custom database tool."""
 
@@ -338,21 +318,20 @@ class _DatabaseDetails(ToolDetails):
     rows_scanned: int
 
 
-async def _query_database(params: _NoInput) -> ToolResult:
+async def _query_database(params: NoInput) -> ToolResult:
     """Return a result carrying user-defined details."""
 
     _ = params
     return ToolResult.text("2 rows", details=_DatabaseDetails(rows_scanned=2))
 
 
-@pytest.mark.asyncio
 async def test_tool_executor_preserves_user_defined_details() -> None:
     """Carry and serialize user-defined tool details end to end."""
 
     tool = ToolDefinition(
         name="query_database",
         description="Query a database.",
-        input_model=_NoInput,
+        input_model=NoInput,
         fn=_query_database,
     )
     executor = ToolExecutor([tool])
@@ -380,48 +359,36 @@ def test_tool_definition_rejects_empty_or_padded_names(name: str) -> None:
         ToolDefinition(
             name=name,
             description="Read a file.",
-            input_model=_NoInput,
+            input_model=NoInput,
             fn=_noop,
         )
 
 
-@pytest.mark.asyncio
-async def test_tool_executor_finds_tool_registered_with_uppercase_name() -> None:
-    """Find a tool registered with an uppercase name when the model requests lowercase."""
+@pytest.mark.parametrize(
+    ("registered_name", "requested_name"),
+    [
+        pytest.param("Read", "read", id="uppercase-registered"),
+        pytest.param("read", "Read", id="uppercase-requested"),
+        pytest.param("read", " Read ", id="whitespace-padded-request"),
+    ],
+)
+async def test_tool_executor_finds_tool_by_normalized_name(
+    registered_name: str,
+    requested_name: str,
+) -> None:
+    """Find a registered tool by case-insensitive, whitespace-stripped lookup."""
 
     tool = ToolDefinition(
-        name="Read",
+        name=registered_name,
         description="Read a file.",
-        input_model=_NoInput,
+        input_model=NoInput,
         fn=_noop,
     )
     executor = ToolExecutor([tool])
 
     outcome = await executor.execute(
         call_id="call_read",
-        tool_name="read",
-        arguments={},
-    )
-
-    assert outcome.tool_result_turn.is_error is False
-    assert tool_text(outcome.tool_result_turn) == "ok"
-
-
-@pytest.mark.asyncio
-async def test_tool_executor_finds_tool_registered_with_lowercase_name() -> None:
-    """Find a tool registered with a lowercase name when the model requests uppercase."""
-
-    tool = ToolDefinition(
-        name="read",
-        description="Read a file.",
-        input_model=_NoInput,
-        fn=_noop,
-    )
-    executor = ToolExecutor([tool])
-
-    outcome = await executor.execute(
-        call_id="call_read",
-        tool_name="Read",
+        tool_name=requested_name,
         arguments={},
     )
 

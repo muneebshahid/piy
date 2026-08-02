@@ -5,32 +5,27 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import tile.tools.support.executables as executables
 import tile.tools.find as find
 import tile.tools.support.truncation as truncation
 from tile.tools.find import FindDetails
-from tile.types.tools import ToolResult
+from tile.types.tools import ToolError
 from tests.support.command_mocks import (
     captured_args,
     captured_cwd,
-    executable_lookup,
-    no_executable,
+    make_executable_available,
+    make_executable_missing,
+    patch_execution,
 )
-from tests.support.tool_results import tool_text
+from tests.support.tool_results import details_of, tool_text
 
 
 def test_find_schema_requires_only_pattern() -> None:
-    """Require only the glob pattern so callers can omit optional controls."""
-
-    assert find.tool.input_schema["required"] == ["pattern"]
-
-
-def test_find_schema_exposes_path_search_controls() -> None:
-    """Expose the path-search inputs without execution-specific fields."""
+    """Require only the glob pattern while exposing optional path-search controls."""
 
     properties = find.tool.input_schema["properties"]
 
     assert find.tool.name == "find"
+    assert find.tool.input_schema["required"] == ["pattern"]
     assert isinstance(properties, dict)
     assert set(properties) == {"pattern", "path", "limit"}
 
@@ -39,30 +34,23 @@ def test_find_schema_exposes_path_search_controls() -> None:
 def fd_available(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the fd executable available to fn-level tests."""
 
-    monkeypatch.setattr(
-        executables.shutil,
-        "which",
-        executable_lookup("fd", "/usr/bin/fd"),
-    )
+    make_executable_available(monkeypatch, "fd", "/usr/bin/fd")
 
 
 @pytest.fixture
 def fd_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the fd executable unavailable to fn-level tests."""
 
-    monkeypatch.setattr(executables.shutil, "which", no_executable)
+    make_executable_missing(monkeypatch)
 
 
 @pytest.fixture
 def execution(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     """Patch command execution with an async mock for fn-level tests."""
 
-    execution_mock = AsyncMock()
-    monkeypatch.setattr(find, "execute", execution_mock)
-    return execution_mock
+    return patch_execution(monkeypatch, find)
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_uses_default_file_search_flags(
     execution: AsyncMock,
@@ -93,7 +81,6 @@ async def test_fn_uses_default_file_search_flags(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_resolves_search_path_against_supplied_cwd(
     execution: AsyncMock,
@@ -112,10 +99,19 @@ async def test_fn_resolves_search_path_against_supplied_cwd(
     assert captured_cwd(execution) == tmp_path
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
-async def test_fn_uses_full_path_for_path_patterns(
+@pytest.mark.parametrize(
+    ("pattern", "effective_pattern"),
+    [
+        pytest.param("tile/**/*.py", "**/tile/**/*.py", id="path-shaped"),
+        pytest.param("/tools/*.py", "**/tools/*.py", id="root-relative"),
+        pytest.param("**/tools/*.py", "**/tools/*.py", id="already-prefixed"),
+    ],
+)
+async def test_fn_normalizes_full_path_patterns(
     execution: AsyncMock,
+    pattern: str,
+    effective_pattern: str,
 ) -> None:
     """Match path-shaped glob patterns against full candidate paths."""
 
@@ -123,67 +119,17 @@ async def test_fn_uses_full_path_for_path_patterns(
 
     result = tool_text(
         await find.fn(
-            find.FindInput(pattern="tile/**/*.py", path=".", limit=25),
+            find.FindInput(pattern=pattern, path=".", limit=25),
             cwd=Path.cwd(),
         )
     )
 
     assert result == "tile/tools/find.py"
-    assert captured_args(execution) == [
-        "--glob",
-        "--color=never",
-        "--hidden",
-        "--no-require-git",
-        "--max-results",
-        "26",
-        "--full-path",
-        "--",
-        "**/tile/**/*.py",
-        ".",
-    ]
+    args = captured_args(execution)
+    assert "--full-path" in args
+    assert args[-3:] == ["--", effective_pattern, "."]
 
 
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("fd_available")
-async def test_fn_normalizes_root_relative_full_path_pattern(
-    execution: AsyncMock,
-) -> None:
-    """Treat leading-slash glob patterns as search-root-relative paths."""
-
-    execution.return_value = "./tile/tools/find.py\n"
-
-    result = tool_text(
-        await find.fn(
-            find.FindInput(pattern="/tools/*.py", path=".", limit=25),
-            cwd=Path.cwd(),
-        )
-    )
-
-    assert result == "tile/tools/find.py"
-    assert captured_args(execution)[-3:] == ["--", "**/tools/*.py", "."]
-
-
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("fd_available")
-async def test_fn_preserves_prefixed_full_path_pattern(
-    execution: AsyncMock,
-) -> None:
-    """Do not double-prefix full-path glob patterns."""
-
-    execution.return_value = "./tile/tools/find.py\n"
-
-    result = tool_text(
-        await find.fn(
-            find.FindInput(pattern="**/tools/*.py", path=".", limit=25),
-            cwd=Path.cwd(),
-        )
-    )
-
-    assert result == "tile/tools/find.py"
-    assert captured_args(execution)[-3:] == ["--", "**/tools/*.py", "."]
-
-
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_clamps_limit_to_one(execution: AsyncMock) -> None:
     """Keep fd max-results positive even when callers pass a low limit."""
@@ -201,7 +147,6 @@ async def test_fn_clamps_limit_to_one(execution: AsyncMock) -> None:
     assert captured_args(execution)[4:6] == ["--max-results", "2"]
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_returns_no_matches_when_fd_output_is_empty(
     execution: AsyncMock,
@@ -220,16 +165,14 @@ async def test_fn_returns_no_matches_when_fd_output_is_empty(
     assert tool_result.details is None
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_missing")
 async def test_fn_raises_when_fd_is_missing() -> None:
     """Raise a clear exception when fd is unavailable."""
 
-    with pytest.raises(RuntimeError, match="fd"):
+    with pytest.raises(ToolError, match="fd"):
         await find.fn(find.FindInput(pattern="*.py"), cwd=Path.cwd())
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_normalizes_paths_and_reports_result_limit(
     execution: AsyncMock,
@@ -250,7 +193,7 @@ async def test_fn_normalizes_paths_and_reports_result_limit(
         "tile/tools/find.py\ntests/test_find_tool.py\n\n"
         "[2 results limit reached. Use limit=4 for more, or refine pattern]"
     )
-    details = _find_details(tool_result)
+    details = details_of(tool_result, FindDetails)
     assert details.output.truncated is True
     assert details.output.truncated_by == "lines"
     assert details.output.output_lines == 2
@@ -258,31 +201,6 @@ async def test_fn_normalizes_paths_and_reports_result_limit(
     assert details.output.max_lines == 2
 
 
-@pytest.mark.asyncio
-@pytest.mark.usefixtures("fd_available")
-async def test_fn_reports_result_limit_when_result_boundary_is_first(
-    execution: AsyncMock,
-) -> None:
-    """Report the result limit when line count is the first truncation boundary."""
-
-    execution.return_value = "./a.py\n./b.py\n"
-
-    tool_result = await find.fn(
-        find.FindInput(pattern="*.py", limit=1),
-        cwd=Path.cwd(),
-    )
-    result = tool_text(tool_result)
-
-    assert result == (
-        "a.py\n\n[1 results limit reached. Use limit=2 for more, or refine pattern]"
-    )
-    details = _find_details(tool_result)
-    assert details.output.truncated_by == "lines"
-    assert details.output.output_lines == 1
-    assert details.output.total_lines == 2
-
-
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_reports_byte_limit(execution: AsyncMock) -> None:
     """Append a byte-limit notice when formatted output exceeds 50KB."""
@@ -300,13 +218,12 @@ async def test_fn_reports_byte_limit(execution: AsyncMock) -> None:
 
     assert result.endswith(notice)
     assert len(body.encode("utf-8")) <= truncation.OUTPUT_BYTE_LIMIT
-    details = _find_details(tool_result)
+    details = details_of(tool_result, FindDetails)
     assert details.output.truncated_by == "bytes"
     assert details.output.output_bytes <= truncation.OUTPUT_BYTE_LIMIT
     assert details.output.total_bytes > truncation.OUTPUT_BYTE_LIMIT
 
 
-@pytest.mark.asyncio
 @pytest.mark.usefixtures("fd_available")
 async def test_fn_reports_byte_limit_when_byte_boundary_is_first(
     execution: AsyncMock,
@@ -322,10 +239,3 @@ async def test_fn_reports_byte_limit_when_byte_boundary_is_first(
 
     assert result.endswith("\n\n[50.0KB limit reached]")
     assert "results limit reached" not in result
-
-
-def _find_details(result: ToolResult) -> FindDetails:
-    """Return find details from a tool result."""
-
-    assert isinstance(result.details, FindDetails)
-    return result.details

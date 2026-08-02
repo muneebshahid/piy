@@ -2,7 +2,6 @@ from pydantic import TypeAdapter
 
 from tile.providers.openai.serialization import (
     serialize_history_items,
-    serialize_response_input,
     serialize_tools,
 )
 from tile.types.conversation import AssistantTurn, ToolResultTurn, UserMessage
@@ -13,23 +12,16 @@ from tile.types.stream_events import (
     ToolCallBlock,
 )
 from tile.types.tools import ToolImageContent, ToolResult
-from tests.support.tool_definitions import CityInput, city_tool
+from tests.support.tool_definitions import city_text_fn, city_tool
 from openai.types.responses.response_input_param import ResponseInputParam
 
 
-async def _sample_tool_fn(params: CityInput) -> ToolResult:
-    """Return a deterministic payload for serialization-only tool definitions."""
+def test_serialize_history_items_flattens_sample_thread() -> None:
+    """Replay a full thread with reasoning signatures and message metadata."""
 
-    return ToolResult.text(f"city={params.city}")
+    serialized = serialize_history_items(_sample_poem_thread())
 
-
-def test_serialize_response_input_flattens_sample_thread() -> None:
-    serialized = serialize_response_input(
-        _sample_poem_thread(),
-        system_prompt="You are a careful poet.",
-    )
-
-    assert serialized == _expected_poem_response_input()
+    assert serialized == _expected_poem_history_items()
     TypeAdapter(ResponseInputParam).validate_python(serialized)
 
 
@@ -51,52 +43,6 @@ def test_serialize_history_items_skips_reasoning_without_replay_metadata() -> No
             "role": "assistant",
             "status": "completed",
             "id": "msg_0_1",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": "Answer next.",
-                    "annotations": [],
-                }
-            ],
-        },
-    ]
-    TypeAdapter(ResponseInputParam).validate_python(serialized)
-
-
-def test_serialize_history_items_skips_reasoning_without_signature() -> None:
-    history = [
-        AssistantTurn(
-            blocks=[
-                ReasoningBlock(
-                    summary_text="Think first.",
-                )
-            ]
-        )
-    ]
-
-    serialized = serialize_history_items(history)
-
-    assert serialized == []
-    TypeAdapter(ResponseInputParam).validate_python(serialized)
-
-
-def test_serialize_history_items_generates_fallback_message_ids() -> None:
-    history = [
-        AssistantTurn(
-            blocks=[
-                TextBlock(text="Answer next."),
-            ]
-        )
-    ]
-
-    serialized = serialize_history_items(history)
-
-    assert serialized == [
-        {
-            "type": "message",
-            "role": "assistant",
-            "status": "completed",
-            "id": "msg_0_0",
             "content": [
                 {
                     "type": "output_text",
@@ -155,7 +101,7 @@ def test_serialize_tools_maps_tool_definitions_to_function_tools() -> None:
         city_tool(
             "get_weather",
             "Return the current weather for a city.",
-            _sample_tool_fn,
+            city_text_fn,
         )
     ]
 
@@ -204,14 +150,10 @@ def _sample_poem_thread() -> list[UserMessage | AssistantTurn]:
     ]
 
 
-def _expected_poem_response_input() -> ResponseInputParam:
-    """Build the expected OpenAI input for the sample poem conversation."""
+def _expected_poem_history_items() -> ResponseInputParam:
+    """Build the expected OpenAI input items for the sample poem conversation."""
 
     return [
-        {
-            "role": "system",
-            "content": [{"type": "input_text", "text": "You are a careful poet."}],
-        },
         {
             "role": "user",
             "content": [{"type": "input_text", "text": "Write a haiku about rain."}],

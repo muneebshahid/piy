@@ -1,6 +1,6 @@
 import json
 from collections.abc import Sequence
-from typing import Literal, cast
+from typing import cast
 
 from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.easy_input_message_param import EasyInputMessageParam
@@ -47,21 +47,6 @@ from tile.types.tools import (
 )
 
 
-def serialize_response_input(
-    history: Sequence[ConversationItem],
-    *,
-    system_prompt: str | None = None,
-    system_role: Literal["system", "developer"] = "system",
-) -> ResponseInputParam:
-    """Serialize conversation history into OpenAI Responses input items."""
-
-    items: ResponseInputParam = []
-    if system_prompt:
-        items.append(_serialize_system_prompt(system_prompt, system_role))
-    items.extend(serialize_history_items(history))
-    return items
-
-
 def serialize_history_items(
     history: Sequence[ConversationItem],
 ) -> ResponseInputParam:
@@ -94,16 +79,6 @@ def serialize_tools(
     """Serialize app tool definitions into OpenAI Responses function tools."""
 
     return [_serialize_tool_definition(tool) for tool in tools]
-
-
-def _serialize_system_prompt(
-    system_prompt: str,
-    system_role: Literal["system", "developer"],
-) -> EasyInputMessageParam:
-    return {
-        "role": system_role,
-        "content": [_build_input_text(system_prompt)],
-    }
 
 
 def _serialize_user_message(

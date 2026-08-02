@@ -1,6 +1,7 @@
 """Concurrency tests for the unified SQLite Store."""
 
 import sqlite3
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -17,16 +18,51 @@ from tile import (
 )
 from tile.store import SQLiteStore
 from tile.types import UserMessage
-from tests.support.store import create_session, start_run
+from tests.support.store import seed_database, start_run
+
+
+def _finish_run(store: SQLiteStore) -> RunRecord:
+    """Finish the shared run with one committed history item."""
+
+    return store.finish_run(
+        session_id="session-1",
+        run_id="run-1",
+        outcome=Completed(value="done"),
+        history_delta=[UserMessage(content="hello")],
+    )
+
+
+def _assert_no_run_admitted(store: SQLiteStore) -> None:
+    """Assert the failed start committed no run."""
+
+    assert store.list_runs("session-1") == ()
+
+
+def _assert_start_retry_succeeds(store: SQLiteStore) -> None:
+    """Assert admission succeeds once the reader releases its lock."""
+
+    assert start_run(store).run.status == "running"
+
+
+def _assert_run_still_running(store: SQLiteStore) -> None:
+    """Assert the failed finish left the run active with no history."""
+
+    assert store.get_run(session_id="session-1", run_id="run-1").status == "running"
+    assert store.get_history("session-1") == ()
+
+
+def _assert_finish_retry_succeeds(store: SQLiteStore) -> None:
+    """Assert finalization succeeds once the reader releases its lock."""
+
+    assert _finish_run(store).status == "completed"
+    assert len(store.get_history("session-1")) == 1
 
 
 def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None:
     """Serialize competing starts across independent Store instances."""
 
     database_path = tmp_path / "starts.db"
-    seed = SQLiteStore(database_path)
-    create_session(seed, session_id="session-1")
-    seed.close()
+    seed_database(database_path)
     barrier = Barrier(2)
 
     def start(run_id: str) -> str:
@@ -35,13 +71,7 @@ def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None
         store = SQLiteStore(database_path)
         try:
             barrier.wait()
-            store.start_run(
-                session_id="session-1",
-                run_id=run_id,
-                prompt=run_id,
-                model="gpt-5.4",
-                provider="test",
-            )
+            start_run(store, run_id=run_id, prompt=run_id)
             return "started"
         except ActiveRunError:
             return "busy"
@@ -64,10 +94,7 @@ def test_concurrent_durable_aborts_are_idempotent(tmp_path: Path) -> None:
     """Allow exactly one escape-hatch caller to transition the active run."""
 
     database_path = tmp_path / "aborts.db"
-    seed = SQLiteStore(database_path)
-    create_session(seed, session_id="session-1")
-    start_run(seed)
-    seed.close()
+    seed_database(database_path, running_run=True)
     barrier = Barrier(2)
 
     def abort(_: int) -> str:
@@ -100,7 +127,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
     """Keep completion or durable abort intact according to transaction order."""
 
     database_path = tmp_path / "finish-abort.db"
-    _seed_running_run(database_path)
+    seed_database(database_path, running_run=True)
     barrier = Barrier(2)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -112,45 +139,45 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
     _assert_finish_abort_winner(database_path, finish_result, abort_result)
 
 
-def test_failed_start_commit_rolls_back_and_store_recovers(tmp_path: Path) -> None:
-    """Clean the connection after a reader prevents admission from committing."""
+@pytest.mark.parametrize(
+    ("running_run", "attempt", "assert_unchanged", "assert_recovered"),
+    [
+        pytest.param(
+            False,
+            start_run,
+            _assert_no_run_admitted,
+            _assert_start_retry_succeeds,
+            id="start",
+        ),
+        pytest.param(
+            True,
+            _finish_run,
+            _assert_run_still_running,
+            _assert_finish_retry_succeeds,
+            id="finish",
+        ),
+    ],
+)
+def test_failed_commit_rolls_back_and_store_recovers(
+    tmp_path: Path,
+    running_run: bool,
+    attempt: Callable[[SQLiteStore], object],
+    assert_unchanged: Callable[[SQLiteStore], None],
+    assert_recovered: Callable[[SQLiteStore], None],
+) -> None:
+    """Recover cleanly after a reader prevents a write from committing."""
 
-    database_path = tmp_path / "start-commit.db"
-    seed = SQLiteStore(database_path)
-    create_session(seed, session_id="session-1")
-    seed.close()
+    database_path = tmp_path / "failed-commit.db"
+    seed_database(database_path, running_run=running_run)
     store = _contention_store(database_path)
     reader = _hold_read_transaction(database_path)
 
     try:
         with pytest.raises(StorePersistenceError, match="database is locked"):
-            start_run(store)
-        assert not store._connection.in_transaction
-        assert store.list_runs("session-1") == ()
+            attempt(store)
+        assert_unchanged(store)
         reader.rollback()
-        assert start_run(store).run.status == "running"
-    finally:
-        reader.close()
-        store.close()
-
-
-def test_failed_finish_commit_rolls_back_and_store_recovers(tmp_path: Path) -> None:
-    """Restore running state after a reader prevents finalization from committing."""
-
-    database_path = tmp_path / "finish-commit.db"
-    _seed_running_run(database_path)
-    store = _contention_store(database_path)
-    reader = _hold_read_transaction(database_path)
-
-    try:
-        with pytest.raises(StorePersistenceError, match="database is locked"):
-            _finish_run(store)
-        assert not store._connection.in_transaction
-        assert store.get_run("session-1", "run-1").status == "running"
-        assert store.get_history("session-1") == ()
-        reader.rollback()
-        assert _finish_run(store).status == "completed"
-        assert len(store.get_history("session-1")) == 1
+        assert_recovered(store)
     finally:
         reader.close()
         store.close()
@@ -219,25 +246,3 @@ def _hold_read_transaction(database_path: Path) -> sqlite3.Connection:
     reader.execute("BEGIN")
     reader.execute("SELECT id FROM sessions").fetchall()
     return reader
-
-
-def _finish_run(store: SQLiteStore) -> RunRecord:
-    """Finish the shared run with one committed history item."""
-
-    return store.finish_run(
-        session_id="session-1",
-        run_id="run-1",
-        outcome=Completed(value="done"),
-        history_delta=[UserMessage(content="hello")],
-    )
-
-
-def _seed_running_run(database_path: Path) -> None:
-    """Create the shared run used by a finish-versus-abort race."""
-
-    seed = SQLiteStore(database_path)
-    try:
-        create_session(seed, session_id="session-1")
-        start_run(seed)
-    finally:
-        seed.close()

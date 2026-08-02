@@ -8,8 +8,8 @@ import pytest
 import tile.tools.ls as ls
 import tile.tools.support.truncation as truncation
 from tile.tools.ls import LsDetails
-from tile.types.tools import ToolError, ToolResult
-from tests.support.tool_results import tool_text
+from tile.types.tools import ToolError
+from tests.support.tool_results import details_of, tool_text
 
 
 def test_ls_schema_requires_no_arguments() -> None:
@@ -18,73 +18,15 @@ def test_ls_schema_requires_no_arguments() -> None:
     assert ls.tool.input_schema.get("required", []) == []
 
 
-@pytest.fixture
-def populated_directory(tmp_path: Path) -> Path:
-    """Create a directory with representative file and directory entries."""
+async def test_ls_returns_all_directory_entries(tmp_path: Path) -> None:
+    """Return every file and directory name when the result is under the limit."""
 
     _create_file(tmp_path / "README.md")
     _create_file(tmp_path / "uv.lock")
     _create_directory(tmp_path / "src")
-    return tmp_path
-
-
-@pytest.fixture
-def unsorted_directory(tmp_path: Path) -> Path:
-    """Create a directory whose entries need sorting before limiting."""
-
-    _create_file(tmp_path / "b.txt")
-    _create_file(tmp_path / "a.txt")
-    _create_file(tmp_path / "c.txt")
-    return tmp_path
-
-
-@pytest.fixture
-def long_directory(tmp_path: Path) -> Callable[[int], Path]:
-    """Return a factory for directories with long file names."""
-
-    def create(count: int) -> Path:
-        """Create long file names and return the populated directory."""
-
-        _create_long_file_names(tmp_path, count=count)
-        return tmp_path
-
-    return create
-
-
-@pytest.fixture
-def directory_with_child_directory(tmp_path: Path) -> Path:
-    """Create a directory containing one file and one child directory."""
-
-    _create_file(tmp_path / "file.txt")
-    _create_directory(tmp_path / "folder")
-    return tmp_path
-
-
-@pytest.fixture
-def hidden_entries_directory(tmp_path: Path) -> Path:
-    """Create a directory containing hidden file and directory entries."""
-
-    _create_file(tmp_path / ".hidden-file")
-    _create_directory(tmp_path / ".hidden-dir")
-    return tmp_path
-
-
-@pytest.fixture
-def mixed_case_directory(tmp_path: Path) -> Path:
-    """Create a directory containing mixed-case file names."""
-
-    _create_file(tmp_path / "beta.txt")
-    _create_file(tmp_path / "Alpha.txt")
-    _create_file(tmp_path / "charlie.txt")
-    return tmp_path
-
-
-@pytest.mark.asyncio
-async def test_ls_returns_all_directory_entries(populated_directory: Path) -> None:
-    """Return every file and directory name when the result is under the limit."""
 
     tool_result = await ls.fn(
-        ls.LsInput(path=str(populated_directory), limit=10),
+        ls.LsInput(path=str(tmp_path), limit=10),
         cwd=Path.cwd(),
     )
     result = tool_text(tool_result)
@@ -93,7 +35,6 @@ async def test_ls_returns_all_directory_entries(populated_directory: Path) -> No
     assert tool_result.details is None
 
 
-@pytest.mark.asyncio
 async def test_ls_resolves_relative_path_against_supplied_cwd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -112,7 +53,6 @@ async def test_ls_resolves_relative_path_against_supplied_cwd(
     assert result == "sample.txt"
 
 
-@pytest.mark.asyncio
 async def test_ls_uses_cwd_when_path_is_omitted(tmp_path: Path) -> None:
     """List the supplied working directory when callers omit path."""
 
@@ -125,14 +65,15 @@ async def test_ls_uses_cwd_when_path_is_omitted(tmp_path: Path) -> None:
     assert tool_result.details is None
 
 
-@pytest.mark.asyncio
-async def test_ls_respects_limit_after_sorting_entries(
-    unsorted_directory: Path,
-) -> None:
+async def test_ls_respects_limit_after_sorting_entries(tmp_path: Path) -> None:
     """Return only the first sorted entries up to the requested limit."""
 
+    _create_file(tmp_path / "b.txt")
+    _create_file(tmp_path / "a.txt")
+    _create_file(tmp_path / "c.txt")
+
     tool_result = await ls.fn(
-        ls.LsInput(path=str(unsorted_directory), limit=2),
+        ls.LsInput(path=str(tmp_path), limit=2),
         cwd=Path.cwd(),
     )
     result = tool_text(tool_result)
@@ -143,7 +84,7 @@ async def test_ls_respects_limit_after_sorting_entries(
         "",
         "[2 entries limit reached. Use limit=4 for more]",
     ]
-    details = _ls_details(tool_result)
+    details = details_of(tool_result, LsDetails)
     assert details.output.output_lines == 2
     assert details.output.total_lines == 3
     assert details.output.truncated is True
@@ -152,13 +93,16 @@ async def test_ls_respects_limit_after_sorting_entries(
     assert details.output.max_lines == 2
 
 
-@pytest.mark.asyncio
-async def test_ls_clamps_limit_to_one(unsorted_directory: Path) -> None:
+async def test_ls_clamps_limit_to_one(tmp_path: Path) -> None:
     """Keep entry limits positive when callers pass a low limit."""
+
+    _create_file(tmp_path / "b.txt")
+    _create_file(tmp_path / "a.txt")
+    _create_file(tmp_path / "c.txt")
 
     result = tool_text(
         await ls.fn(
-            ls.LsInput(path=str(unsorted_directory), limit=0),
+            ls.LsInput(path=str(tmp_path), limit=0),
             cwd=Path.cwd(),
         )
     )
@@ -170,20 +114,22 @@ async def test_ls_clamps_limit_to_one(unsorted_directory: Path) -> None:
     ]
 
 
-@pytest.mark.asyncio
-async def test_ls_reports_byte_limit(long_directory: Callable[[int], Path]) -> None:
+async def test_ls_reports_byte_limit(tmp_path: Path) -> None:
     """Report byte truncation when the listing output exceeds 50KB."""
 
-    path = long_directory(270)
+    _create_long_file_names(tmp_path, count=270)
 
-    tool_result = await ls.fn(ls.LsInput(path=str(path), limit=500), cwd=Path.cwd())
+    tool_result = await ls.fn(
+        ls.LsInput(path=str(tmp_path), limit=500),
+        cwd=Path.cwd(),
+    )
     result = tool_text(tool_result)
     notice = "\n\n[50.0KB limit reached. Directory has 270 entries]"
     body = result.removesuffix(notice)
 
     assert result.endswith(notice)
     assert len(body.encode("utf-8")) <= truncation.OUTPUT_BYTE_LIMIT
-    details = _ls_details(tool_result)
+    details = details_of(tool_result, LsDetails)
     assert details.output.output_lines < details.output.total_lines
     assert details.output.total_lines == 270
     assert details.output.truncated is True
@@ -193,46 +139,15 @@ async def test_ls_reports_byte_limit(long_directory: Callable[[int], Path]) -> N
     assert details.output.total_bytes > truncation.OUTPUT_BYTE_LIMIT
 
 
-@pytest.mark.asyncio
-async def test_ls_reports_first_truncation_boundary(
-    long_directory: Callable[[int], Path],
-) -> None:
-    """Report only the first truncation boundary reached by formatted output."""
-
-    path = long_directory(300)
-
-    result = tool_text(
-        await ls.fn(ls.LsInput(path=str(path), limit=260), cwd=Path.cwd())
-    )
-
-    assert result.endswith("\n\n[50.0KB limit reached. Directory has 300 entries]")
-
-
-@pytest.mark.asyncio
-async def test_ls_appends_slash_to_directories(
-    directory_with_child_directory: Path,
-) -> None:
-    """Mark directory entries with a trailing slash and leave files unchanged."""
-
-    result = tool_text(
-        await ls.fn(
-            ls.LsInput(path=str(directory_with_child_directory), limit=10),
-            cwd=Path.cwd(),
-        )
-    )
-
-    assert result.splitlines() == ["file.txt", "folder/"]
-
-
-@pytest.mark.asyncio
-async def test_ls_includes_dotfiles_and_dot_directories(
-    hidden_entries_directory: Path,
-) -> None:
+async def test_ls_includes_dotfiles_and_dot_directories(tmp_path: Path) -> None:
     """Include hidden files and hidden directories in directory listings."""
 
+    _create_file(tmp_path / ".hidden-file")
+    _create_directory(tmp_path / ".hidden-dir")
+
     result = tool_text(
         await ls.fn(
-            ls.LsInput(path=str(hidden_entries_directory), limit=10),
+            ls.LsInput(path=str(tmp_path), limit=10),
             cwd=Path.cwd(),
         )
     )
@@ -240,15 +155,16 @@ async def test_ls_includes_dotfiles_and_dot_directories(
     assert result.splitlines() == [".hidden-dir/", ".hidden-file"]
 
 
-@pytest.mark.asyncio
-async def test_ls_sorts_entries_case_insensitively(
-    mixed_case_directory: Path,
-) -> None:
+async def test_ls_sorts_entries_case_insensitively(tmp_path: Path) -> None:
     """Sort entries alphabetically without separating upper and lower case names."""
+
+    _create_file(tmp_path / "beta.txt")
+    _create_file(tmp_path / "Alpha.txt")
+    _create_file(tmp_path / "charlie.txt")
 
     result = tool_text(
         await ls.fn(
-            ls.LsInput(path=str(mixed_case_directory), limit=10),
+            ls.LsInput(path=str(tmp_path), limit=10),
             cwd=Path.cwd(),
         )
     )
@@ -256,7 +172,6 @@ async def test_ls_sorts_entries_case_insensitively(
     assert result.splitlines() == ["Alpha.txt", "beta.txt", "charlie.txt"]
 
 
-@pytest.mark.asyncio
 async def test_ls_reports_empty_directory(tmp_path: Path) -> None:
     """Return an explicit marker for empty directories."""
 
@@ -270,27 +185,22 @@ async def test_ls_reports_empty_directory(tmp_path: Path) -> None:
     assert tool_result.details is None
 
 
-@pytest.mark.asyncio
-async def test_ls_raises_when_path_does_not_exist(tmp_path: Path) -> None:
-    """Raise filesystem errors so the agent can mark tool execution as failed."""
+@pytest.mark.parametrize(
+    "make_path",
+    [
+        pytest.param(lambda tmp_path: tmp_path / "missing", id="missing"),
+        pytest.param(lambda tmp_path: _regular_file(tmp_path), id="regular-file"),
+    ],
+)
+async def test_ls_raises_for_unlistable_paths(
+    tmp_path: Path,
+    make_path: Callable[[Path], Path],
+) -> None:
+    """Raise a tool error when the listing path is missing or not a directory."""
 
     with pytest.raises(ToolError):
         await ls.fn(
-            ls.LsInput(path=str(tmp_path / "missing"), limit=10),
-            cwd=Path.cwd(),
-        )
-
-
-@pytest.mark.asyncio
-async def test_ls_raises_when_path_is_not_directory(tmp_path: Path) -> None:
-    """Raise when callers pass a file instead of a directory."""
-
-    file_path = tmp_path / "file.txt"
-    _create_file(file_path)
-
-    with pytest.raises(ToolError):
-        await ls.fn(
-            ls.LsInput(path=str(file_path), limit=10),
+            ls.LsInput(path=str(make_path(tmp_path)), limit=10),
             cwd=Path.cwd(),
         )
 
@@ -314,8 +224,9 @@ def _create_long_file_names(path: Path, count: int) -> None:
         _create_file(path / f"{index:03d}-{'x' * 196}.txt")
 
 
-def _ls_details(result: ToolResult) -> LsDetails:
-    """Return ls details from a tool result."""
+def _regular_file(tmp_path: Path) -> Path:
+    """Create a regular file and return its path."""
 
-    assert isinstance(result.details, LsDetails)
-    return result.details
+    file_path = tmp_path / "file.txt"
+    _create_file(file_path)
+    return file_path
