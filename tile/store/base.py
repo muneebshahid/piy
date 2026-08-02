@@ -16,8 +16,8 @@ class ActiveRunError(StoreError):
     """Raised when a session already owns a running run."""
 
 
-class StaleRunError(StoreError):
-    """Raised when a superseded or finalized run attempts to mutate state."""
+class RunAlreadyEndedError(StoreError):
+    """Raised when a terminal run receives another terminal transition."""
 
 
 class SessionAlreadyExistsError(StoreError, ValueError):
@@ -121,7 +121,7 @@ class Store(Protocol):
 
         The caller owns the terminal outcome and valid history delta.
         Implementations load the authoritative run identity and own terminal
-        record construction, stale-run fencing, and all-or-nothing persistence.
+        record construction, ended-run fencing, and all-or-nothing persistence.
         """
         ...
 

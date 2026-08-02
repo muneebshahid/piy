@@ -85,7 +85,7 @@ def test_harness_accepts_a_different_configured_provider_per_prompt() -> None:
     store.close()
 
 
-def test_repository_recovery_fences_a_local_run_and_unblocks_the_harness() -> None:
+def test_repository_escape_hatch_fences_a_local_run_and_unblocks_harness() -> None:
     """Reconcile local work to a durable abort before running a successor."""
 
     store = SQLiteStore(in_memory=True)
@@ -95,12 +95,12 @@ def test_repository_recovery_fences_a_local_run_and_unblocks_the_harness() -> No
     async def run() -> tuple[
         RunRecord | None, RunOutcome | Faulted, RunOutcome | Faulted
     ]:
-        """Recover a blocked run and wait for both terminal results."""
+        """Abort a blocked durable record and wait for both terminal results."""
 
         release = asyncio.Event()
         first_transport = GatedProviderStreamMock([release])
         second_transport = ProviderStreamMock(
-            [final_text_stream("response-2", "replacement")]
+            [final_text_stream("response-2", "retry")]
         )
         harness = AgentHarness(session=session, cwd=Path("."))
         first = await harness.prompt("first", provider=_provider(first_transport))
@@ -116,9 +116,9 @@ def test_repository_recovery_fences_a_local_run_and_unblocks_the_harness() -> No
     aborted, first_result, second_result = asyncio.run(run())
 
     assert aborted is not None
-    assert aborted.outcome == Aborted(reason="recovered")
-    assert first_result == Aborted(reason="recovered")
-    assert second_result == Completed(value="replacement")
+    assert aborted.outcome == Aborted(reason="cancelled")
+    assert first_result == Aborted(reason="cancelled")
+    assert second_result == Completed(value="retry")
     assert [
         item.content for item in session.get_history() if isinstance(item, UserMessage)
     ] == ["second"]

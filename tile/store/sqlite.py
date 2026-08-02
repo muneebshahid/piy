@@ -13,11 +13,11 @@ from tile._sqlite import immediate_transaction, resolve_connection_target
 from tile.result import Aborted, RunOutcome
 from tile.store.base import (
     ActiveRunError,
+    RunAlreadyEndedError,
     RunAlreadyExistsError,
     RunNotFoundError,
     SessionAlreadyExistsError,
     SessionNotFoundError,
-    StaleRunError,
     StoreError,
     StoreOperation,
     StorePersistenceError,
@@ -152,7 +152,7 @@ class SQLiteStore:
             with immediate_transaction(self._connection):
                 run = self._get_run(run_id)
                 if run.status != "running":
-                    raise StaleRunError(f"Run is no longer active: {run_id}")
+                    raise RunAlreadyEndedError(f"Run already ended: {run_id}")
                 record = run.finish(outcome=outcome)
                 self._update_running_run(record)
                 self._insert_history_delta(record, history_delta)
@@ -168,7 +168,7 @@ class SQLiteStore:
                 active = self._running_run_for_session(session_id)
                 if active is None:
                     return None
-                record = active.finish(outcome=Aborted(reason="recovered"))
+                record = active.finish(outcome=Aborted())
                 self._update_running_run(record)
                 self._touch_session(record)
         return record
@@ -338,7 +338,7 @@ class SQLiteStore:
             terminal_run_values(record),
         )
         if cursor.rowcount == 0:
-            raise StaleRunError(f"Run is no longer active: {record.id}")
+            raise RunAlreadyEndedError(f"Run already ended: {record.id}")
 
     def _insert_history_delta(
         self,

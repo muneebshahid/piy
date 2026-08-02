@@ -75,7 +75,7 @@ def test_session_scopes_atomic_run_lifecycle_operations() -> None:
 
 
 def test_repository_durably_aborts_the_active_run_by_session_id() -> None:
-    """Expose idempotent recovery without implying local task cancellation."""
+    """Expose an idempotent escape hatch without implying task cancellation."""
 
     store = SQLiteStore(in_memory=True)
     repository = SessionRepository(store)
@@ -86,7 +86,7 @@ def test_repository_durably_aborts_the_active_run_by_session_id() -> None:
 
     assert aborted is not None
     assert aborted.id == started.run.id
-    assert aborted.outcome == Aborted(reason="recovered")
+    assert aborted.outcome == Aborted(reason="cancelled")
     assert repository.abort_active_run("session-1") is None
     store.close()
 

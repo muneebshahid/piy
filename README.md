@@ -195,13 +195,12 @@ record = next(record for record in session.get_runs() if record.id == run.id)
 session_records = session.get_runs()
 ```
 
-`finish_run` uses the run's `status="running"` condition as a stale-writer
-fence. If repository recovery already aborted the run, its handle reconciles
-to the authoritative stored outcome. If the terminal write fails because of a
-backend error, the transaction rolls back, the stored run remains `running`,
-and `RunHandle.wait()` returns `Faulted`. The running record blocks later
-prompts with `ActiveRunError`. After resolving the persistence issue, recovery
-explicitly aborts that durable record; the same harness can then be reused.
+`finish_run` uses the run's `status="running"` condition as an ended-run fence.
+If the escape hatch already aborted the record, its handle returns the
+authoritative stored outcome. If the terminal write fails because of a backend
+error, the transaction rolls back, the stored run remains `running`, and
+`RunHandle.wait()` returns `Faulted`. The running record blocks later prompts
+with `ActiveRunError`.
 
 ```python
 aborted = repository.abort_active_run(session.id)
@@ -213,11 +212,12 @@ retry = await harness.prompt(
 )
 ```
 
-`abort_active_run` atomically marks a still-running record as
-`Aborted(reason="recovered")`; it returns `None` when no run is active. This is
-a durable recovery operation, not process control: an old task may continue,
-but stale-write fencing prevents it from committing. Call `RunHandle.abort()`
-separately when the local handle is still available.
+`abort_active_run` is a temporary escape hatch for clearing a durable record
+after its persistence problem has been resolved. It atomically records
+`Aborted(reason="cancelled")` and returns `None` when no run is active. It is not
+process control: an old task may continue, but ended-run fencing prevents it
+from committing. Normal callers should use `RunHandle.abort()` when the local
+handle is available.
 
 Forking creates a new session and copies its complete committed history into
 new history rows. Run records are not copied:
@@ -299,8 +299,7 @@ it means the harness could not durably establish the terminal outcome.
 | `complete` validates | `Completed(value=model instance)` |
 | `fail(reason)` or reminder cap | `Failed(cause=AgentFailure(...))` |
 | Provider dies | `Failed(cause=ExecutionFailure(...))` |
-| Explicit cancellation | `Aborted(reason="cancelled")` |
-| Durable recovery | authoritative `Aborted(reason="recovered")` |
+| Local or durable abort | `Aborted(reason="cancelled")` |
 | Atomic finalization fails | `Faulted(error=StorePersistenceError(...))` |
 
 A provider death never corrupts the session: partial turns are dropped, history
@@ -392,6 +391,7 @@ from tile import (
     Faulted,
     HistoryItem,
     Provider,
+    RunAlreadyEndedError,
     RunHandle,
     RunRecord,
     Session,
@@ -446,7 +446,7 @@ Development proceeds in validation-gated releases:
 
 1. **Stable local runtime** (v0.1.0, shipped) — packaging, CI, typed results.
 2. **Persistent sessions and run records** (current) — atomic run lifecycle,
-   committed history, recovery fencing, and flat session forks.
+   committed history, ended-run fencing, and flat session forks.
 3. **Multi-provider support** — hoist the normalized provider layer behind a
    conformance suite; Anthropic and ChatGPT-subscription providers.
 4. **Downstream app validation** — a real application built on the embedded

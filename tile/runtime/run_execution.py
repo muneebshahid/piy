@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from typing import cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -11,7 +12,6 @@ from pydantic import BaseModel
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent, RunStartEvent
 from tile.exceptions import TurnFailedError
 from tile.result import (
-    AbortReason,
     Aborted,
     ExecutionFailure,
     Failed,
@@ -22,7 +22,7 @@ from tile.result import (
 from tile.runtime.execution import _ExecutionDependencies, execute_prompt
 from tile.runtime.history import _RunHistory
 from tile.sessions import Session
-from tile.store.base import StaleRunError
+from tile.store.base import RunAlreadyEndedError
 from tile.store.models import HistoryItem, RunRecord
 
 
@@ -76,7 +76,6 @@ class RunExecution:
         self._events: list[AgentEvent] = []
         self._history = _RunHistory.start(committed_history, prompt=record.prompt)
         self._result: RunResult | None = None
-        self._abort_reason: AbortReason | None = None
         self._changed = asyncio.Event()
         self._finalized = asyncio.Event()
         self._task: asyncio.Task[RunOutcome] | None = None
@@ -118,7 +117,7 @@ class RunExecution:
     def abort(self) -> None:
         """Request explicit cancellation of this run."""
 
-        self._cancel(reason="cancelled")
+        self._cancel()
 
     def _begin(self) -> None:
         """Start the task for an already durably accepted run."""
@@ -134,14 +133,13 @@ class RunExecution:
         )
         self._task.add_done_callback(self._finalize)
 
-    def _cancel(self, *, reason: AbortReason) -> None:
-        """Cancel unfinished execution with its durable abort reason."""
+    def _cancel(self) -> None:
+        """Cancel unfinished execution."""
 
         if self._task is None:
             raise RuntimeError("Run execution has not started.")
         if self._task.done():
             return
-        self._abort_reason = reason
         self._task.cancel()
 
     def _emit(self, event: AgentEvent) -> None:
@@ -161,7 +159,6 @@ class RunExecution:
         self._result = result
         self._append_terminal_event(result)
         self._finalized.set()
-        self._changed.set()
 
     def _finish(self, task: asyncio.Task[RunOutcome]) -> RunResult:
         """Derive, heal, and durably commit one terminal outcome."""
@@ -174,29 +171,25 @@ class RunExecution:
                 outcome=outcome,
                 history_delta=self._history.conversation_items(),
             )
-        except StaleRunError as error:
-            return self._reconcile_stale(error)
-        if record.outcome is None:
-            raise RuntimeError("Store returned a running record after finalization.")
-        return record.outcome
+        except RunAlreadyEndedError:
+            return self._ended_outcome()
+        return cast("RunOutcome", record.outcome)
 
     def _terminal_outcome(self, task: asyncio.Task[RunOutcome]) -> RunOutcome:
         """Derive a serializable outcome from this execution's task state."""
 
         if task.cancelled():
-            return Aborted(reason=self._abort_reason or "cancelled")
+            return Aborted()
         error = task.exception()
         if error is not None:
             return Failed(cause=_execution_failure(error))
         return task.result()
 
-    def _reconcile_stale(self, stale_error: StaleRunError) -> RunResult:
-        """Return the authoritative terminal outcome after a stale write."""
+    def _ended_outcome(self) -> RunOutcome:
+        """Return the authoritative outcome of an already-ended run."""
 
         record = self._session._get_run(self.id)
-        if record.outcome is None:
-            return Faulted(error=stale_error)
-        return record.outcome
+        return cast("RunOutcome", record.outcome)
 
     def _append_terminal_event(self, result: RunResult) -> None:
         """Close the live event log with a durable end or harness fault."""

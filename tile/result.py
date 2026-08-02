@@ -52,7 +52,7 @@ class Completed(BaseModel):
 
 
 ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
-AbortReason: TypeAlias = Literal["cancelled", "recovered"]
+AbortReason: TypeAlias = Literal["cancelled"]
 
 
 class AgentFailure(BaseModel):

@@ -414,7 +414,7 @@ def test_durable_abort_fences_old_history_and_runs_the_successor() -> None:
         provider = GatedProviderStreamMock([first_release, second_release])
         store = SQLiteStore(in_memory=True)
         repository = SessionRepository(store)
-        session = repository.create(session_id="recover")
+        session = repository.create(session_id="escape-hatch")
         harness = AgentHarness(session=session, cwd=Path("."))
         configured_provider = provider
         first = await harness.prompt("first", provider=configured_provider)
@@ -426,15 +426,15 @@ def test_durable_abort_fences_old_history_and_runs_the_successor() -> None:
         second_release.set()
         assert isinstance(await second.wait(), Completed)
         first_release.set()
-        assert await first.wait() == Aborted(reason="recovered")
+        assert await first.wait() == Aborted(reason="cancelled")
         assert aborted is not None
-        assert aborted.outcome == Aborted(reason="recovered")
+        assert aborted.outcome == Aborted(reason="cancelled")
         assert [
             item.content
             for item in session.get_history()
             if isinstance(item, UserMessage)
         ] == ["second"]
-        assert store.get_run(first.id).outcome == Aborted(reason="recovered")
+        assert store.get_run(first.id).outcome == Aborted(reason="cancelled")
         store.close()
 
     asyncio.run(_run())
@@ -449,9 +449,7 @@ def test_durable_abort_works_across_harness_instances(tmp_path: Path) -> None:
         second_store = SQLiteStore(database_path)
         first_release = asyncio.Event()
         first_provider = GatedProviderStreamMock([first_release])
-        second_provider = ProviderStreamMock(
-            [final_text_stream("response-2", "replacement")]
-        )
+        second_provider = ProviderStreamMock([final_text_stream("response-2", "retry")])
         first_repository = SessionRepository(first_store)
         first_session = first_repository.create(session_id="shared")
         first_harness = AgentHarness(session=first_session, cwd=Path("."))
@@ -470,7 +468,7 @@ def test_durable_abort_works_across_harness_instances(tmp_path: Path) -> None:
         )
         assert isinstance(await second.wait(), Completed)
         first_release.set()
-        assert await first.wait() == Aborted(reason="recovered")
+        assert await first.wait() == Aborted(reason="cancelled")
         assert aborted is not None
         assert aborted.id == first.id
         assert [
@@ -502,15 +500,15 @@ def test_start_persistence_failure_raises_before_a_handle_exists() -> None:
     asyncio.run(_run())
 
 
-def test_atomic_finalization_failure_faults_handle_until_durable_recovery() -> None:
-    """Expose a finalization fault and reuse the harness after recovery."""
+def test_finalization_fault_requires_the_durable_abort_escape_hatch() -> None:
+    """Unblock the harness explicitly after a terminal persistence failure."""
 
     async def _run() -> None:
         store = _FailingFinishStore(in_memory=True)
         provider = ProviderStreamMock(
             [
                 final_text_stream("response-1", "lost"),
-                final_text_stream("response-2", "recovered"),
+                final_text_stream("response-2", "retry"),
             ]
         )
         repository = SessionRepository(store)
@@ -534,9 +532,9 @@ def test_atomic_finalization_failure_faults_handle_until_durable_recovery() -> N
         store.fail_finishes = False
         aborted = repository.abort_active_run(session.id)
         assert aborted is not None
-        assert aborted.outcome == Aborted(reason="recovered")
-        recovery = await harness.prompt("second", provider=configured_provider)
-        assert isinstance(await recovery.wait(), Completed)
+        assert aborted.outcome == Aborted(reason="cancelled")
+        retry = await harness.prompt("second", provider=configured_provider)
+        assert isinstance(await retry.wait(), Completed)
         store.close()
 
     asyncio.run(_run())

@@ -130,11 +130,6 @@ def test_conversation_item_is_discriminated_by_role() -> None:
             "aborted",
             id="cancelled",
         ),
-        pytest.param(
-            Aborted(reason="recovered"),
-            "aborted",
-            id="recovered",
-        ),
     ],
 )
 def test_run_record_derives_status_from_every_outcome(

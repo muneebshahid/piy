@@ -14,6 +14,7 @@ from tile import (
     Failed,
     FailureCause,
     Provider,
+    RunAlreadyEndedError,
     RunHandle,
     RunRecord,
     Session,
@@ -69,6 +70,7 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     assert ExecutionFailure.model_fields["origin"]
     assert get_args(ExecutionFailureOrigin) == ("turn", "execution")
     assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
+    assert issubclass(RunAlreadyEndedError, RuntimeError)
     assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]
     assert Aborted().type == "aborted"

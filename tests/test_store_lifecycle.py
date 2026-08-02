@@ -16,7 +16,7 @@ from tile import (
     RunAlreadyExistsError,
     SessionAlreadyExistsError,
     SessionNotFoundError,
-    StaleRunError,
+    RunAlreadyEndedError,
     StorePersistenceError,
 )
 from tile.store import SQLiteStore
@@ -160,7 +160,7 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates() -> None:
             )
 
         assert store.get_run("run-1").id == active.id
-        assert store.get_run("run-1").outcome == Aborted(reason="recovered")
+        assert store.get_run("run-1").outcome == Aborted(reason="cancelled")
     finally:
         store.close()
 
@@ -210,7 +210,7 @@ def test_start_run_rejects_terminal_record_before_checking_active() -> None:
 
 
 def test_abort_active_run_finishes_the_record_and_fences_late_writes() -> None:
-    """Durably recover a session and reject finalization by its old process."""
+    """Durably abort a record and reject finalization by its old process."""
 
     store = SQLiteStore(in_memory=True)
     try:
@@ -222,8 +222,8 @@ def test_abort_active_run_finishes_the_record_and_fences_late_writes() -> None:
         assert aborted is not None
         assert aborted.id == active.id
         assert aborted.status == "aborted"
-        assert aborted.outcome == Aborted(reason="recovered")
-        with pytest.raises(StaleRunError, match="run-1"):
+        assert aborted.outcome == Aborted(reason="cancelled")
+        with pytest.raises(RunAlreadyEndedError, match="run-1"):
             store.finish_run(
                 run_id=active.id,
                 outcome=Completed(value="late"),
@@ -319,7 +319,7 @@ def test_finish_run_rejects_a_second_terminal_transition() -> None:
             history_delta=[UserMessage(content="hello")],
         )
 
-        with pytest.raises(StaleRunError, match="run-1"):
+        with pytest.raises(RunAlreadyEndedError, match="run-1"):
             store.finish_run(
                 run_id="run-1",
                 outcome=Completed(value="rewritten"),

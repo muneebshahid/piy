@@ -20,7 +20,7 @@ result = await run.wait()
 ## Responsibilities
 
 - `SessionRepository` creates, gets, lists, forks, and deletes persistent
-  sessions. It also exposes durable active-run recovery by session id.
+  sessions. It temporarily exposes a durable active-run abort escape hatch.
 - `Session` is a lightweight, Store-bound handle. It exposes current metadata,
   committed history, and durable run records.
 - `AgentHarness` owns the tools, working directory, instructions, and prompt
@@ -47,15 +47,13 @@ matching `RunEndEvent`.
 If terminal persistence fails, `wait()` returns `Faulted` and the stream closes
 with `RunFaultEvent`. `Faulted` is not a persisted `RunOutcome`; the durable run
 may still be `running`, so the Store rejects another prompt with
-`ActiveRunError`. After fixing the persistence issue, recovery explicitly calls
-`SessionRepository.abort_active_run(session.id)`. The same harness can then be
-reused because it retains no fault state.
+`ActiveRunError`. After fixing the persistence issue, callers may use the
+temporary `SessionRepository.abort_active_run(session.id)` escape hatch. The
+same harness can then be reused because it retains no fault state.
 
-Durable recovery marks the running record as
-`Aborted(reason="recovered")`. It does not control a local task, but late
-finalization reconciles to the authoritative stored outcome. When a caller
-still owns the local handle, `RunHandle.abort()` remains the process-local
-cancellation operation.
+The escape hatch records `Aborted(reason="cancelled")`. It does not control a
+local task, but late finalization returns the authoritative stored outcome.
+Normal callers should use `RunHandle.abort()` for process-local cancellation.
 
 ## Result and state access
 

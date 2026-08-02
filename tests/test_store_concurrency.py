@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
-from tile import Aborted, ActiveRunError, Completed, StaleRunError
+from tile import Aborted, ActiveRunError, Completed, RunAlreadyEndedError
 from tile.store import SQLiteStore
 from tile.types import UserMessage
 from tests.support.store import create_session, run_record, start_run
@@ -51,7 +51,7 @@ def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None
 
 
 def test_concurrent_durable_aborts_are_idempotent(tmp_path: Path) -> None:
-    """Allow exactly one recovery caller to transition the active run."""
+    """Allow exactly one escape-hatch caller to transition the active run."""
 
     database_path = tmp_path / "aborts.db"
     seed = SQLiteStore(database_path)
@@ -79,7 +79,7 @@ def test_concurrent_durable_aborts_are_idempotent(tmp_path: Path) -> None:
         runs = reopened.list_runs("session-1")
         assert sorted(results) == ["aborted", "idle"]
         assert len(runs) == 1
-        assert runs[0].outcome == Aborted(reason="recovered")
+        assert runs[0].outcome == Aborted(reason="cancelled")
     finally:
         reopened.close()
 
@@ -87,14 +87,14 @@ def test_concurrent_durable_aborts_are_idempotent(tmp_path: Path) -> None:
 def test_finish_and_durable_abort_race_preserves_one_valid_winner(
     tmp_path: Path,
 ) -> None:
-    """Keep completion or recovery intact according to transaction order."""
+    """Keep completion or durable abort intact according to transaction order."""
 
     database_path = tmp_path / "finish-abort.db"
     _seed_running_run(database_path)
     barrier = Barrier(2)
 
     def finish() -> str:
-        """Race terminal completion against replacement."""
+        """Race terminal completion against the durable abort."""
 
         store = SQLiteStore(database_path)
         try:
@@ -105,13 +105,13 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
                 history_delta=[UserMessage(content="hello")],
             )
             return "finished"
-        except StaleRunError:
-            return "stale"
+        except RunAlreadyEndedError:
+            return "already-ended"
         finally:
             store.close()
 
     def abort() -> str:
-        """Race durable recovery against terminal completion."""
+        """Race the durable abort against terminal completion."""
 
         store = SQLiteStore(database_path)
         try:
@@ -136,7 +136,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
             assert len(reopened.get_history("session-1")) == 1
         else:
             assert abort_result == "aborted"
-            assert run.outcome == Aborted(reason="recovered")
+            assert run.outcome == Aborted(reason="cancelled")
             assert reopened.get_history("session-1") == ()
     finally:
         reopened.close()
