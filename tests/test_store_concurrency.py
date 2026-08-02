@@ -1,10 +1,20 @@
 """Concurrency tests for the unified SQLite Store."""
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
 
-from tile import Aborted, ActiveRunError, Completed, RunAlreadyEndedError
+import pytest
+
+from tile import (
+    Aborted,
+    ActiveRunError,
+    Completed,
+    RunAlreadyEndedError,
+    RunRecord,
+    StorePersistenceError,
+)
 from tile.store import SQLiteStore
 from tile.types import UserMessage
 from tests.support.store import create_session, start_run
@@ -93,40 +103,91 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
     _seed_running_run(database_path)
     barrier = Barrier(2)
 
-    def finish() -> str:
-        """Race terminal completion against the durable abort."""
-
-        store = SQLiteStore(database_path)
-        try:
-            barrier.wait()
-            store.finish_run(
-                session_id="session-1",
-                run_id="run-1",
-                outcome=Completed(value="done"),
-                history_delta=[UserMessage(content="hello")],
-            )
-            return "finished"
-        except RunAlreadyEndedError:
-            return "already-ended"
-        finally:
-            store.close()
-
-    def abort() -> str:
-        """Race the durable abort against terminal completion."""
-
-        store = SQLiteStore(database_path)
-        try:
-            barrier.wait()
-            record = store.abort_active_run("session-1")
-            return "aborted" if record is not None else "idle"
-        finally:
-            store.close()
-
     with ThreadPoolExecutor(max_workers=2) as executor:
-        finish_future = executor.submit(finish)
-        abort_future = executor.submit(abort)
+        finish_future = executor.submit(_race_finish, database_path, barrier)
+        abort_future = executor.submit(_race_abort, database_path, barrier)
         finish_result = finish_future.result()
         abort_result = abort_future.result()
+
+    _assert_finish_abort_winner(database_path, finish_result, abort_result)
+
+
+def test_failed_start_commit_rolls_back_and_store_recovers(tmp_path: Path) -> None:
+    """Clean the connection after a reader prevents admission from committing."""
+
+    database_path = tmp_path / "start-commit.db"
+    seed = SQLiteStore(database_path)
+    create_session(seed, session_id="session-1")
+    seed.close()
+    store = _contention_store(database_path)
+    reader = _hold_read_transaction(database_path)
+
+    try:
+        with pytest.raises(StorePersistenceError, match="database is locked"):
+            start_run(store)
+        assert not store._connection.in_transaction
+        assert store.list_runs("session-1") == ()
+        reader.rollback()
+        assert start_run(store).run.status == "running"
+    finally:
+        reader.close()
+        store.close()
+
+
+def test_failed_finish_commit_rolls_back_and_store_recovers(tmp_path: Path) -> None:
+    """Restore running state after a reader prevents finalization from committing."""
+
+    database_path = tmp_path / "finish-commit.db"
+    _seed_running_run(database_path)
+    store = _contention_store(database_path)
+    reader = _hold_read_transaction(database_path)
+
+    try:
+        with pytest.raises(StorePersistenceError, match="database is locked"):
+            _finish_run(store)
+        assert not store._connection.in_transaction
+        assert store.get_run("session-1", "run-1").status == "running"
+        assert store.get_history("session-1") == ()
+        reader.rollback()
+        assert _finish_run(store).status == "completed"
+        assert len(store.get_history("session-1")) == 1
+    finally:
+        reader.close()
+        store.close()
+
+
+def _race_finish(database_path: Path, barrier: Barrier) -> str:
+    """Race terminal completion against a durable abort."""
+
+    store = SQLiteStore(database_path)
+    try:
+        barrier.wait()
+        _finish_run(store)
+        return "finished"
+    except RunAlreadyEndedError:
+        return "already-ended"
+    finally:
+        store.close()
+
+
+def _race_abort(database_path: Path, barrier: Barrier) -> str:
+    """Race a durable abort against terminal completion."""
+
+    store = SQLiteStore(database_path)
+    try:
+        barrier.wait()
+        record = store.abort_active_run("session-1")
+        return "aborted" if record is not None else "idle"
+    finally:
+        store.close()
+
+
+def _assert_finish_abort_winner(
+    database_path: Path,
+    finish_result: str,
+    abort_result: str,
+) -> None:
+    """Assert the durable terminal state matches the transaction winner."""
 
     reopened = SQLiteStore(database_path)
     try:
@@ -141,6 +202,34 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
             assert reopened.get_history("session-1") == ()
     finally:
         reopened.close()
+
+
+def _contention_store(database_path: Path) -> SQLiteStore:
+    """Open a Store that reports lock contention without a long wait."""
+
+    store = SQLiteStore(database_path)
+    store._connection.execute("PRAGMA busy_timeout = 1")
+    return store
+
+
+def _hold_read_transaction(database_path: Path) -> sqlite3.Connection:
+    """Hold a shared database lock through an explicit read transaction."""
+
+    reader = sqlite3.connect(database_path, isolation_level=None)
+    reader.execute("BEGIN")
+    reader.execute("SELECT id FROM sessions").fetchall()
+    return reader
+
+
+def _finish_run(store: SQLiteStore) -> RunRecord:
+    """Finish the shared run with one committed history item."""
+
+    return store.finish_run(
+        session_id="session-1",
+        run_id="run-1",
+        outcome=Completed(value="done"),
+        history_delta=[UserMessage(content="hello")],
+    )
 
 
 def _seed_running_run(database_path: Path) -> None:
