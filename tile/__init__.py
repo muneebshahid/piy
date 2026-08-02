@@ -1,5 +1,7 @@
-"""Public Tile runtime facade."""
+"""Public Tile harness facade."""
 
+from tile.exceptions import TurnFailedError
+from tile.providers import Provider
 from tile.result import (
     AbortReason,
     Aborted,
@@ -9,13 +11,17 @@ from tile.result import (
     ExecutionFailureOrigin,
     Failed,
     FailureCause,
+    Faulted,
     RunOutcome,
+    RunResult,
 )
-from tile.runtime import AgentRuntime, RunHandle, RunReport, Session, TurnFailedError
+from tile.runtime import AgentHarness, RunHandle
+from tile.sessions import Session, SessionRepository
 from tile.store import (
     ActiveRunError,
     HistoryItem,
     InvalidHistoryError,
+    RunAlreadyEndedError,
     RunAlreadyExistsError,
     RunNotFoundError,
     RunRecord,
@@ -25,8 +31,6 @@ from tile.store import (
     SessionRecord,
     SQLiteStore,
     SQLiteStoreSchemaError,
-    StaleRunError,
-    StartedRun,
     Store,
     StoreError,
     StoreOperation,
@@ -39,20 +43,23 @@ __all__ = [
     "Aborted",
     "ActiveRunError",
     "AgentFailure",
-    "AgentRuntime",
+    "AgentHarness",
     "Completed",
     "ExecutionFailure",
     "ExecutionFailureOrigin",
     "Failed",
     "FailureCause",
+    "Faulted",
     "HistoryItem",
     "InvalidHistoryError",
+    "Provider",
+    "RunAlreadyEndedError",
     "RunAlreadyExistsError",
     "RunHandle",
     "RunNotFoundError",
     "RunOutcome",
-    "RunReport",
     "RunRecord",
+    "RunResult",
     "RunStatus",
     "SQLiteStore",
     "SQLiteStoreSchemaError",
@@ -60,8 +67,7 @@ __all__ = [
     "SessionAlreadyExistsError",
     "SessionNotFoundError",
     "SessionRecord",
-    "StaleRunError",
-    "StartedRun",
+    "SessionRepository",
     "Store",
     "StoreError",
     "StoreOperation",

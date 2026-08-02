@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
@@ -51,7 +52,7 @@ class Completed(BaseModel):
 
 
 ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
-AbortReason: TypeAlias = Literal["cancelled", "replaced"]
+AbortReason: TypeAlias = Literal["cancelled"]
 
 
 class AgentFailure(BaseModel):
@@ -70,9 +71,8 @@ class AgentFailure(BaseModel):
 class ExecutionFailure(BaseModel):
     """Serializable diagnostics for a run whose execution failed.
 
-    ``origin`` names the runtime boundary that failed. The original
-    in-process exception stays available on the run handle for local
-    debugging; it is not part of the serialized contract.
+    ``origin`` names the runtime boundary that failed. The exception is
+    normalized into stable, serializable diagnostics for durable storage.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -100,7 +100,7 @@ class Failed(BaseModel):
 
 
 class Aborted(BaseModel):
-    """Terminal outcome for a cancelled or atomically replaced run."""
+    """Terminal outcome for a cancelled run."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -109,3 +109,14 @@ class Aborted(BaseModel):
 
 
 RunOutcome: TypeAlias = Completed | Failed | Aborted
+
+
+@dataclass(frozen=True)
+class Faulted:
+    """Process-local result when the harness cannot ensure durability."""
+
+    error: BaseException
+    type: Literal["faulted"] = "faulted"
+
+
+RunResult: TypeAlias = RunOutcome | Faulted

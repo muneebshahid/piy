@@ -1,30 +1,33 @@
 """Tests for the documented public import surface."""
 
 import asyncio
-from pathlib import Path
 from collections.abc import AsyncGenerator, Sequence
+from pathlib import Path
 from typing import get_args
 
+import tile
 from tile import (
     Aborted,
     AgentFailure,
-    AgentRuntime,
+    AgentHarness,
     ExecutionFailure,
     ExecutionFailureOrigin,
     Failed,
     FailureCause,
+    Provider,
+    RunAlreadyEndedError,
     RunHandle,
-    RunReport,
     RunRecord,
     Session,
     SessionNotFoundError,
+    SessionRepository,
     SQLiteStore,
     Store,
     StorePersistenceError,
     TurnFailedError,
 )
-from tile.events import AgentEvent, MessageEndEvent, RunEndEvent, StreamFn
-from tile.providers.openai import create_stream_api
+from tile.events import AgentEvent, MessageEndEvent, RunEndEvent
+from tile.providers.openai import OpenAIProvider
 from tile.types import (
     AsyncEventStream,
     ConversationItem,
@@ -46,54 +49,63 @@ def test_documented_public_imports_run_fake_prompt() -> None:
     """Run one prompt using only documented public imports."""
 
     store: Store = SQLiteStore(in_memory=True)
-    runtime = AgentRuntime(
-        stream_fn=_fake_stream_fn(),
-        model="gpt-5.4",
-        store=store,
+    session: Session = SessionRepository(store).create(session_id="public-imports")
+    harness = AgentHarness(
+        session=session,
         tools=[_fake_tool_definition()],
         cwd=Path("."),
     )
-    session: Session = runtime.session(session_id="public-imports")
+    provider = _FakeProvider()
 
-    events = asyncio.run(_collect_prompt_events(session))
+    events = asyncio.run(_collect_prompt_events(harness, provider))
 
     assert isinstance(events[-1], RunEndEvent)
     assert any(isinstance(event, MessageEndEvent) for event in events)
-    assert len(session.history) == 2
-    run_records = runtime.runs_for(session.id)
+    assert len(session.get_history()) == 2
+    run_records = session.get_runs()
     assert len(run_records) == 1
     assert isinstance(run_records[0], RunRecord)
     assert run_records[0].status == "completed"
+    assert run_records[0].provider == provider.name
     assert issubclass(SessionNotFoundError, KeyError)
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
     assert get_args(ExecutionFailureOrigin) == ("turn", "execution")
     assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
-    assert RunReport.__name__ == "RunReport"
+    assert issubclass(RunAlreadyEndedError, RuntimeError)
     assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]
     assert Aborted().type == "aborted"
     assert ToolInputValidationFailure.model_fields["issues"]
     assert ToolInvocationFailure.model_fields["exception_type"]
     assert issubclass(ToolError, RuntimeError)
-    assert callable(create_stream_api)
+    assert issubclass(OpenAIProvider, Provider)
 
 
-def _fake_stream_fn() -> StreamFn:
-    """Build a fake provider stream from public provider-neutral contracts."""
+def test_removed_runtime_concepts_are_not_public_exports() -> None:
+    """Keep replaced runtime concepts outside the top-level package facade."""
 
-    return _FakeStreamFn()
+    for name in ("AgentRuntime", "RunReport", "StartedRun"):
+        assert not hasattr(tile, name)
 
 
-class _FakeStreamFn:
-    """Fake provider stream function carrying its declared provider identity."""
+class _FakeProvider(Provider):
+    """Fake configured provider built from public neutral contracts."""
 
-    provider = "fake"
+    def __init__(self) -> None:
+        """Configure the fake model."""
 
-    async def __call__(
+        super().__init__(model="gpt-5.4")
+
+    @property
+    def name(self) -> str:
+        """Return the fake provider identity."""
+
+        return "fake"
+
+    async def stream(
         self,
         history: Sequence[ConversationItem],
-        model: str,
         *,
         instructions: str,
         tools: Sequence[ToolDefinition] | None,
@@ -102,7 +114,7 @@ class _FakeStreamFn:
 
         _ = instructions
         assert len(history) == 1
-        assert model == "gpt-5.4"
+        assert self.model == "gpt-5.4"
         assert tools is not None
         return _stream_events(_assistant_response())
 
@@ -131,10 +143,13 @@ async def _stream_events(
         yield event
 
 
-async def _collect_prompt_events(session: Session) -> list[AgentEvent]:
-    """Collect all runtime events for one prompt."""
+async def _collect_prompt_events(
+    harness: AgentHarness,
+    provider: Provider,
+) -> list[AgentEvent]:
+    """Collect all harness events for one prompt."""
 
-    run: RunHandle = await session.prompt("hello")
+    run: RunHandle = await harness.prompt("hello", provider=provider)
     return [event async for event in run.events()]
 
 

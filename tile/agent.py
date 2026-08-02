@@ -15,12 +15,12 @@ from tile.events import (
     MessageEndEvent,
     MessageStartEvent,
     MessageUpdateEvent,
-    StreamFn,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     TurnEndEvent,
     TurnStartEvent,
 )
+from tile.providers.base import Provider
 from tile.tool_executor import ToolExecutor
 from tile.types.conversation import AssistantTurn, ConversationItem
 from tile.types.stream_events import (
@@ -98,8 +98,7 @@ async def run_agent(
     history: Sequence[ConversationItem],
     *,
     emit: EmitFn,
-    stream_fn: StreamFn,
-    model: str,
+    provider: Provider,
     tool_executor: ToolExecutor,
     instructions: str,
 ) -> AgentResult:
@@ -115,8 +114,7 @@ async def run_agent(
     result = await _run_agent_loop(
         run_history=list(history),
         emit=emit,
-        stream_fn=stream_fn,
-        model=model,
+        provider=provider,
         instructions=instructions,
         tool_executor=tool_executor,
     )
@@ -128,8 +126,7 @@ async def _run_agent_loop(
     *,
     run_history: list[ConversationItem],
     emit: EmitFn,
-    stream_fn: StreamFn,
-    model: str,
+    provider: Provider,
     instructions: str,
     tool_executor: ToolExecutor,
 ) -> AgentResult:
@@ -140,8 +137,7 @@ async def _run_agent_loop(
         result = await _run_provider_turn(
             run_history=run_history,
             emit=emit,
-            stream_fn=stream_fn,
-            model=model,
+            provider=provider,
             instructions=instructions,
             tool_executor=tool_executor,
         )
@@ -158,8 +154,7 @@ async def _run_provider_turn(
     *,
     run_history: Sequence[ConversationItem],
     emit: EmitFn,
-    stream_fn: StreamFn,
-    model: str,
+    provider: Provider,
     instructions: str,
     tool_executor: ToolExecutor,
 ) -> _TurnResult:
@@ -169,9 +164,8 @@ async def _run_provider_turn(
     depend on garbage collection for cleanup.
     """
 
-    stream = await stream_fn(
+    stream = await provider.stream(
         tuple(run_history),
-        model,
         instructions=instructions,
         tools=tool_executor.tools,
     )

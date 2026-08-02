@@ -2,10 +2,9 @@
 
 import asyncio
 from collections.abc import Sequence
-from typing import cast
 from unittest.mock import AsyncMock
 
-from tile.events import StreamFn
+from tile.providers.base import Provider
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
 from tile.types.stream_events import (
@@ -26,20 +25,41 @@ from tests.support.async_streams import async_stream
 TEST_PROVIDER = "test"
 
 
-class ProviderStreamMock:
+class ProviderStreamMock(Provider):
     """Async mock-backed fake provider stream with typed call inspectors."""
 
-    def __init__(self, streams: Sequence[Sequence[ProviderStreamEvent]]) -> None:
+    def __init__(
+        self,
+        streams: Sequence[Sequence[ProviderStreamEvent]],
+        *,
+        model: str = "gpt-5.4",
+        reasoning: JsonObject | None = None,
+    ) -> None:
         """Create a fake provider stream from queued event streams."""
 
+        super().__init__(model=model, reasoning=reasoning)
         self.mock = AsyncMock(side_effect=[async_stream(stream) for stream in streams])
-        self.mock.provider = TEST_PROVIDER
 
     @property
-    def fn(self) -> StreamFn:
-        """Return this mock as the provider stream function protocol."""
+    def name(self) -> str:
+        """Return the deterministic test provider identity."""
 
-        return cast(StreamFn, self.mock)
+        return TEST_PROVIDER
+
+    async def stream(
+        self,
+        history: Sequence[ConversationItem],
+        *,
+        instructions: str,
+        tools: Sequence[ToolDefinition] | None,
+    ) -> AsyncEventStream:
+        """Return the next configured provider event stream."""
+
+        return await self.mock(
+            tuple(history),
+            instructions=instructions,
+            tools=tools,
+        )
 
     @property
     def await_count(self) -> int:
@@ -70,14 +90,6 @@ class ProviderStreamMock:
         assert isinstance(history, tuple)
         return history
 
-    def model(self, index: int) -> str:
-        """Return the model name from one provider call."""
-
-        await_args = self.mock.await_args_list[index]
-        model = await_args.args[1]
-        assert isinstance(model, str)
-        return model
-
     def tools(self, index: int) -> tuple[ToolDefinition, ...] | None:
         """Return tool definitions from one provider call."""
 
@@ -90,18 +102,22 @@ class ProviderStreamMock:
 class GatedProviderStreamMock(ProviderStreamMock):
     """Provider stream fake that blocks each response on a release event."""
 
-    def __init__(self, releases: Sequence[asyncio.Event]) -> None:
+    def __init__(
+        self,
+        releases: Sequence[asyncio.Event],
+        *,
+        model: str = "gpt-5.4",
+    ) -> None:
         """Create a gated provider stream fake with one release per call."""
 
+        Provider.__init__(self, model=model)
         self._releases = tuple(releases)
         self._next_stream_index = 0
         self.mock = AsyncMock(side_effect=self._stream)
-        self.mock.provider = TEST_PROVIDER
 
     async def _stream(
         self,
         _history: Sequence[ConversationItem],
-        _model: str,
         *,
         instructions: str,
         tools: Sequence[ToolDefinition] | None,
@@ -122,21 +138,22 @@ class GatedQueuedProviderStreamMock(ProviderStreamMock):
         self,
         streams: Sequence[Sequence[ProviderStreamEvent]],
         releases: Sequence[asyncio.Event],
+        *,
+        model: str = "gpt-5.4",
     ) -> None:
         """Create one gate for each configured provider stream."""
 
         if len(streams) != len(releases):
             raise ValueError("Each queued stream requires one release event.")
+        Provider.__init__(self, model=model)
         self._streams = tuple(tuple(stream) for stream in streams)
         self._releases = tuple(releases)
         self._next_stream_index = 0
         self.mock = AsyncMock(side_effect=self._stream)
-        self.mock.provider = TEST_PROVIDER
 
     async def _stream(
         self,
         _history: Sequence[ConversationItem],
-        _model: str,
         *,
         instructions: str,
         tools: Sequence[ToolDefinition] | None,

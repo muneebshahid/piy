@@ -1,7 +1,7 @@
 """Fork behavior tests for the unified SQLite Store."""
 
 from tile import Completed
-from tile.store import SQLiteStore, SessionRecord
+from tile.store import SQLiteStore
 from tile.types import AssistantTurn, UserMessage
 from tests.support.store import create_session, persist_outcome, start_run
 
@@ -15,6 +15,7 @@ def test_fork_session_copies_all_history_with_new_envelopes() -> None:
         start_run(store, session_id="source")
         persist_outcome(
             store,
+            session_id="source",
             outcome=Completed(value="done"),
             history_delta=[
                 UserMessage(content="hello"),
@@ -24,11 +25,11 @@ def test_fork_session_copies_all_history_with_new_envelopes() -> None:
 
         fork = store.fork_session(
             source_session_id="source",
-            target=SessionRecord.create(session_id="fork", name="Fork"),
+            target_session_id="fork",
         )
 
         source = store.get_history("source")
-        copied = store.get_history(fork.session_id)
+        copied = store.get_history(fork.id)
         assert len(copied) == len(source) == 2
         assert [item.id for item in copied] != [item.id for item in source]
         assert {item.session_id for item in copied} == {"fork"}

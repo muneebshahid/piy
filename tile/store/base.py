@@ -16,8 +16,8 @@ class ActiveRunError(StoreError):
     """Raised when a session already owns a running run."""
 
 
-class StaleRunError(StoreError):
-    """Raised when a superseded or finalized run attempts to mutate state."""
+class RunAlreadyEndedError(StoreError):
+    """Raised when a terminal run receives another terminal transition."""
 
 
 class SessionAlreadyExistsError(StoreError, ValueError):
@@ -42,6 +42,7 @@ StoreOperation: TypeAlias = Literal[
     "list_sessions",
     "start_run",
     "finish_run",
+    "abort_active_run",
     "get_history",
     "get_run",
     "list_runs",
@@ -76,7 +77,7 @@ class Store(Protocol):
     def create_session(
         self,
         *,
-        record: SessionRecord,
+        session_id: str,
     ) -> SessionRecord:
         """Create and return one session, rejecting an existing id."""
         ...
@@ -92,22 +93,23 @@ class Store(Protocol):
     def start_run(
         self,
         *,
-        record: RunRecord,
-        replace_active: bool = False,
+        session_id: str,
+        run_id: str,
+        prompt: str,
+        model: str,
+        provider: str,
     ) -> StartedRun:
         """Atomically start a run and snapshot its committed session history.
 
-        ``record`` must represent a running run. Terminal records are not valid
-        inputs to this insert operation.
-
         The returned history must come from the same consistency boundary as
-        the accepted run and optional predecessor replacement.
+        the Store-created running record.
         """
         ...
 
     def finish_run(
         self,
         *,
+        session_id: str,
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
@@ -116,7 +118,15 @@ class Store(Protocol):
 
         The caller owns the terminal outcome and valid history delta.
         Implementations load the authoritative run identity and own terminal
-        record construction, stale-run fencing, and all-or-nothing persistence.
+        record construction, ended-run fencing, and all-or-nothing persistence.
+        """
+        ...
+
+    def abort_active_run(self, session_id: str) -> RunRecord | None:
+        """Durably abort a session's active run without controlling its process.
+
+        Return the aborted record, or ``None`` when the session has no active
+        run. Implementations must fence later writes from an aborted run.
         """
         ...
 
@@ -124,8 +134,8 @@ class Store(Protocol):
         """Return committed history items in session-local position order."""
         ...
 
-    def get_run(self, run_id: str) -> RunRecord:
-        """Return one persistent run or raise a run-not-found domain error."""
+    def get_run(self, session_id: str, run_id: str) -> RunRecord:
+        """Return one session-owned run or raise a run-not-found error."""
         ...
 
     def list_runs(self, session_id: str) -> Sequence[RunRecord]:
@@ -136,7 +146,7 @@ class Store(Protocol):
         self,
         *,
         source_session_id: str,
-        target: SessionRecord,
+        target_session_id: str,
     ) -> SessionRecord:
         """Atomically create a session with all committed source history."""
         ...

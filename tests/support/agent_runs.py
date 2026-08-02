@@ -5,7 +5,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from tile.agent import AgentResult, run_agent
-from tile.events import AgentEvent, StreamFn
+from tile.events import AgentEvent
+from tile.providers.base import Provider
 from tile.tool_executor import ToolExecutor
 from tile.types.conversation import ConversationItem
 from tile.types.tools import ToolDefinition
@@ -22,8 +23,7 @@ class AgentRunCapture:
 def collect_agent_run(
     history: Sequence[ConversationItem],
     *,
-    stream_fn: StreamFn,
-    model: str = "gpt-5.4",
+    provider: Provider,
     tools: Sequence[ToolDefinition] = (),
     instructions: str = "Base prompt.",
 ) -> AgentRunCapture:
@@ -36,8 +36,7 @@ def collect_agent_run(
         result = await run_agent(
             history,
             emit=events.append,
-            stream_fn=stream_fn,
-            model=model,
+            provider=provider,
             tool_executor=ToolExecutor(tools),
             instructions=instructions,
         )
@@ -49,8 +48,7 @@ def collect_agent_run(
 def collect_run_events(
     history: Sequence[ConversationItem],
     *,
-    stream_fn: StreamFn,
-    model: str = "gpt-5.4",
+    provider: Provider,
     tools: Sequence[ToolDefinition] = (),
     instructions: str = "Base prompt.",
 ) -> list[AgentEvent]:
@@ -58,8 +56,7 @@ def collect_run_events(
 
     return collect_agent_run(
         history,
-        stream_fn=stream_fn,
-        model=model,
+        provider=provider,
         tools=tools,
         instructions=instructions,
     ).events

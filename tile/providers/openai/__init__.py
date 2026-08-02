@@ -1,8 +1,8 @@
 """Public OpenAI provider entrypoints."""
 
-from tile.providers.openai.provider import Reasoning, create_stream_api
+from tile.providers.openai.provider import OpenAIProvider, Reasoning
 
 __all__ = [
+    "OpenAIProvider",
     "Reasoning",
-    "create_stream_api",
 ]

@@ -31,8 +31,7 @@ def immediate_transaction(connection: sqlite3.Connection) -> Iterator[None]:
     connection.execute("BEGIN IMMEDIATE")
     try:
         yield
+        connection.commit()
     except BaseException:
         connection.rollback()
         raise
-    else:
-        connection.commit()

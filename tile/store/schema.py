@@ -127,7 +127,6 @@ def _create_session_table(connection: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
-            name TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )

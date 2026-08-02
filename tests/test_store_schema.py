@@ -73,6 +73,45 @@ def test_unified_schema_declares_required_foreign_keys(tmp_path: Path) -> None:
     }
 
 
+def test_unified_schema_uses_id_for_entity_primary_keys(tmp_path: Path) -> None:
+    """Use id for each entity and qualified names for foreign keys."""
+
+    database_path = tmp_path / "identifiers.db"
+    store = SQLiteStore(database_path)
+    store.close()
+    connection = sqlite3.connect(database_path)
+    try:
+        primary_keys = {
+            table: _primary_key_column(connection, table)
+            for table in ("sessions", "runs", "history_items")
+        }
+    finally:
+        connection.close()
+
+    assert primary_keys == {
+        "sessions": "id",
+        "runs": "id",
+        "history_items": "id",
+    }
+
+
+def test_unified_schema_keeps_only_session_identity_and_timestamps(
+    tmp_path: Path,
+) -> None:
+    """Exclude unused display metadata from persistent session records."""
+
+    database_path = tmp_path / "session-columns.db"
+    store = SQLiteStore(database_path)
+    store.close()
+    connection = sqlite3.connect(database_path)
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
+    finally:
+        connection.close()
+
+    assert columns == {"id", "created_at", "updated_at"}
+
+
 def test_unified_schema_enforces_run_session_foreign_key(tmp_path: Path) -> None:
     """Reject a run whose owning session does not exist."""
 
@@ -206,6 +245,19 @@ def test_unified_schema_rejects_inconsistent_run_lifecycle_rows(
             )
     finally:
         connection.close()
+
+
+def _primary_key_column(connection: sqlite3.Connection, table: str) -> str:
+    """Return the declared primary-key column for one table."""
+
+    row = connection.execute(
+        "SELECT name FROM pragma_table_info(?) WHERE pk = 1",
+        (table,),
+    ).fetchone()
+    assert row is not None
+    column = row[0]
+    assert isinstance(column, str)
+    return column
 
 
 def _foreign_key_connection(database_path: Path) -> sqlite3.Connection:

@@ -1,9 +1,9 @@
 """Tests for the guaranteed run lifecycle across failures and aborts."""
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Sequence
 from pathlib import Path
-from typing import TypeVar, cast
+from typing import Protocol, TypeVar, cast
 from unittest.mock import AsyncMock
 
 from pydantic import BaseModel
@@ -16,11 +16,10 @@ from tile.events import (
     MessageStartEvent,
     RunEndEvent,
     RunStartEvent,
-    StreamFn,
     ToolExecutionStartEvent,
 )
+from tile import AgentHarness, Provider, SessionRepository
 from tile.result import Aborted, Completed, ExecutionFailure, Failed
-from tile.runtime import AgentRuntime
 from tile.store import SQLiteStore
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
@@ -55,19 +54,62 @@ class WeatherReport(BaseModel):
     temp_c: float
 
 
+class _ProviderCall(Protocol):
+    """Callable shape used by lifecycle-specific provider mocks."""
+
+    def __call__(
+        self,
+        history: Sequence[ConversationItem],
+        *,
+        instructions: str,
+        tools: Sequence[ToolDefinition] | None,
+    ) -> Awaitable[AsyncEventStream]: ...
+
+
+class _MockProvider(Provider):
+    """Configured provider around one lifecycle-specific async mock."""
+
+    def __init__(self, call: _ProviderCall) -> None:
+        """Bind the mock call to the deterministic test model."""
+
+        super().__init__(model="gpt-5.4")
+        self._call = call
+
+    @property
+    def name(self) -> str:
+        """Return the deterministic provider identity."""
+
+        return TEST_PROVIDER
+
+    async def stream(
+        self,
+        history: Sequence[ConversationItem],
+        *,
+        instructions: str,
+        tools: Sequence[ToolDefinition] | None,
+    ) -> AsyncEventStream:
+        """Delegate provider acquisition to the configured mock."""
+
+        return await self._call(
+            history,
+            instructions=instructions,
+            tools=tools,
+        )
+
+
 def test_provider_raise_before_stream_fails_the_run() -> None:
     """Close the run when the provider dies before streaming."""
 
     failing_mock = AsyncMock(side_effect=ConnectionError("connection refused"))
-    failing_mock.provider = TEST_PROVIDER
-    runtime = _runtime(cast("StreamFn", failing_mock))
-    session = runtime.session(session_id="raise-before-stream")
+    harness, provider = _harness(
+        _mock_provider(failing_mock), session_id="raise-before-stream"
+    )
 
     async def _run() -> list[AgentEvent]:
         """Fail the run and collect its complete log."""
 
-        run = await session.prompt("hello")
-        assert (await run.wait()).status == "failed"
+        run = await harness.prompt("hello", provider=provider)
+        assert isinstance(await run.wait(), Failed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -94,26 +136,25 @@ def test_abort_during_provider_acquisition_closes_the_run() -> None:
 
         async def _blocked_provider(
             history: Sequence[ConversationItem],
-            model: str,
             *,
             instructions: str,
             tools: Sequence[ToolDefinition] | None,
         ) -> AsyncEventStream:
             """Signal provider entry and block until cancellation."""
 
-            _ = history, model, instructions, tools
+            _ = history, instructions, tools
             entered.set()
             await asyncio.Event().wait()
             raise AssertionError("Blocked provider unexpectedly resumed.")
 
         blocked_mock = AsyncMock(side_effect=_blocked_provider)
-        blocked_mock.provider = TEST_PROVIDER
-        runtime = _runtime(cast("StreamFn", blocked_mock))
-        session = runtime.session(session_id="abort-during-acquisition")
-        run = await session.prompt("hello")
+        harness, provider = _harness(
+            _mock_provider(blocked_mock), session_id="abort-during-acquisition"
+        )
+        run = await harness.prompt("hello", provider=provider)
         await entered.wait()
         run.abort()
-        assert (await run.wait()).status == "aborted"
+        assert await run.wait() == Aborted()
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -135,15 +176,15 @@ def test_provider_raise_mid_stream_leaves_inner_lifecycles_open() -> None:
             [stream_start("resp_1")], error=ConnectionError("connection reset")
         )
     )
-    interrupted_mock.provider = TEST_PROVIDER
-    runtime = _runtime(cast("StreamFn", interrupted_mock))
-    session = runtime.session(session_id="raise-mid-stream")
+    harness, provider = _harness(
+        _mock_provider(interrupted_mock), session_id="raise-mid-stream"
+    )
 
     async def _run() -> list[AgentEvent]:
         """Fail the run mid-message and collect its complete log."""
 
-        run = await session.prompt("hello")
-        assert (await run.wait()).status == "failed"
+        run = await harness.prompt("hello", provider=provider)
+        assert isinstance(await run.wait(), Failed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -171,17 +212,15 @@ def test_stream_exhausted_without_terminal_event_leaves_inner_scopes_open() -> N
     """Let the run end terminate scopes when a provider omits its terminal."""
 
     quiet_mock = AsyncMock(return_value=async_stream([stream_start("resp_1")]))
-    quiet_mock.provider = TEST_PROVIDER
-    runtime = _runtime(cast("StreamFn", quiet_mock))
-    session = runtime.session(session_id="quiet-stream-death")
+    harness, provider = _harness(
+        _mock_provider(quiet_mock), session_id="quiet-stream-death"
+    )
 
     async def _run() -> tuple[list[AgentEvent], str | None]:
         """Fail the run on a stream that ends without a terminal event."""
 
-        run = await session.prompt("hello")
-        report = await run.wait()
-        assert report.status == "failed"
-        outcome = report.outcome
+        run = await harness.prompt("hello", provider=provider)
+        outcome = await run.wait()
         assert isinstance(outcome, Failed)
         assert isinstance(outcome.cause, ExecutionFailure)
         return [event async for event in run.events()], outcome.cause.message
@@ -208,14 +247,16 @@ def test_stream_exhausted_without_terminal_event_leaves_inner_scopes_open() -> N
 def test_in_band_stream_error_ends_message_before_run_end() -> None:
     """Keep the provider-finalized message before the failed run ends."""
 
-    runtime = _runtime(ProviderStreamMock([error_stream("resp_1", "boom")]).fn)
-    session = runtime.session(session_id="in-band-error")
+    harness, provider = _harness(
+        ProviderStreamMock([error_stream("resp_1", "boom")]),
+        session_id="in-band-error",
+    )
 
     async def _run() -> list[AgentEvent]:
         """Fail the run through an in-band stream error event."""
 
-        run = await session.prompt("hello")
-        assert (await run.wait()).status == "failed"
+        run = await harness.prompt("hello", provider=provider)
+        assert isinstance(await run.wait(), Failed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -248,18 +289,21 @@ def test_abort_during_tool_execution_leaves_inner_lifecycles_open() -> None:
             )
         ]
     )
-    runtime = _runtime(provider.fn, tools=[_weather_tool(_blocked)])
-    session = runtime.session(session_id="abort-in-tool")
+    harness, configured_provider = _harness(
+        provider,
+        session_id="abort-in-tool",
+        tools=[_weather_tool(_blocked)],
+    )
 
     async def _run() -> list[AgentEvent]:
         """Abort once the tool execution has started."""
 
-        run = await session.prompt("check weather")
+        run = await harness.prompt("check weather", provider=configured_provider)
         async for event in run.events():
             if isinstance(event, ToolExecutionStartEvent):
                 break
         run.abort()
-        assert (await run.wait()).status == "aborted"
+        assert await run.wait() == Aborted()
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -290,19 +334,19 @@ def test_abort_during_provider_stream_leaves_inner_lifecycles_open() -> None:
         await asyncio.Event().wait()
 
     stalled_mock = AsyncMock(return_value=_stalled([stream_start("resp_1")]))
-    stalled_mock.provider = TEST_PROVIDER
-    runtime = _runtime(cast("StreamFn", stalled_mock))
-    session = runtime.session(session_id="abort-mid-stream")
+    harness, provider = _harness(
+        _mock_provider(stalled_mock), session_id="abort-mid-stream"
+    )
 
     async def _run() -> list[AgentEvent]:
         """Abort once the message has started streaming."""
 
-        run = await session.prompt("hello")
+        run = await harness.prompt("hello", provider=provider)
         async for event in run.events():
             if isinstance(event, MessageStartEvent):
                 break
         run.abort()
-        assert (await run.wait()).status == "aborted"
+        assert await run.wait() == Aborted()
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -322,15 +366,14 @@ def test_abort_before_first_tick_still_yields_a_closed_log() -> None:
     """Close the run scope for an abort landing before execution starts."""
 
     provider = ProviderStreamMock([final_text_stream("resp_1", "hello back")])
-    runtime = _runtime(provider.fn)
-    session = runtime.session(session_id="abort-before-tick")
+    harness, configured_provider = _harness(provider, session_id="abort-before-tick")
 
     async def _run() -> list[AgentEvent]:
         """Abort synchronously after submission, before the first tick."""
 
-        run = await session.prompt("hello")
+        run = await harness.prompt("hello", provider=configured_provider)
         run.abort()
-        assert (await run.wait()).status == "aborted"
+        assert await run.wait() == Aborted()
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -352,16 +395,15 @@ def test_typed_result_attempts_each_close_before_the_next_starts() -> None:
             ),
         ]
     )
-    runtime = _runtime(provider.fn)
-    session = runtime.session(session_id="typed-attempts")
+    harness, configured_provider = _harness(provider, session_id="typed-attempts")
 
     async def _run() -> list[AgentEvent]:
         """Complete the typed result on the nudged second attempt."""
 
-        run = await session.prompt("Weather?", result=WeatherReport)
-        report = await run.wait()
-        assert report.status == "completed"
-        assert isinstance(report.outcome, Completed)
+        run = await harness.prompt(
+            "Weather?", provider=configured_provider, result=WeatherReport
+        )
+        assert isinstance(await run.wait(), Completed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -394,14 +436,17 @@ def test_tool_loop_prompt_yields_the_full_expected_event_order() -> None:
             final_text_stream("resp_2", "It is sunny in Munich."),
         ]
     )
-    runtime = _runtime(provider.fn, tools=[_weather_tool(_quick_weather)])
-    session = runtime.session(session_id="full-order")
+    harness, configured_provider = _harness(
+        provider,
+        session_id="full-order",
+        tools=[_weather_tool(_quick_weather)],
+    )
 
     async def _run() -> list[AgentEvent]:
         """Complete one tool-loop prompt and collect its full log."""
 
-        run = await session.prompt("check weather")
-        assert (await run.wait()).status == "completed"
+        run = await harness.prompt("check weather", provider=configured_provider)
+        assert isinstance(await run.wait(), Completed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -438,14 +483,15 @@ def test_typed_result_prompt_yields_the_full_expected_event_order() -> None:
             ),
         ]
     )
-    runtime = _runtime(provider.fn)
-    session = runtime.session(session_id="typed-full-order")
+    harness, configured_provider = _harness(provider, session_id="typed-full-order")
 
     async def _run() -> list[AgentEvent]:
         """Complete the typed result on the nudged second attempt."""
 
-        run = await session.prompt("Weather?", result=WeatherReport)
-        assert (await run.wait()).status == "completed"
+        run = await harness.prompt(
+            "Weather?", provider=configured_provider, result=WeatherReport
+        )
+        assert isinstance(await run.wait(), Completed)
         return [event async for event in run.events()]
 
     events = asyncio.run(_run())
@@ -471,20 +517,28 @@ def test_typed_result_prompt_yields_the_full_expected_event_order() -> None:
     ]
 
 
-def _runtime(
-    stream_fn: StreamFn,
+def _harness(
+    provider: Provider,
     *,
+    session_id: str,
     tools: Sequence[ToolDefinition] = (),
-) -> AgentRuntime:
-    """Build a runtime over in-memory stores for lifecycle tests."""
+) -> tuple[AgentHarness, Provider]:
+    """Build a session-bound harness and configured test provider."""
 
-    return AgentRuntime(
-        stream_fn=stream_fn,
-        model="gpt-5.4",
+    repository = SessionRepository(SQLiteStore(in_memory=True))
+    session = repository.create(session_id=session_id)
+    harness = AgentHarness(
+        session=session,
         cwd=Path("."),
-        store=SQLiteStore(in_memory=True),
         tools=tools,
     )
+    return harness, provider
+
+
+def _mock_provider(mock: AsyncMock) -> Provider:
+    """Configure one lifecycle-specific async mock as a provider."""
+
+    return _MockProvider(cast("_ProviderCall", mock))
 
 
 def _weather_tool(fn: ToolFunction) -> ToolDefinition:

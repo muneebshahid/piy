@@ -17,7 +17,7 @@ from typing import cast
 
 from openai import AsyncOpenAI
 
-from tile.providers.openai.provider import create_stream_api
+from tile.providers.openai import OpenAIProvider
 from tile.providers.openai.serialization import serialize_history_items
 from tile.types.conversation import UserMessage
 from tile.types.stream_events import (
@@ -50,13 +50,13 @@ def _collect_events(
     tools: Sequence[ToolDefinition] | None = None,
 ) -> list[ProviderStreamEvent]:
     async def _collect() -> list[ProviderStreamEvent]:
-        stream_api = create_stream_api(
-            cast("AsyncOpenAI", client),
+        provider = OpenAIProvider(
+            client=cast("AsyncOpenAI", client),
+            model="gpt-5.4",
             reasoning={"effort": "medium"},
         )
-        event_stream = await stream_api(
+        event_stream = await provider.stream(
             history=[UserMessage(content="hello")],
-            model="gpt-5.4",
             instructions="Follow the repo conventions.",
             tools=tools,
         )
