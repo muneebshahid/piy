@@ -13,3 +13,6 @@ wheels/
 *.local.*
 .vscode
 .zed
+
+# Test artifacts
+.coverage
