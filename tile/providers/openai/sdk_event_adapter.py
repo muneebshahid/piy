@@ -1,7 +1,8 @@
+"""Normalize raw OpenAI SDK stream events into provider events."""
+
 import json
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
-from typing import cast
 
 from openai.types.responses import (
     ResponseCompletedEvent,
@@ -207,7 +208,7 @@ def _parse_tool_call_arguments(arguments: str) -> JsonObject:
         return {}
 
     if isinstance(parsed, dict):
-        return cast("JsonObject", parsed)
+        return parsed
     return {}
 
 

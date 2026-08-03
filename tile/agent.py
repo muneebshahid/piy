@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
+from typing import Final
 
 from tile.events import (
     AgentEndEvent,
@@ -42,7 +43,7 @@ from tile.types.stream_events import (
 )
 from tile.types.tool_execution import ToolExecutionOutcome
 
-ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES = (
+ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES: Final = (
     ReasoningStartEvent,
     ReasoningDeltaEvent,
     ReasoningEndEvent,

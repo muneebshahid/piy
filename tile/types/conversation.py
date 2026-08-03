@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, Field
 
@@ -40,7 +40,7 @@ class AssistantTurn(BaseModel):
     def from_stream_done(
         cls,
         event: StreamDoneEvent,
-    ) -> AssistantTurn:
+    ) -> Self:
         """Create a completed assistant turn from a terminal stream event."""
 
         return cls(
@@ -55,7 +55,7 @@ class AssistantTurn(BaseModel):
     def from_stream_error(
         cls,
         event: StreamErrorEvent,
-    ) -> AssistantTurn:
+    ) -> Self:
         """Create a failed assistant turn from a terminal stream event."""
 
         status: TurnStatus = "aborted" if event.stop_reason == "aborted" else "error"

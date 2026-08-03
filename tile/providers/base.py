@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from copy import deepcopy
+from typing import Final
 
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
@@ -22,8 +23,10 @@ class Provider(ABC):
     ) -> None:
         """Retain provider-neutral configuration shared by implementations."""
 
-        self._model = model
-        self._reasoning = None if reasoning is None else deepcopy(dict(reasoning))
+        self._model: Final = model
+        self._reasoning: Final = (
+            None if reasoning is None else deepcopy(dict(reasoning))
+        )
 
     @property
     @abstractmethod

@@ -1,6 +1,8 @@
+"""Serialize neutral history and tools into OpenAI Responses payloads."""
+
 import json
 from collections.abc import Sequence
-from typing import cast
+from typing import TypeIs, cast
 
 from openai.types.responses.easy_input_message_param import EasyInputMessageParam
 from openai.types.responses.function_tool_param import FunctionToolParam
@@ -123,16 +125,13 @@ def _serialize_assistant_turn(
 def _serialize_tool_definition(
     tool: ToolDefinition,
 ) -> FunctionToolParam:
-    return cast(
-        "FunctionToolParam",
-        {
-            "type": "function",
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.input_schema,
-            "strict": False,
-            "defer_loading": tool.defer_loading,
-        },
+    return FunctionToolParam(
+        type="function",
+        name=tool.name,
+        description=tool.description,
+        parameters={**tool.input_schema},
+        strict=False,
+        defer_loading=tool.defer_loading,
     )
 
 
@@ -194,8 +193,7 @@ def _serialize_tool_result_content(
     """Serialize provider-neutral tool result content for OpenAI Responses."""
 
     if _is_text_only_tool_result(content):
-        text_blocks = [block for block in content if isinstance(block, ToolTextContent)]
-        return "\n".join(block.text for block in text_blocks)
+        return "\n".join(block.text for block in content)
 
     parts: ResponseFunctionCallOutputItemListParam = []
     for block in content:
@@ -206,7 +204,9 @@ def _serialize_tool_result_content(
     return parts
 
 
-def _is_text_only_tool_result(content: list[ToolResultContent]) -> bool:
+def _is_text_only_tool_result(
+    content: Sequence[ToolResultContent],
+) -> TypeIs[Sequence[ToolTextContent]]:
     """Return whether a tool result can be replayed as plain text."""
 
     return all(block.type == "text" for block in content)

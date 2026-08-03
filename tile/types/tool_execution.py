@@ -1,6 +1,6 @@
 """Runtime contracts for model-requested tool executions."""
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, SerializeAsAny
 
@@ -47,7 +47,7 @@ class ToolExecutionOutcome(BaseModel):
         call_id: str,
         tool_name: str,
         result: ToolResult,
-    ) -> "ToolExecutionOutcome":
+    ) -> Self:
         """Build an execution outcome from a raw tool result."""
 
         return cls(
@@ -68,7 +68,7 @@ class ToolExecutionOutcome(BaseModel):
         tool_name: str,
         message: str,
         details: ToolDetails | None = None,
-    ) -> "ToolExecutionOutcome":
+    ) -> Self:
         """Build a model-visible failed execution outcome."""
 
         return cls(

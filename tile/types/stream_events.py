@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, Field
 
@@ -24,7 +24,7 @@ class ProviderMetadata(BaseModel):
     data: JsonObject = Field(default_factory=dict)
 
     @classmethod
-    def from_values(cls, **values: str | None) -> ProviderMetadata | None:
+    def from_values(cls, **values: str | None) -> Self | None:
         """Build metadata from provider values, omitting absent entries."""
 
         data: JsonObject = {

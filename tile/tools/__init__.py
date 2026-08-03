@@ -1,5 +1,7 @@
 """Built-in tools for the default agent."""
 
+from typing import Final
+
 from tile.tool_truncation import ToolOutputDetails
 from tile.tools.bash import BashDetails
 from tile.tools.bash import tool as bash_tool
@@ -35,7 +37,7 @@ __all__ = [
     "fail_tool",
 ]
 
-BUILTIN_TOOLS: tuple[ToolDefinition, ...] = (
+BUILTIN_TOOLS: Final[tuple[ToolDefinition, ...]] = (
     read_tool,
     bash_tool,
     edit_tool,

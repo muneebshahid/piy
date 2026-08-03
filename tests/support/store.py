@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import override
 
 from tile import (
     Aborted,
@@ -24,6 +25,7 @@ class FailingStartStore(SQLiteStore):
 
     fail_starts: bool = True
 
+    @override
     def start_run(
         self,
         *,
@@ -51,6 +53,7 @@ class FailingFinishStore(SQLiteStore):
 
     fail_finishes: bool = True
 
+    @override
     def finish_run(
         self,
         *,

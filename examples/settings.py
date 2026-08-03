@@ -1,3 +1,5 @@
+"""Environment-driven configuration shared by the example runners."""
+
 import os
 from dataclasses import dataclass, field
 

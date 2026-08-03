@@ -5,13 +5,14 @@ import shutil
 from asyncio import StreamReader
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Final
 
 from tile.types.tools import ToolError
 
 # Maximum stdout bytes collected before the subprocess is killed.
-STDOUT_BYTE_CAP: int = 16 * 1024 * 1024
+STDOUT_BYTE_CAP: Final[int] = 16 * 1024 * 1024
 # Maximum stderr bytes kept for failure messages; the rest is drained.
-STDERR_BYTE_CAP: int = 64 * 1024
+STDERR_BYTE_CAP: Final[int] = 64 * 1024
 
 
 def require_executable(command: str, display_name: str) -> str:

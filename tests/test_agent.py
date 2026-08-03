@@ -9,6 +9,7 @@ or ``error``, and executes tools before starting a follow-up assistant turn.
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import override
 
 import pytest
 
@@ -90,11 +91,13 @@ class ClosingProvider(Provider):
         self.closed = False
 
     @property
+    @override
     def name(self) -> str:
         """Return the deterministic provider identity."""
 
         return "test"
 
+    @override
     async def stream(
         self,
         history: Sequence[ConversationItem],

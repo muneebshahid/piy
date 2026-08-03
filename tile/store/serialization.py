@@ -1,7 +1,6 @@
 """Typed mapping between persistent domain records and SQLite values."""
 
 from datetime import datetime
-from typing import cast
 from uuid import uuid4
 
 from pydantic import TypeAdapter
@@ -16,7 +15,7 @@ type RunRow = tuple[
     str,
     str,
     str,
-    str,
+    RunStatus,
     str,
     str | None,
     str,
@@ -102,7 +101,7 @@ def run_from_row(row: RunRow) -> RunRecord:
         id=run_id,
         session_id=session_id,
         prompt=prompt,
-        status=cast("RunStatus", status),
+        status=status,
         started_at=datetime.fromisoformat(started_at),
         ended_at=datetime.fromisoformat(ended_at) if ended_at is not None else None,
         model=model,

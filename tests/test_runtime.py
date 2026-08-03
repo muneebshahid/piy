@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import override
 
 import pytest
 from pydantic import BaseModel
@@ -91,7 +92,7 @@ async def test_harness_runs_prompts_for_its_single_session(
 
     session = SessionRepository(store).create(session_id="session-1")
     transport = ProviderStreamMock([final_text_stream("response-1", "done")])
-    harness = AgentHarness(session=session, cwd=Path("."))
+    harness = AgentHarness(session=session, cwd=Path())
 
     handle = await harness.prompt("hello", provider=transport)
     result = await handle.wait()
@@ -213,11 +214,13 @@ async def test_runtime_persists_running_record_before_provider_execution(
             super().__init__(model="gpt-5.4")
 
         @property
+        @override
         def name(self) -> str:
             """Return the deterministic provider identity."""
 
             return "test"
 
+        @override
         async def stream(
             self,
             history: Sequence[ConversationItem],
@@ -258,7 +261,7 @@ async def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
             [final_text_stream("response-2", "second answer")]
         )
         session = SessionRepository(store).get("session-1")
-        harness = AgentHarness(session=session, cwd=Path("."))
+        harness = AgentHarness(session=session, cwd=Path())
 
         handle = await harness.prompt("second", provider=provider)
 
@@ -439,7 +442,7 @@ async def test_durable_abort_works_across_harness_instances(tmp_path: Path) -> N
 
         second_repository = SessionRepository(second_store)
         second_session = second_repository.get("shared")
-        second_harness = AgentHarness(session=second_session, cwd=Path("."))
+        second_harness = AgentHarness(session=second_session, cwd=Path())
         aborted = second_repository.abort_active_run(second_session.id)
         second = await second_harness.prompt("second", provider=second_provider)
 
@@ -594,7 +597,7 @@ async def test_forked_session_inherits_flat_history_and_diverges(
     assert fork.get_history() == source.get_history()
     assert fork.get_runs() == ()
 
-    fork_harness = AgentHarness(session=fork, cwd=Path("."))
+    fork_harness = AgentHarness(session=fork, cwd=Path())
     second = await fork_harness.prompt("second", provider=provider)
     assert isinstance(await second.wait(), Completed)
     assert len(fork.get_history()) == 4
@@ -714,6 +717,7 @@ def test_runtime_rejects_model_visible_cwd_schema_property(
     async def shadowing_cwd(params: _CwdInput, *, cwd: Path) -> ToolResult:
         """Fail loudly if the harness accepts a model-visible cwd tool."""
 
+        _ = params, cwd
         raise AssertionError("rejected tool must never execute")
 
     tool = ToolDefinition(
@@ -730,6 +734,7 @@ def test_runtime_rejects_model_visible_cwd_schema_property(
 class _UnavailablePublicHistoryStore(SQLiteStore):
     """SQLite Store whose standalone history read is unavailable."""
 
+    @override
     def get_history(self, session_id: str) -> tuple[HistoryItem, ...]:
         """Prove prompt bootstrap does not perform a second Store read."""
 

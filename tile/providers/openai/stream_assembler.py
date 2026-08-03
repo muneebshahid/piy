@@ -8,7 +8,6 @@ from tile.providers.openai.normalized_events import (
     TERMINAL_NORMALIZED_EVENT_TYPES,
     CreatedNormalizedEvent,
     IncompleteNormalizedEvent,
-    MessageAddedNormalizedEvent,
     MessageDoneNormalizedEvent,
     MessageTextDeltaNormalizedEvent,
     NormalizedEvent,
@@ -91,7 +90,7 @@ def _yield_stream_event(
         case NormalizedEventType.REASONING_DONE:
             return _finalize_reasoning_block(state, event)
         case NormalizedEventType.MESSAGE_ADDED:
-            return _start_text_block(state, event)
+            return _start_text_block(state)
         case NormalizedEventType.MESSAGE_TEXT_DELTA:
             return _append_text_delta(state, event)
         case NormalizedEventType.MESSAGE_DONE:
@@ -138,12 +137,13 @@ def _append_reasoning_delta(
 ) -> ReasoningDeltaEvent | None:
     """Append reasoning text to the active reasoning block."""
 
-    block = state.active_block
-    if not isinstance(block, ReasoningBlock) or state.active_block_index is None:
+    active = _active_block(state, ReasoningBlock)
+    if active is None:
         return None
+    block, content_index = active
 
     block.summary_text += delta
-    return ReasoningDeltaEvent(content_index=state.active_block_index, delta=delta)
+    return ReasoningDeltaEvent(content_index=content_index, delta=delta)
 
 
 def _finalize_reasoning_block(
@@ -152,9 +152,10 @@ def _finalize_reasoning_block(
 ) -> ReasoningEndEvent | None:
     """Finalize the active reasoning block."""
 
-    block = state.active_block
-    if not isinstance(block, ReasoningBlock) or state.active_block_index is None:
+    active = _active_block(state, ReasoningBlock)
+    if active is None:
         return None
+    block, content_index = active
 
     if event["summary_text"]:
         block.summary_text = event["summary_text"]
@@ -162,14 +163,12 @@ def _finalize_reasoning_block(
         reasoning_signature=event["reasoning_signature"],
     )
     event_block = block.model_copy(deep=True)
-    content_index = state.active_block_index
     _clear_active_block(state)
     return ReasoningEndEvent(content_index=content_index, block=event_block)
 
 
 def _start_text_block(
     state: StreamAssemblyState,
-    event: MessageAddedNormalizedEvent,
 ) -> TextStartEvent:
     """Start a text block and return its stream event."""
 
@@ -184,13 +183,14 @@ def _append_text_delta(
 ) -> TextDeltaEvent | None:
     """Append text to the active text block."""
 
-    block = state.active_block
-    if not isinstance(block, TextBlock) or state.active_block_index is None:
+    active = _active_block(state, TextBlock)
+    if active is None:
         return None
+    block, content_index = active
 
     delta = event["delta"]
     block.text += delta
-    return TextDeltaEvent(content_index=state.active_block_index, delta=delta)
+    return TextDeltaEvent(content_index=content_index, delta=delta)
 
 
 def _finalize_text_block(
@@ -199,9 +199,10 @@ def _finalize_text_block(
 ) -> TextEndEvent | None:
     """Finalize the active text block."""
 
-    block = state.active_block
-    if not isinstance(block, TextBlock) or state.active_block_index is None:
+    active = _active_block(state, TextBlock)
+    if active is None:
         return None
+    block, content_index = active
 
     block.text = event["text"]
     block.provider_metadata = ProviderMetadata.from_values(
@@ -209,7 +210,6 @@ def _finalize_text_block(
         phase=event["phase"],
     )
     event_block = block.model_copy(deep=True)
-    content_index = state.active_block_index
     _clear_active_block(state)
     return TextEndEvent(content_index=content_index, block=event_block)
 
@@ -239,11 +239,11 @@ def _append_tool_call_arguments_delta(
 ) -> ToolCallDeltaEvent | None:
     """Emit a tool-call argument delta for the active tool call."""
 
-    if not isinstance(state.active_block, ToolCallBlock):
+    active = _active_block(state, ToolCallBlock)
+    if active is None:
         return None
-    if state.active_block_index is None:
-        return None
-    return ToolCallDeltaEvent(content_index=state.active_block_index, delta=delta)
+    _, content_index = active
+    return ToolCallDeltaEvent(content_index=content_index, delta=delta)
 
 
 def _replace_tool_call_arguments(
@@ -262,9 +262,10 @@ def _finalize_tool_call_block(
 ) -> ToolCallEndEvent | None:
     """Finalize the active tool-call block."""
 
-    block = state.active_block
-    if not isinstance(block, ToolCallBlock) or state.active_block_index is None:
+    active = _active_block(state, ToolCallBlock)
+    if active is None:
         return None
+    block, content_index = active
 
     block.call_id = event["call_id"]
     block.name = event["name"]
@@ -273,7 +274,6 @@ def _finalize_tool_call_block(
         provider_item_id=event["provider_item_id"],
     )
     event_block = block.model_copy(deep=True)
-    content_index = state.active_block_index
     _clear_active_block(state)
     return ToolCallEndEvent(content_index=content_index, block=event_block)
 
@@ -318,6 +318,18 @@ def _build_stream_error_event(
         error_message=error_message,
         blocks=_copy_blocks(state.blocks),
     )
+
+
+def _active_block[BlockT: AssistantBlock](
+    state: StreamAssemblyState,
+    block_type: type[BlockT],
+) -> tuple[BlockT, int] | None:
+    """Return the active block and its index when it matches the given type."""
+
+    block = state.active_block
+    if not isinstance(block, block_type) or state.active_block_index is None:
+        return None
+    return block, state.active_block_index
 
 
 def _append_active_block(

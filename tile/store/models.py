@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal, Self
+from typing import Literal, Self, assert_never
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -186,13 +186,15 @@ def terminal_run_record(
 def terminal_status_for(outcome: RunOutcome) -> TerminalRunStatus:
     """Return the terminal run status implied by an outcome."""
 
-    if isinstance(outcome, Completed):
-        return "completed"
-    if isinstance(outcome, Failed):
-        return "failed"
-    if isinstance(outcome, Aborted):
-        return "aborted"
-    raise TypeError(f"Unsupported run outcome: {type(outcome).__name__}")
+    match outcome:
+        case Completed():
+            return "completed"
+        case Failed():
+            return "failed"
+        case Aborted():
+            return "aborted"
+        case _:
+            assert_never(outcome)
 
 
 def _normalize_timestamp(value: datetime, *, label: str) -> datetime:

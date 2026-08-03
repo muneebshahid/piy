@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Sequence
 from pathlib import Path
-from typing import get_args
+from typing import get_args, override
 
 from tests.support.agent_streams import ProviderStreamMock, final_text_stream
 from tile import Aborted, Completed, RunOutcome, RunRecord
@@ -133,7 +133,7 @@ def _dependencies(transport: ProviderStreamMock) -> _ExecutionDependencies:
     return _ExecutionDependencies(
         provider=transport,
         instructions="Test",
-        cwd=Path("."),
+        cwd=Path(),
         auto_mode=False,
         tool_executor=ToolExecutor(()),
     )
@@ -146,6 +146,7 @@ class _FinalizationCrash(BaseException):
 class _CrashingFinishStore(SQLiteStore):
     """Store that raises an unexpected base exception during finalization."""
 
+    @override
     def finish_run(
         self,
         *,

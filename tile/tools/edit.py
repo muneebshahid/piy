@@ -29,7 +29,7 @@ SMART_SINGLE_QUOTES = re.compile(r"[\u2018\u2019\u201A\u201B]")
 SMART_DOUBLE_QUOTES = re.compile(r"[\u201C\u201D\u201E\u201F]")
 UNICODE_DASHES = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]")
 BOM = "\ufeff"
-LineEnding = Literal["\n", "\r\n"]
+type LineEnding = Literal["\n", "\r\n"]
 
 
 class EditDetails(ToolDetails):

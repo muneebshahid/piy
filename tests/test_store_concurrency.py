@@ -160,6 +160,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
 )
 def test_failed_commit_rolls_back_and_store_recovers(
     tmp_path: Path,
+    *,
     running_run: bool,
     attempt: Callable[[SQLiteStore], object],
     assert_unchanged: Callable[[SQLiteStore], None],

@@ -23,7 +23,7 @@ from tile.types.tools import JsonObject
 
 
 def created_event(response_id: str) -> CreatedNormalizedEvent:
-    """Builds a created normalized event."""
+    """Build a created normalized event."""
 
     return {
         "type": NormalizedEventType.CREATED,
@@ -32,7 +32,7 @@ def created_event(response_id: str) -> CreatedNormalizedEvent:
 
 
 def reasoning_added_event(item_id: str) -> ReasoningAddedNormalizedEvent:
-    """Builds a reasoning-added normalized event."""
+    """Build a reasoning-added normalized event."""
 
     return {
         "type": NormalizedEventType.REASONING_ADDED,
@@ -41,7 +41,7 @@ def reasoning_added_event(item_id: str) -> ReasoningAddedNormalizedEvent:
 
 
 def reasoning_delta_event(delta: str) -> ReasoningDeltaNormalizedEvent:
-    """Builds a reasoning-delta normalized event."""
+    """Build a reasoning-delta normalized event."""
 
     return {
         "type": NormalizedEventType.REASONING_DELTA,
@@ -54,7 +54,7 @@ def reasoning_done_event(
     summary_text: str,
     reasoning_signature: str | None,
 ) -> ReasoningDoneNormalizedEvent:
-    """Builds a reasoning-done normalized event."""
+    """Build a reasoning-done normalized event."""
 
     return {
         "type": NormalizedEventType.REASONING_DONE,
@@ -68,7 +68,7 @@ def message_added_event(
     item_id: str,
     phase: Phase | None = None,
 ) -> MessageAddedNormalizedEvent:
-    """Builds a message-added normalized event."""
+    """Build a message-added normalized event."""
 
     return {
         "type": NormalizedEventType.MESSAGE_ADDED,
@@ -80,7 +80,7 @@ def message_added_event(
 def message_text_delta_event(
     delta: str,
 ) -> MessageTextDeltaNormalizedEvent:
-    """Builds a message text-delta normalized event."""
+    """Build a message text-delta normalized event."""
 
     return {
         "type": NormalizedEventType.MESSAGE_TEXT_DELTA,
@@ -93,7 +93,7 @@ def message_done_event(
     text: str,
     phase: Phase | None = None,
 ) -> MessageDoneNormalizedEvent:
-    """Builds a message-done normalized event."""
+    """Build a message-done normalized event."""
 
     return {
         "type": NormalizedEventType.MESSAGE_DONE,
@@ -109,7 +109,7 @@ def tool_call_added_event(
     name: str,
     arguments: JsonObject,
 ) -> ToolCallAddedNormalizedEvent:
-    """Builds a tool-call added normalized event."""
+    """Build a tool-call added normalized event."""
 
     return {
         "type": NormalizedEventType.TOOL_CALL_ADDED,
@@ -123,7 +123,7 @@ def tool_call_added_event(
 def tool_call_arguments_delta_event(
     delta: str,
 ) -> ToolCallArgumentsDeltaNormalizedEvent:
-    """Builds a tool-call arguments delta normalized event."""
+    """Build a tool-call arguments delta normalized event."""
 
     return {
         "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
@@ -134,7 +134,7 @@ def tool_call_arguments_delta_event(
 def tool_call_arguments_done_event(
     arguments: JsonObject,
 ) -> ToolCallArgumentsDoneNormalizedEvent:
-    """Builds a tool-call arguments done normalized event."""
+    """Build a tool-call arguments done normalized event."""
 
     return {
         "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
@@ -148,7 +148,7 @@ def tool_call_done_event(
     name: str,
     arguments: JsonObject,
 ) -> ToolCallDoneNormalizedEvent:
-    """Builds a tool-call done normalized event."""
+    """Build a tool-call done normalized event."""
 
     return {
         "type": NormalizedEventType.TOOL_CALL_DONE,
@@ -160,7 +160,7 @@ def tool_call_done_event(
 
 
 def completed_event(stop_reason: StopReason) -> CompletedNormalizedEvent:
-    """Builds a completed normalized event."""
+    """Build a completed normalized event."""
 
     return {
         "type": NormalizedEventType.COMPLETED,
@@ -172,7 +172,7 @@ def incomplete_event(
     stop_reason: StopReason,
     error_message: str | None,
 ) -> IncompleteNormalizedEvent:
-    """Builds an incomplete normalized event."""
+    """Build an incomplete normalized event."""
 
     return {
         "type": NormalizedEventType.INCOMPLETE,
@@ -182,7 +182,7 @@ def incomplete_event(
 
 
 def failed_event(message: str) -> FailedNormalizedEvent:
-    """Builds a failed normalized event."""
+    """Build a failed normalized event."""
 
     return {
         "type": NormalizedEventType.FAILED,

@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import NamedTuple, Protocol, cast
+from typing import NamedTuple, Protocol, override
 from unittest.mock import AsyncMock
 
 import pytest
@@ -66,11 +66,13 @@ class _MockProvider(Provider):
         self._call = call
 
     @property
+    @override
     def name(self) -> str:
         """Return the deterministic provider identity."""
 
         return TEST_PROVIDER
 
+    @override
     async def stream(
         self,
         history: Sequence[ConversationItem],
@@ -429,7 +431,7 @@ async def test_typed_result_prompt_yields_the_full_expected_event_order(
 def _mock_provider(mock: AsyncMock) -> Provider:
     """Configure one lifecycle-specific async mock as a provider."""
 
-    return _MockProvider(cast("_ProviderCall", mock))
+    return _MockProvider(mock)
 
 
 def _weather_tool(fn: ToolFunction) -> ToolDefinition:

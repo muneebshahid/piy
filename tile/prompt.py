@@ -2,8 +2,9 @@
 
 from datetime import date
 from pathlib import Path
+from typing import Final
 
-AUTO_MODE = """\
+AUTO_MODE: Final = """\
 You are operating inside Tile, a headless agent runtime. No one is watching the run \
 and no one can answer questions mid-task.
 - Work autonomously: never ask questions or wait for user input. When the task is \
@@ -16,7 +17,7 @@ Text emitted between tool calls may never be seen.
 - Report outcomes faithfully: if a command or test fails, say so with the relevant \
 output. Never present unverified work as done."""
 
-DEFAULT_INSTRUCTIONS = """\
+DEFAULT_INSTRUCTIONS: Final = """\
 You are an expert coding agent. You complete tasks using the tools available to you.
 - Prefer dedicated tools over broader ones when applicable.
 - Do what the task requires and nothing more; do not expand scope or fix unrelated \
@@ -26,7 +27,7 @@ task explicitly requires them.
 - Reference code as file_path:line_number.
 - Be concise."""
 
-PROJECT_CONTEXT_FILENAMES = ("AGENTS.md", "CLAUDE.md")
+PROJECT_CONTEXT_FILENAMES: Final = ("AGENTS.md", "CLAUDE.md")
 
 
 def read_project_context(cwd: Path) -> str:

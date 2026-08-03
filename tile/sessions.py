@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Final
 from uuid import uuid4
 
 from tile.result import RunOutcome
@@ -83,7 +84,7 @@ class SessionRepository:
     def __init__(self, store: Store) -> None:
         """Bind the repository to its persistent Store."""
 
-        self._store = store
+        self._store: Final = store
 
     def create(
         self,

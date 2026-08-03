@@ -1,3 +1,5 @@
+"""Tests for OpenAI Responses history and tool serialization."""
+
 from openai.types.responses.response_input_param import ResponseInputParam
 from pydantic import TypeAdapter
 
@@ -26,6 +28,8 @@ def test_serialize_history_items_flattens_sample_thread() -> None:
 
 
 def test_serialize_history_items_skips_reasoning_without_replay_metadata() -> None:
+    """Drop reasoning blocks that carry no provider replay signature."""
+
     history = [
         AssistantTurn(
             blocks=[
@@ -56,6 +60,8 @@ def test_serialize_history_items_skips_reasoning_without_replay_metadata() -> No
 
 
 def test_serialize_history_items_replays_tool_calls_and_tool_results() -> None:
+    """Round-trip tool calls and their results through the request payload."""
+
     serialized = serialize_history_items(_tool_call_history())
 
     assert serialized == _expected_tool_call_response_input()
@@ -97,6 +103,8 @@ def test_serialize_history_items_replays_tool_result_images() -> None:
 
 
 def test_serialize_tools_maps_tool_definitions_to_function_tools() -> None:
+    """Map neutral tool definitions onto OpenAI function tool params."""
+
     tools = [
         city_tool(
             "get_weather",

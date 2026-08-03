@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Sequence
+from typing import override
 from unittest.mock import AsyncMock
 
 from tests.support.async_streams import async_stream
@@ -41,11 +42,13 @@ class ProviderStreamMock(Provider):
         self.mock = AsyncMock(side_effect=[async_stream(stream) for stream in streams])
 
     @property
+    @override
     def name(self) -> str:
         """Return the deterministic test provider identity."""
 
         return TEST_PROVIDER
 
+    @override
     async def stream(
         self,
         history: Sequence[ConversationItem],

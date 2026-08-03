@@ -1,3 +1,5 @@
+"""Shared streaming contracts between providers and the runtime."""
+
 from collections.abc import AsyncGenerator
 
 from tile.types.stream_events import ProviderStreamEvent

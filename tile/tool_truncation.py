@@ -7,8 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-TruncationReason = Literal["lines", "bytes"]
-TruncationKeep = Literal["head", "tail"]
+type TruncationReason = Literal["lines", "bytes"]
+type TruncationKeep = Literal["head", "tail"]
 
 
 @dataclass(frozen=True)

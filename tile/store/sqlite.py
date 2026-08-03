@@ -7,7 +7,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from tile._sqlite import immediate_transaction, resolve_connection_target
 from tile.result import Aborted, RunOutcome
@@ -62,7 +62,7 @@ class SQLiteStore:
             database_path=database_path,
             in_memory=in_memory,
         )
-        self._connection = sqlite3.connect(target, isolation_level=None)
+        self._connection: Final = sqlite3.connect(target, isolation_level=None)
         try:
             self._connection.execute("PRAGMA foreign_keys = ON")
             initialize_sqlite_schema(self._connection)

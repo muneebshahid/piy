@@ -1,6 +1,7 @@
 """Caller-facing control and observation handle for one live run."""
 
 from collections.abc import AsyncIterator
+from typing import Final
 
 from tile.events import AgentEvent
 from tile.result import RunResult
@@ -13,7 +14,7 @@ class RunHandle:
     def __init__(self, execution: RunExecution) -> None:
         """Bind the handle to its internal run execution."""
 
-        self._execution = execution
+        self._execution: Final = execution
 
     @property
     def id(self) -> str:

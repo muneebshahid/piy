@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import Final, Literal, TypedDict, override
 
 from openai import AsyncOpenAI, AsyncStream
 from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_create_params import ResponseCreateParamsStreaming
+from openai.types.shared_params.reasoning import Reasoning as OpenAIReasoning
 
 from tile.providers.base import Provider
 from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
@@ -16,10 +17,7 @@ from tile.providers.openai.stream_assembler import assemble_stream
 from tile.types.contracts import AsyncEventStream
 from tile.types.conversation import ConversationItem
 from tile.types.stream_events import ProviderSource
-from tile.types.tools import JsonObject, ToolDefinition
-
-if TYPE_CHECKING:
-    from openai.types.shared_params.reasoning import Reasoning as OpenAIReasoning
+from tile.types.tools import ToolDefinition
 
 
 class Reasoning(TypedDict, total=False):
@@ -43,16 +41,23 @@ class OpenAIProvider(Provider):
 
         super().__init__(
             model=model,
-            reasoning=cast("JsonObject | None", reasoning),
+            reasoning=None if reasoning is None else {**reasoning},
         )
-        self._client = client
+        self._client: Final = client
+        # Second copy on purpose: the base keeps the provider-neutral
+        # JsonObject for its public property; this one stays typed.
+        self._reasoning_options: Reasoning | None = (
+            None if reasoning is None else {**reasoning}
+        )
 
     @property
+    @override
     def name(self) -> str:
         """Return the OpenAI provider identity."""
 
         return "openai"
 
+    @override
     async def stream(
         self,
         history: Sequence[ConversationItem],
@@ -66,7 +71,7 @@ class OpenAIProvider(Provider):
             history,
             self.model,
             instructions=instructions,
-            reasoning=cast("Reasoning | None", self.reasoning),
+            reasoning=self._reasoning_options,
             tools=tools,
         )
         raw_stream = await self._client.responses.create(**request_params)
@@ -105,7 +110,7 @@ def _build_stream_request_params(
     request_params: ResponseCreateParamsStreaming = {
         "model": model,
         "input": serialize_history_items(history),
-        "reasoning": cast("OpenAIReasoning | None", reasoning),
+        "reasoning": None if reasoning is None else OpenAIReasoning(**reasoning),
         "instructions": instructions,
         "stream": True,
     }

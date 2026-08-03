@@ -25,6 +25,19 @@ dev = [
 [tool.ty.terminal]
 error-on-warning = true
 
+[tool.ty.rules]
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+possibly-missing-import = "error"
+missing-type-argument = "error"
+division-by-zero = "error"
+blanket-ignore-comment = "error"
+unsupported-dynamic-base = "error"
+missing-override-decorator = "error"
+
+[tool.ruff.lint]
+extend-select = ["ARG", "D1", "D401", "FBT", "PT", "PTH"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"

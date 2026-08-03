@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from typing import cast
+from typing import Final, cast
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -67,15 +67,17 @@ class RunExecution:
     ) -> None:
         """Prepare an already accepted run without performing side effects."""
 
-        self._session = session
-        self._record = record
-        self._result_type = result
-        self._dependencies = dependencies
+        self._session: Final = session
+        self._record: Final = record
+        self._result_type: Final = result
+        self._dependencies: Final = dependencies
         self._events: list[AgentEvent] = []
-        self._history = _RunHistory.start(committed_history, prompt=record.prompt)
+        self._history: Final = _RunHistory.start(
+            committed_history, prompt=record.prompt
+        )
         self._result: RunResult | None = None
-        self._changed = asyncio.Event()
-        self._finalized = asyncio.Event()
+        self._changed: Final = asyncio.Event()
+        self._finalized: Final = asyncio.Event()
         self._task: asyncio.Task[RunOutcome] | None = None
         self._emit(RunStartEvent())
 

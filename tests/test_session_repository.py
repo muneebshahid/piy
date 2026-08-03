@@ -1,6 +1,7 @@
 """Tests for store-bound sessions and the session repository."""
 
 from collections.abc import Iterator
+from typing import override
 from uuid import UUID
 
 import pytest
@@ -22,12 +23,14 @@ class _ObservedStore(SQLiteStore):
         self.history_reads = 0
         self.run_reads = 0
 
+    @override
     def get_history(self, session_id: str) -> tuple[HistoryItem, ...]:
         """Count and delegate one public history read."""
 
         self.history_reads += 1
         return super().get_history(session_id)
 
+    @override
     def list_runs(self, session_id: str) -> tuple[RunRecord, ...]:
         """Count and delegate one public run collection read."""
 

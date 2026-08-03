@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
-from typing import get_args
+from typing import get_args, override
 
 import tile
 from tile import (
@@ -52,7 +52,7 @@ async def test_documented_public_imports_run_fake_prompt() -> None:
     harness = AgentHarness(
         session=session,
         tools=[_fake_tool_definition()],
-        cwd=Path("."),
+        cwd=Path(),
     )
     provider = _FakeProvider()
 
@@ -97,11 +97,13 @@ class _FakeProvider(Provider):
         super().__init__(model="gpt-5.4")
 
     @property
+    @override
     def name(self) -> str:
         """Return the fake provider identity."""
 
         return "fake"
 
+    @override
     async def stream(
         self,
         history: Sequence[ConversationItem],
