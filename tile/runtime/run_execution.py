@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from typing import Final, cast
+from typing import Final
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -22,8 +22,8 @@ from tile.result import (
 from tile.runtime.execution import _ExecutionDependencies, execute_prompt
 from tile.runtime.history import _RunHistory
 from tile.sessions import Session
-from tile.store.base import RunAlreadyEndedError
-from tile.store.models import HistoryItem, RunRecord
+from tile.store.base import RunAlreadyEndedError, StoreError
+from tile.store.models import ActiveRun, HistoryItem, TerminalRun
 
 
 class RunExecution:
@@ -60,7 +60,7 @@ class RunExecution:
         self,
         *,
         session: Session,
-        record: RunRecord,
+        record: ActiveRun,
         committed_history: Sequence[HistoryItem],
         result: type[BaseModel] | None,
         dependencies: _ExecutionDependencies,
@@ -173,7 +173,7 @@ class RunExecution:
             )
         except RunAlreadyEndedError:
             return self._ended_outcome()
-        return cast("RunOutcome", record.outcome)
+        return record.outcome
 
     def _terminal_outcome(self, task: asyncio.Task[RunOutcome]) -> RunOutcome:
         """Derive a serializable outcome from this execution's task state."""
@@ -189,7 +189,9 @@ class RunExecution:
         """Return the authoritative outcome of an already-ended run."""
 
         record = self._session._get_run(self.id)
-        return cast("RunOutcome", record.outcome)
+        if not isinstance(record, TerminalRun):
+            raise StoreError(f"Run {self.id!r} ended without a terminal record.")
+        return record.outcome
 
     def _append_terminal_event(self, result: RunResult) -> None:
         """Close the live event log with a durable end or harness fault."""

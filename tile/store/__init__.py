@@ -14,11 +14,13 @@ from tile.store.base import (
     StorePersistenceError,
 )
 from tile.store.models import (
+    ActiveRun,
     HistoryItem,
     RunRecord,
     RunStatus,
     SessionRecord,
     StartedRun,
+    TerminalRun,
     TerminalRunStatus,
 )
 from tile.store.schema import (
@@ -29,6 +31,7 @@ from tile.store.sqlite import SQLiteStore
 
 __all__ = [
     "SQLITE_STORE_SCHEMA_VERSION",
+    "ActiveRun",
     "ActiveRunError",
     "HistoryItem",
     "InvalidHistoryError",
@@ -47,5 +50,6 @@ __all__ = [
     "StoreError",
     "StoreOperation",
     "StorePersistenceError",
+    "TerminalRun",
     "TerminalRunStatus",
 ]

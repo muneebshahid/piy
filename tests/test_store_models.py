@@ -15,14 +15,16 @@ from tests.support.store import (
 )
 from tile import (
     Aborted,
+    ActiveRun,
     AgentFailure,
     Completed,
     ExecutionFailure,
     Failed,
     HistoryItem,
     InvalidHistoryError,
-    RunRecord,
     SessionRecord,
+    StorePersistenceError,
+    TerminalRun,
 )
 from tile.store import SQLiteStore, TerminalRunStatus
 from tile.types import ConversationItem, UserMessage
@@ -38,14 +40,13 @@ def _session_record() -> SessionRecord:
     )
 
 
-def _running_record() -> RunRecord:
-    """Build one deterministic running record."""
+def _active_record() -> ActiveRun:
+    """Build one deterministic active record."""
 
-    return RunRecord(
+    return ActiveRun(
         id="run-1",
         session_id="session-1",
         prompt="hello",
-        status="running",
         started_at=STARTED_AT,
         model="gpt-5.4",
         provider="openai",
@@ -55,15 +56,13 @@ def _running_record() -> RunRecord:
 def _terminal_record(
     *,
     outcome: Completed | Failed | Aborted,
-    status: TerminalRunStatus,
-) -> RunRecord:
+) -> TerminalRun:
     """Build one deterministic terminal record snapshot."""
 
-    return RunRecord(
+    return TerminalRun(
         id="run-1",
         session_id="session-1",
         prompt="hello",
-        status=status,
         started_at=STARTED_AT,
         ended_at=STARTED_AT + timedelta(seconds=1),
         model="gpt-5.4",
@@ -92,13 +91,13 @@ def test_persistent_records_are_frozen() -> None:
     """Prevent callers from replacing fields on authoritative records."""
 
     session = _session_record()
-    run = _running_record()
+    run = _active_record()
     history_item = _history_item()
 
     with pytest.raises(ValidationError):
         session.updated_at = STARTED_AT + timedelta(seconds=1)  # ty: ignore[invalid-assignment]
     with pytest.raises(ValidationError):
-        run.status = "completed"  # ty: ignore[invalid-assignment]
+        run.prompt = "changed"  # ty: ignore[invalid-assignment]
     with pytest.raises(ValidationError):
         history_item.position = 2  # ty: ignore[invalid-assignment]
 
@@ -200,64 +199,104 @@ def test_get_history_rejects_a_persisted_role_contradicting_its_payload(
         ),
     ],
 )
-def test_run_record_accepts_every_consistent_terminal_outcome(
+def test_terminal_run_derives_status_from_its_outcome(
     outcome: Completed | Failed | Aborted,
     expected_status: TerminalRunStatus,
 ) -> None:
-    """Keep terminal status consistent with its serializable outcome."""
+    """Derive the terminal status from the serializable outcome."""
 
-    finished = _terminal_record(outcome=outcome, status=expected_status)
+    finished = _terminal_record(outcome=outcome)
 
     assert finished.status == expected_status
     assert finished.outcome == outcome
     assert finished.prompt == "hello"
     assert finished.model == "gpt-5.4"
     assert finished.provider == "openai"
+    assert finished.model_dump()["status"] == expected_status
+    assert TerminalRun.model_validate(finished.model_dump()) == finished
 
 
-@pytest.mark.parametrize(
-    ("values", "match"),
-    [
-        pytest.param(
-            _running_record().model_dump()
-            | {"status": "completed", "outcome": Completed(value="done")},
-            "end timestamp",
-            id="terminal-status-without-end",
-        ),
-        pytest.param(
-            _running_record().model_dump()
-            | {"ended_at": STARTED_AT + timedelta(seconds=1)},
-            "terminal data",
-            id="running-with-terminal-data",
-        ),
-        pytest.param(
-            _terminal_record(
-                outcome=Completed(value="done"),
-                status="completed",
-            ).model_dump()
-            | {"ended_at": STARTED_AT - timedelta(seconds=1)},
-            "end before",
-            id="ends-before-start",
-        ),
-        pytest.param(
-            _terminal_record(
-                outcome=Completed(value="done"),
-                status="completed",
-            ).model_dump()
-            | {"status": "aborted"},
-            "contradicts",
-            id="status-conflicts-with-outcome",
-        ),
-    ],
-)
-def test_run_record_rejects_inconsistent_lifecycle_snapshots(
-    values: dict[str, object],
-    match: str,
+def test_active_run_cannot_represent_terminal_data() -> None:
+    """Drop terminal payload keys because an active record has no such fields."""
+
+    hydrated = ActiveRun.model_validate(
+        _active_record().model_dump() | {"ended_at": STARTED_AT + timedelta(seconds=1)}
+    )
+
+    assert hydrated == _active_record()
+
+
+def test_terminal_run_requires_an_end_timestamp() -> None:
+    """Reject a terminal record constructed without its end timestamp."""
+
+    with pytest.raises(ValidationError, match="ended_at"):
+        TerminalRun.model_validate(
+            _active_record().model_dump() | {"outcome": Completed(value="done")}
+        )
+
+
+def test_terminal_run_rejects_ending_before_start() -> None:
+    """Reject a terminal record whose end precedes its start."""
+
+    with pytest.raises(ValidationError, match="end before"):
+        TerminalRun.model_validate(
+            _terminal_record(outcome=Completed(value="done")).model_dump()
+            | {"ended_at": STARTED_AT - timedelta(seconds=1)}
+        )
+
+
+def test_get_run_rejects_a_stored_status_contradicting_its_outcome(
+    tmp_path: Path,
 ) -> None:
-    """Reject run snapshots whose redundant lifecycle facts disagree."""
+    """Surface stored status and outcome disagreement as a persistence error."""
 
-    with pytest.raises(ValidationError, match=match):
-        RunRecord.model_validate(values)
+    database_path = tmp_path / "contradicting-status.db"
+    store = SQLiteStore(database_path)
+    try:
+        create_session(store, session_id="session-1")
+        start_run(store)
+        persist_outcome(
+            store,
+            outcome=Completed(value="done"),
+            history_delta=[],
+        )
+    finally:
+        store.close()
+    corrupt_column(database_path, table="runs", column="status", value="aborted")
+
+    reopened = SQLiteStore(database_path)
+    try:
+        with pytest.raises(StorePersistenceError, match="contradicts"):
+            reopened.get_run("session-1", "run-1")
+    finally:
+        reopened.close()
+
+
+def test_get_run_rejects_a_terminal_row_missing_its_terminal_data(
+    tmp_path: Path,
+) -> None:
+    """Surface a terminal row stripped of its outcome as a persistence error."""
+
+    database_path = tmp_path / "missing-terminal-data.db"
+    store = SQLiteStore(database_path)
+    try:
+        create_session(store, session_id="session-1")
+        start_run(store)
+        persist_outcome(
+            store,
+            outcome=Completed(value="done"),
+            history_delta=[],
+        )
+    finally:
+        store.close()
+    corrupt_column(database_path, table="runs", column="outcome_json", value=None)
+
+    reopened = SQLiteStore(database_path)
+    try:
+        with pytest.raises(StorePersistenceError, match="missing terminal data"):
+            reopened.get_run("session-1", "run-1")
+    finally:
+        reopened.close()
 
 
 @pytest.mark.parametrize(

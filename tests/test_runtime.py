@@ -24,6 +24,7 @@ from tests.support.store import (
     create_session,
     persist_outcome,
     start_run,
+    terminal_outcome,
 )
 from tests.support.tool_definitions import NoInput
 from tile import (
@@ -99,7 +100,7 @@ async def test_harness_runs_prompts_for_its_single_session(
 
     assert result == Completed(value="done")
     assert harness.session is session
-    assert session.get_runs()[0].outcome == result
+    assert terminal_outcome(session.get_runs()[0]) == result
     assert [item.role for item in session.get_history()] == ["user", "assistant"]
 
 
@@ -132,7 +133,7 @@ async def test_harness_accepts_a_different_configured_provider_per_prompt(
 async def test_runtime_keeps_multi_attempt_history_provisional_until_finalization(
     store: SQLiteStore,
 ) -> None:
-    """Keep history local while the durable record stays running with its prompt."""
+    """Keep history local while the durable record stays active with its prompt."""
 
     releases = (asyncio.Event(), asyncio.Event(), asyncio.Event())
     releases[0].set()
@@ -172,7 +173,7 @@ async def test_runtime_keeps_multi_attempt_history_provisional_until_finalizatio
 
     await provider.wait_for_calls(expected=3)
     assert session.get_history() == ()
-    assert store.get_run(session_id=session.id, run_id=handle.id).status == "running"
+    assert store.get_run(session_id=session.id, run_id=handle.id).status == "active"
     assert store.get_run(session_id=session.id, run_id=handle.id).prompt == "inspect"
     assert [item.role for item in provider.history(2)] == [
         "user",
@@ -184,9 +185,9 @@ async def test_runtime_keeps_multi_attempt_history_provisional_until_finalizatio
 
     releases[2].set()
     assert await handle.wait() == Completed(value=_TextResult(value="done"))
-    assert store.get_run(session_id=session.id, run_id=handle.id).outcome == Completed(
-        value={"value": "done"}
-    )
+    assert terminal_outcome(
+        store.get_run(session_id=session.id, run_id=handle.id)
+    ) == Completed(value={"value": "done"})
     assert [item.role for item in session.get_history()] == [
         "user",
         "assistant",
@@ -198,7 +199,7 @@ async def test_runtime_keeps_multi_attempt_history_provisional_until_finalizatio
     ]
 
 
-async def test_runtime_persists_running_record_before_provider_execution(
+async def test_runtime_persists_active_record_before_provider_execution(
     store: SQLiteStore,
 ) -> None:
     """Make the submitted prompt durable before invoking the provider."""
@@ -228,7 +229,7 @@ async def test_runtime_persists_running_record_before_provider_execution(
             instructions: str,
             tools: Sequence[ToolDefinition] | None,
         ) -> AsyncEventStream:
-            """Capture the running record before returning a response."""
+            """Capture the active record before returning a response."""
 
             _ = history, instructions, tools
             observed_statuses.extend(run.status for run in store.list_runs("session-1"))
@@ -238,7 +239,7 @@ async def test_runtime_persists_running_record_before_provider_execution(
     run = await harness.prompt("hello", provider=_ObservingProvider())
 
     assert isinstance(await run.wait(), Completed)
-    assert observed_statuses == ["running"]
+    assert observed_statuses == ["active"]
 
 
 async def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
@@ -324,7 +325,10 @@ async def test_agent_failure_commits_its_complete_replayable_history(
 
     expected = Failed(cause=AgentFailure(reason="cannot deliver"))
     assert outcome == expected
-    assert store.get_run(session_id=session.id, run_id=handle.id).outcome == expected
+    assert (
+        terminal_outcome(store.get_run(session_id=session.id, run_id=handle.id))
+        == expected
+    )
     assert [item.role for item in session.get_history()] == [
         "user",
         "assistant",
@@ -379,7 +383,7 @@ async def test_abort_commits_a_healed_replayable_prefix(store: SQLiteStore) -> N
 async def test_overlapping_prompt_is_rejected_by_the_store(
     store: SQLiteStore,
 ) -> None:
-    """Enforce one running run without a process-local session lock."""
+    """Enforce one active run without a process-local session lock."""
 
     release = asyncio.Event()
     provider = GatedProviderStreamMock([release])
@@ -420,10 +424,9 @@ async def test_durable_abort_fences_old_history_and_runs_the_successor(
     assert [
         item.content for item in session.get_history() if isinstance(item, UserMessage)
     ] == ["second"]
-    assert store.get_run(
-        session_id=session.id,
-        run_id=first.id,
-    ).outcome == Aborted(reason="cancelled")
+    assert terminal_outcome(
+        store.get_run(session_id=session.id, run_id=first.id)
+    ) == Aborted(reason="cancelled")
 
 
 async def test_durable_abort_works_across_harness_instances(tmp_path: Path) -> None:
@@ -506,7 +509,7 @@ async def test_finalization_fault_requires_the_durable_abort_escape_hatch(
     assert await first.wait() is result
     assert (
         failing_finish_store.get_run(session_id=session.id, run_id=first.id).status
-        == "running"
+        == "active"
     )
     assert session.get_history() == ()
     with pytest.raises(ActiveRunError):

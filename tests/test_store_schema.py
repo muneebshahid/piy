@@ -35,7 +35,7 @@ def _insert_raw_run_row(
         "id": "invalid",
         "session_id": "session-1",
         "prompt": "hello",
-        "status": "running",
+        "status": "active",
         "started_at": STARTED_AT.isoformat(),
         "ended_at": None,
         "model": "gpt-5.4",

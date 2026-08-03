@@ -5,7 +5,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Final, cast
 
@@ -23,11 +22,13 @@ from tile.store.base import (
     StorePersistenceError,
 )
 from tile.store.models import (
+    ActiveRun,
     HistoryItem,
     RunRecord,
     SessionRecord,
     StartedRun,
-    new_running_run_record,
+    TerminalRun,
+    new_active_run_record,
     new_session_record,
     terminal_run_record,
 )
@@ -36,6 +37,7 @@ from tile.store.serialization import (
     HistoryRow,
     RunRow,
     SessionRow,
+    active_run_from_row,
     history_from_row,
     history_values,
     run_from_row,
@@ -124,10 +126,10 @@ class SQLiteStore:
             immediate_transaction(self._connection),
         ):
             self._require_session(session_id)
-            active = self._running_run_for_session(session_id)
+            active = self._active_run_for_session(session_id)
             self._reject_active_run(active)
             committed_history = self._history_for_session(session_id)
-            record = new_running_run_record(
+            record = new_active_run_record(
                 run_id=run_id,
                 session_id=session_id,
                 prompt=prompt,
@@ -147,23 +149,23 @@ class SQLiteStore:
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
-        """Atomically finalize a still-running run and append its history delta."""
+    ) -> TerminalRun:
+        """Atomically finalize a still-active run and append its history delta."""
 
         with (
             _translate_store_errors("finish_run"),
             immediate_transaction(self._connection),
         ):
             run = self._get_run(session_id, run_id)
-            if run.status != "running":
+            if not isinstance(run, ActiveRun):
                 raise RunAlreadyEndedError(f"Run already ended: {run_id}")
             record = terminal_run_record(run, outcome=outcome)
-            self._update_running_run(record)
+            self._finalize_active_run(record)
             self._insert_history_delta(record, history_delta)
             self._touch_session(record)
         return record
 
-    def abort_active_run(self, session_id: str) -> RunRecord | None:
+    def abort_active_run(self, session_id: str) -> TerminalRun | None:
         """Durably abort a session's active run and fence its later writes."""
 
         with (
@@ -171,11 +173,11 @@ class SQLiteStore:
             immediate_transaction(self._connection),
         ):
             self._require_session(session_id)
-            active = self._running_run_for_session(session_id)
+            active = self._active_run_for_session(session_id)
             if active is None:
                 return None
             record = terminal_run_record(active, outcome=Aborted())
-            self._update_running_run(record)
+            self._finalize_active_run(record)
             self._touch_session(record)
         return record
 
@@ -275,24 +277,26 @@ class SQLiteStore:
         if row is not None:
             raise SessionAlreadyExistsError(f"Session already exists: {session_id}")
 
-    def _running_run_for_session(self, session_id: str) -> RunRecord | None:
-        """Return the session's running run when present."""
+    def _active_run_for_session(self, session_id: str) -> ActiveRun | None:
+        """Return the session's active run when present."""
 
         row = self._connection.execute(
-            _SELECT_RUN_SQL + " WHERE session_id = ? AND status = 'running'",
+            _SELECT_RUN_SQL + " WHERE session_id = ? AND status = 'active'",
             (session_id,),
         ).fetchone()
-        return None if row is None else run_from_row(cast("RunRow", row))
+        if row is None:
+            return None
+        return active_run_from_row(cast("RunRow", row))
 
-    def _reject_active_run(self, active: RunRecord | None) -> None:
+    def _reject_active_run(self, active: ActiveRun | None) -> None:
         """Reject a start when its session already has an active run."""
 
         if active is None:
             return
         raise ActiveRunError(f"Session already has an active run: {active.session_id}")
 
-    def _insert_run(self, record: RunRecord) -> None:
-        """Insert one running run with domain error translation."""
+    def _insert_run(self, record: ActiveRun) -> None:
+        """Insert one active run with domain error translation."""
 
         try:
             self._connection.execute(_INSERT_RUN_SQL, run_values(record))
@@ -323,7 +327,7 @@ class SQLiteStore:
             raise RunNotFoundError(f"Unknown run {run_id!r} in session {session_id!r}.")
         return run_from_row(cast("RunRow", row))
 
-    def _update_running_run(self, record: RunRecord) -> None:
+    def _finalize_active_run(self, record: TerminalRun) -> None:
         """Conditionally update a run only while it remains active."""
 
         cursor = self._connection.execute(
@@ -335,7 +339,7 @@ class SQLiteStore:
 
     def _insert_history_delta(
         self,
-        run: RunRecord,
+        run: TerminalRun,
         items: Sequence[ConversationItem],
     ) -> None:
         """Append one run's typed history delta in order."""
@@ -343,7 +347,7 @@ class SQLiteStore:
         if not items:
             return
         first_position = self._next_history_position(run.session_id)
-        created_at = cast("datetime", run.ended_at)
+        created_at = run.ended_at
         rows = [
             history_values(
                 item=item,
@@ -356,11 +360,9 @@ class SQLiteStore:
         ]
         self._connection.executemany(_INSERT_HISTORY_SQL, rows)
 
-    def _touch_session(self, run: RunRecord) -> None:
+    def _touch_session(self, run: TerminalRun) -> None:
         """Advance session metadata with the committed run timestamp."""
 
-        if run.ended_at is None:
-            raise ValueError("A committed run requires an end timestamp.")
         current = self._get_session(run.session_id)
         updated_at = max(current.updated_at, run.ended_at)
         self._connection.execute(
@@ -448,7 +450,7 @@ _INSERT_RUN_SQL = f"""
 _FINISH_RUN_SQL = """
     UPDATE runs
     SET status = ?, ended_at = ?, outcome_json = ?
-    WHERE id = ? AND session_id = ? AND status = 'running'
+    WHERE id = ? AND session_id = ? AND status = 'active'
 """
 _INSERT_HISTORY_SQL = """
     INSERT INTO history_items (
