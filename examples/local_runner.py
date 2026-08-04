@@ -8,6 +8,7 @@ from typing import TextIO
 
 from openai import AsyncOpenAI
 
+from examples.settings import settings
 from tile import (
     AgentHarness,
     Completed,
@@ -19,7 +20,6 @@ from tile import (
 from tile.events import AgentEvent
 from tile.providers.openai import OpenAIProvider
 from tile.tools import BUILTIN_TOOLS
-from examples.settings import settings
 
 
 def main() -> None:

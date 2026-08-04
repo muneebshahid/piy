@@ -7,6 +7,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.support.store import (
+    corrupt_column,
+    create_session,
+    persist_outcome,
+    seed_database,
+    start_run,
+    terminal_outcome,
+)
 from tile import (
     Aborted,
     Completed,
@@ -19,13 +27,6 @@ from tile import (
 )
 from tile.store import SQLiteStore
 from tile.types import AssistantTurn, UserMessage
-from tests.support.store import (
-    corrupt_column,
-    create_session,
-    persist_outcome,
-    seed_database,
-    start_run,
-)
 
 
 def _invoke_finish_run(store: SQLiteStore) -> None:
@@ -154,7 +155,10 @@ def test_finish_run_copies_the_caller_owned_outcome(store: SQLiteStore) -> None:
 
     expected = Completed(value={"nested": {"value": "original"}})
     assert finished.outcome == expected
-    assert store.get_run(session_id="session-1", run_id="run-1").outcome == expected
+    assert (
+        terminal_outcome(store.get_run(session_id="session-1", run_id="run-1"))
+        == expected
+    )
 
 
 def test_sqlite_store_rejects_duplicate_and_missing_aggregates(
@@ -178,10 +182,9 @@ def test_sqlite_store_rejects_duplicate_and_missing_aggregates(
         start_run(store, prompt="again")
 
     assert store.get_run(session_id="session-1", run_id="run-1").id == active.id
-    assert store.get_run(
-        session_id="session-1",
-        run_id="run-1",
-    ).outcome == Aborted(reason="cancelled")
+    assert terminal_outcome(
+        store.get_run(session_id="session-1", run_id="run-1")
+    ) == Aborted(reason="cancelled")
 
 
 def test_get_and_finish_run_require_the_owning_session(store: SQLiteStore) -> None:
@@ -252,7 +255,7 @@ def test_abort_active_run_is_idempotent_when_no_run_is_running(
         UserMessage(content="hello"),
     )
     assert store.get_run(session_id="session-1", run_id="run-1") == completed
-    assert store.get_run(session_id="session-1", run_id="run-2").status == "running"
+    assert store.get_run(session_id="session-1", run_id="run-2").status == "active"
 
 
 def test_fork_session_copies_all_history_with_new_envelopes(
@@ -312,7 +315,7 @@ def test_finish_run_rolls_back_status_when_history_insert_fails(
     """Keep the run active when any part of finalization cannot commit."""
 
     database_path = tmp_path / "failed-history-insert.db"
-    seed_database(database_path, running_run=True)
+    seed_database(database_path, active_run=True)
     connection = sqlite3.connect(database_path)
     connection.execute(
         """
@@ -337,7 +340,7 @@ def test_finish_run_rolls_back_status_when_history_insert_fails(
         assert raised.value.operation == "finish_run"
         assert isinstance(raised.value.cause, sqlite3.IntegrityError)
         assert "history insert failed" in str(raised.value.cause)
-        assert store.get_run(session_id="session-1", run_id="run-1").status == "running"
+        assert store.get_run(session_id="session-1", run_id="run-1").status == "active"
         assert store.get_history("session-1") == ()
     finally:
         store.close()

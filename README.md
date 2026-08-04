@@ -30,7 +30,7 @@ concrete guarantees:
   immediately, and execution continues even if every subscriber disconnects;
 - a provider death never corrupts the session: partial turns are dropped,
   unanswered tool calls are healed, and the next prompt works;
-- every accepted prompt has a durable running record before execution begins;
+- every accepted prompt has a durable active record before execution begins;
 - every durable run log closes with `RunEndEvent`; a durability failure closes
   the local stream with `RunFaultEvent` without retaining harness fault state;
 - providers normalize into one event and history contract;
@@ -153,16 +153,16 @@ not current capabilities.
 
 One `Store` owns sessions, runs, and committed conversation history. Persistent
 `SessionRecord` and `RunRecord` objects are outputs of Store operations, not
-caller-constructed inputs. A running record contains the submitted prompt
+caller-constructed inputs. An active record contains the submitted prompt
 before provider execution begins. The prompt and all replayable assistant/tool
 items remain provisional until the run finishes; session history therefore
 contains complete committed turns only.
 
 Prompt admission supplies intent fields — the owning session id, a new run id,
 the prompt, model, and provider — and the Store constructs and persists the
-running record. Finalization supplies the owning session id, run id, outcome,
+active record. Finalization supplies the owning session id, run id, outcome,
 and history delta. The Store scopes the operation by both identities and
-derives the authoritative terminal record from its stored running row. Reading
+derives the authoritative terminal record from its stored active row. Reading
 one run is scoped by session in the same way. `RunRecord` consequently has no
 public `start` or `finish` factory: it is an immutable snapshot returned after
 a Store operation succeeds.
@@ -170,7 +170,7 @@ a Store operation succeeds.
 Execution sits between two short transactions:
 
 1. `start_run` validates the session, snapshots committed history, constructs
-   the running record from the supplied intent fields, and inserts it
+   the active record from the supplied intent fields, and inserts it
    atomically.
 2. Provider streaming and tool execution happen entirely in memory.
 3. Execution derives a candidate outcome. `finish_run` finds the authoritative
@@ -203,11 +203,11 @@ record = next(record for record in session.get_runs() if record.id == run.id)
 session_records = session.get_runs()
 ```
 
-`finish_run` uses the run's `status="running"` condition as an ended-run fence.
+`finish_run` uses the run's `status="active"` condition as an ended-run fence.
 If the escape hatch already aborted the record, its handle returns the
 authoritative stored outcome. If the terminal write fails because of a backend
-error, the transaction rolls back, the stored run remains `running`, and
-`RunHandle.wait()` returns `Faulted`. The running record blocks later prompts
+error, the transaction rolls back, the stored run remains `active`, and
+`RunHandle.wait()` returns `Faulted`. The active record blocks later prompts
 with `ActiveRunError`.
 
 ```python
@@ -266,7 +266,7 @@ run = await harness.prompt(
 result = await run.wait()
 match result:
     case Completed(value=report):
-        print(report.city, report.temp_c)   # a WeatherReport instance
+        print(report.city, report.temp_c)  # a WeatherReport instance
     case Failed(cause=AgentFailure(reason=reason)):
         print("model declared failure:", reason)
 ```
@@ -319,7 +319,7 @@ recovery unit above that is re-prompting the session.
 Run events are replayable in-process facts. After successful finalization,
 `RunEndEvent.outcome`, `run.wait()`, and the stored record agree. A backend
 persistence failure instead emits `RunFaultEvent`, returns `Faulted`, and may
-leave the stored run `running` for explicit recovery.
+leave the stored run `active` for explicit recovery.
 
 ## Observability
 

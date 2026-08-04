@@ -15,7 +15,7 @@ after it has stopped.
 """
 
 from collections.abc import Callable
-from typing import Literal, TypeAlias
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -38,7 +38,7 @@ class AgentEvent(BaseModel):
     type: str
 
 
-EmitFn: TypeAlias = Callable[[AgentEvent], None]
+type EmitFn = Callable[[AgentEvent], None]
 """Synchronous all-or-raise sink for one ordered agent event."""
 
 
@@ -153,7 +153,7 @@ class ToolExecutionEndEvent(AgentEvent):
     outcome: ToolExecutionOutcome
 
 
-AgentRunEvent: TypeAlias = (
+type AgentRunEvent = (
     RunStartEvent
     | RunEndEvent
     | RunFaultEvent

@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
-from typing import get_args
+from typing import get_args, override
 
 import tile
 from tile import (
@@ -16,6 +16,7 @@ from tile import (
     Provider,
     RunAlreadyEndedError,
     RunHandle,
+    RunOutcome,
     RunRecord,
     Session,
     SessionNotFoundError,
@@ -52,7 +53,7 @@ async def test_documented_public_imports_run_fake_prompt() -> None:
     harness = AgentHarness(
         session=session,
         tools=[_fake_tool_definition()],
-        cwd=Path("."),
+        cwd=Path(),
     )
     provider = _FakeProvider()
 
@@ -69,8 +70,10 @@ async def test_documented_public_imports_run_fake_prompt() -> None:
     assert issubclass(SessionNotFoundError, KeyError)
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
-    assert get_args(ExecutionFailureOrigin) == ("turn", "execution")
+    assert get_args(ExecutionFailureOrigin.__value__) == ("turn", "execution")
     assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
+    assert isinstance(AgentFailure(reason="cannot deliver"), FailureCause)
+    assert isinstance(Aborted(), RunOutcome)
     assert issubclass(RunAlreadyEndedError, RuntimeError)
     assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]
@@ -97,11 +100,13 @@ class _FakeProvider(Provider):
         super().__init__(model="gpt-5.4")
 
     @property
+    @override
     def name(self) -> str:
         """Return the fake provider identity."""
 
         return "fake"
 
+    @override
     async def stream(
         self,
         history: Sequence[ConversationItem],
@@ -135,7 +140,7 @@ def _assistant_response() -> tuple[ProviderStreamEvent, ...]:
 
 async def _stream_events(
     events: Sequence[ProviderStreamEvent],
-) -> AsyncGenerator[ProviderStreamEvent, None]:
+) -> AsyncGenerator[ProviderStreamEvent]:
     """Yield fake provider events."""
 
     for event in events:

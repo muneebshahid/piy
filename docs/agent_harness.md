@@ -35,7 +35,7 @@ result = await run.wait()
 
 ## Durability contract
 
-Prompt admission persists the running `RunRecord` before a handle is returned
+Prompt admission persists the `ActiveRun` record before a handle is returned
 or provider work begins. A start-write failure raises to the caller, returns no
 handle, and leaves the harness reusable after the persistence issue is resolved.
 
@@ -52,13 +52,13 @@ replayable history commit atomically. `RunHandle.wait()` then returns only the
 matching `RunEndEvent`.
 
 Run finalization and single-run reads are scoped by both session id and run id.
-The Store loads the authoritative running row inside the transaction, derives
+The Store loads the authoritative active row inside the transaction, derives
 the terminal record, and fences a late finish after another writer has already
 ended the run.
 
 If terminal persistence fails, `wait()` returns `Faulted` and the stream closes
 with `RunFaultEvent`. `Faulted` is not a persisted `RunOutcome`; the durable run
-may still be `running`, so the Store rejects another prompt with
+may still be `active`, so the Store rejects another prompt with
 `ActiveRunError`. After fixing the persistence issue, callers may use the
 temporary `SessionRepository.abort_active_run(session.id)` escape hatch. The
 same harness can then be reused because it retains no fault state.

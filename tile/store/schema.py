@@ -151,7 +151,7 @@ def _create_run_table(connection: sqlite3.Connection) -> None:
             outcome_json TEXT,
             CHECK (
                 (
-                    status = 'running'
+                    status = 'active'
                     AND ended_at IS NULL
                     AND outcome_json IS NULL
                 )
@@ -200,8 +200,8 @@ def _create_indexes(connection: sqlite3.Connection) -> None:
     )
     connection.execute(
         """
-        CREATE UNIQUE INDEX IF NOT EXISTS one_running_run_per_session
+        CREATE UNIQUE INDEX IF NOT EXISTS one_active_run_per_session
         ON runs (session_id)
-        WHERE status = 'running'
+        WHERE status = 'active'
         """
     )

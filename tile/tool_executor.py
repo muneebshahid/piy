@@ -3,6 +3,7 @@
 import inspect
 import logging
 from collections.abc import Sequence
+from typing import Final
 
 from pydantic import BaseModel, ValidationError
 
@@ -26,7 +27,7 @@ class ToolExecutor:
     def __init__(self, tools: Sequence[ToolDefinition] = ()) -> None:
         """Create an executor with model-callable tool definitions."""
 
-        self._tools = tuple(tools)
+        self._tools: Final = tuple(tools)
         seen: set[str] = set()
         for tool in self._tools:
             _require_unique_name(tool, seen)

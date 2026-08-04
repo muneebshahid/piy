@@ -2,17 +2,18 @@
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from typing import Final
 
 from tile.tool_truncation import Truncation, TruncationKeep, TruncationReason
 
 # Maximum lines to keep before appending a truncation notice.
-OUTPUT_LINE_LIMIT: int = 2000
+OUTPUT_LINE_LIMIT: Final[int] = 2000
 # Maximum UTF-8 bytes to keep before appending a truncation notice.
-OUTPUT_BYTE_LIMIT: int = 50 * 1024
+OUTPUT_BYTE_LIMIT: Final[int] = 50 * 1024
 # Human-readable label for the shared output byte limit.
-OUTPUT_BYTE_LIMIT_LABEL: str = "50.0KB"
+OUTPUT_BYTE_LIMIT_LABEL: Final[str] = "50.0KB"
 # Maximum characters to keep from one grep result text line.
-GREP_LINE_CHARACTER_LIMIT: int = 500
+GREP_LINE_CHARACTER_LIMIT: Final[int] = 500
 
 
 @dataclass(frozen=True)

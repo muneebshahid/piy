@@ -9,7 +9,7 @@ def test_accumulate_decodes_split_utf8_characters() -> None:
     """Decode partial UTF-8 characters across chunk boundaries."""
 
     output = OutputAccumulator()
-    content = "é\nok".encode("utf-8")
+    content = "é\nok".encode()
 
     output.accumulate(content[:1])
     output.accumulate(content[1:])

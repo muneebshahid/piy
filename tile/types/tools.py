@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Literal, Self, TypeAlias, cast
+from typing import Literal, Self
 
 from pydantic import (
     BaseModel,
@@ -15,8 +15,8 @@ from pydantic import (
     model_validator,
 )
 
-JsonObject: TypeAlias = dict[str, JsonValue]
-ImageMimeType: TypeAlias = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
+type JsonObject = dict[str, JsonValue]
+type ImageMimeType = Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
 
 
 class ToolDetails(BaseModel):
@@ -42,7 +42,7 @@ class ToolImageContent(BaseModel):
     mime_type: ImageMimeType
 
 
-ToolResultContent: TypeAlias = ToolTextContent | ToolImageContent
+type ToolResultContent = ToolTextContent | ToolImageContent
 
 
 class ToolInput(BaseModel):
@@ -80,7 +80,7 @@ class ToolResult(BaseModel):
         *,
         details: ToolDetails | None = None,
         terminate: bool = False,
-    ) -> ToolResult:
+    ) -> Self:
         """Create a text-only tool result."""
 
         return cls(
@@ -97,7 +97,7 @@ class ToolResult(BaseModel):
         *,
         details: ToolDetails | None = None,
         terminate: bool = False,
-    ) -> ToolResult:
+    ) -> Self:
         """Create an image tool result with an explanatory text block."""
 
         return cls(
@@ -107,7 +107,7 @@ class ToolResult(BaseModel):
         )
 
 
-ToolFunction: TypeAlias = Callable[..., Awaitable[ToolResult]]
+type ToolFunction = Callable[..., Awaitable[ToolResult]]
 
 
 class ToolDefinition(BaseModel):
@@ -141,7 +141,7 @@ class ToolDefinition(BaseModel):
     def _cache_json_schema(self) -> Self:
         """Generate and cache the provider schema during tool construction."""
 
-        schema = cast(JsonObject, self.input_model.model_json_schema())
+        schema: JsonObject = self.input_model.model_json_schema()
         if schema.get("type") != "object":
             raise ValueError("Tool input models must generate an object schema.")
         self._input_schema = schema

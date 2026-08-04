@@ -5,10 +5,16 @@ import os
 import signal
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field
 
+from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.tools.support.output_accumulator import OutputAccumulator, OutputSnapshot
+from tile.tools.support.truncation import (
+    OUTPUT_BYTE_LIMIT_LABEL,
+    format_size,
+)
 from tile.types.tools import (
     ToolDefinition,
     ToolDetails,
@@ -16,15 +22,9 @@ from tile.types.tools import (
     ToolInput,
     ToolResult,
 )
-from tile.tools.support.output_accumulator import OutputAccumulator, OutputSnapshot
-from tile.tools.support.truncation import (
-    OUTPUT_BYTE_LIMIT_LABEL,
-    format_size,
-)
-from tile.tool_truncation import ToolOutputDetails, Truncation
 
 # Timeout applied when the model omits one, so hung commands cannot wedge a run.
-DEFAULT_TIMEOUT_SECONDS: float = 120
+DEFAULT_TIMEOUT_SECONDS: Final[float] = 120
 
 
 class BashDetails(ToolDetails):
@@ -83,7 +83,9 @@ async def _execute(
         start_new_session=_supports_process_groups(),
     )
     snapshot, timed_out = await _wait_for_process(process, timeout)
-    _raise_for_execution_failure(snapshot, process.returncode, timed_out, timeout)
+    _raise_for_execution_failure(
+        snapshot, process.returncode, timed_out=timed_out, timeout=timeout
+    )
     return snapshot
 
 
@@ -154,6 +156,7 @@ def _build_result(snapshot: OutputSnapshot) -> ToolResult:
 def _raise_for_execution_failure(
     snapshot: OutputSnapshot,
     exit_code: int | None,
+    *,
     timed_out: bool,
     timeout: float,
 ) -> None:

@@ -1,30 +1,36 @@
 """Typed mapping between persistent domain records and SQLite values."""
 
 from datetime import datetime
-from typing import TypeAlias, cast
 from uuid import uuid4
 
 from pydantic import TypeAdapter
 
 from tile.result import RunOutcome
 from tile.store.base import InvalidHistoryError
-from tile.store.models import HistoryItem, RunRecord, RunStatus, SessionRecord
+from tile.store.models import (
+    ActiveRun,
+    HistoryItem,
+    RunRecord,
+    RunStatus,
+    SessionRecord,
+    TerminalRun,
+)
 from tile.types.conversation import ConversationItem
 
-SessionRow: TypeAlias = tuple[str, str, str]
-RunRow: TypeAlias = tuple[
+type SessionRow = tuple[str, str, str]
+type RunRow = tuple[
     str,
     str,
     str,
-    str,
+    RunStatus,
     str,
     str | None,
     str,
     str,
     str | None,
 ]
-HistoryRow: TypeAlias = tuple[str, str, str, int, str, str, str]
-TerminalRunValues: TypeAlias = tuple[str, str, str, str, str]
+type HistoryRow = tuple[str, str, str, int, str, str, str]
+type TerminalRunValues = tuple[str, str, str, str, str]
 
 _OUTCOME_ADAPTER = TypeAdapter(RunOutcome)
 _CONVERSATION_ITEM_ADAPTER = TypeAdapter(ConversationItem)
@@ -51,8 +57,8 @@ def session_from_row(row: SessionRow) -> SessionRecord:
     )
 
 
-def run_values(record: RunRecord) -> RunRow:
-    """Serialize a run record into SQLite column values."""
+def run_values(record: ActiveRun) -> RunRow:
+    """Serialize a newly accepted active run into SQLite column values."""
 
     return (
         record.id,
@@ -60,32 +66,27 @@ def run_values(record: RunRecord) -> RunRow:
         record.prompt,
         record.status,
         record.started_at.isoformat(),
-        record.ended_at.isoformat() if record.ended_at is not None else None,
+        None,
         record.model,
         record.provider,
-        _dump_outcome(record.outcome),
+        None,
     )
 
 
-def terminal_run_values(record: RunRecord) -> TerminalRunValues:
+def terminal_run_values(record: TerminalRun) -> TerminalRunValues:
     """Serialize fields used by the conditional terminal update."""
 
-    if record.ended_at is None or record.outcome is None:
-        raise ValueError("A terminal update requires terminal run data.")
-    outcome_json = _dump_outcome(record.outcome)
-    if outcome_json is None:
-        raise ValueError("A terminal update requires a serialized outcome.")
     return (
         record.status,
         record.ended_at.isoformat(),
-        outcome_json,
+        _dump_outcome(record.outcome),
         record.id,
         record.session_id,
     )
 
 
 def run_from_row(row: RunRow) -> RunRecord:
-    """Deserialize one SQLite run row."""
+    """Deserialize one SQLite run row, rehydrating its lifecycle state."""
 
     (
         run_id,
@@ -98,16 +99,53 @@ def run_from_row(row: RunRow) -> RunRecord:
         provider,
         outcome_json,
     ) = row
-    return RunRecord(
+    if status == "active":
+        return active_run_from_row(row)
+    if ended_at is None or outcome_json is None:
+        raise ValueError(f"Terminal run row {run_id!r} is missing terminal data.")
+    record = TerminalRun(
         id=run_id,
         session_id=session_id,
         prompt=prompt,
-        status=cast("RunStatus", status),
         started_at=datetime.fromisoformat(started_at),
-        ended_at=datetime.fromisoformat(ended_at) if ended_at is not None else None,
+        ended_at=datetime.fromisoformat(ended_at),
         model=model,
         provider=provider,
         outcome=_load_outcome(outcome_json),
+    )
+    if record.status != status:
+        raise ValueError(
+            f"Stored run status {status!r} contradicts the stored outcome, "
+            f"which implies {record.status!r}."
+        )
+    return record
+
+
+def active_run_from_row(row: RunRow) -> ActiveRun:
+    """Deserialize one SQLite run row that must hold an active run."""
+
+    (
+        run_id,
+        session_id,
+        prompt,
+        status,
+        started_at,
+        ended_at,
+        model,
+        provider,
+        outcome_json,
+    ) = row
+    if status != "active":
+        raise ValueError(f"Run row {run_id!r} is not active.")
+    if ended_at is not None or outcome_json is not None:
+        raise ValueError(f"Active run row {run_id!r} carries terminal data.")
+    return ActiveRun(
+        id=run_id,
+        session_id=session_id,
+        prompt=prompt,
+        started_at=datetime.fromisoformat(started_at),
+        model=model,
+        provider=provider,
     )
 
 
@@ -157,17 +195,13 @@ def dump_conversation_item(item: ConversationItem) -> str:
     return _CONVERSATION_ITEM_ADAPTER.dump_json(item).decode()
 
 
-def _dump_outcome(outcome: RunOutcome | None) -> str | None:
+def _dump_outcome(outcome: RunOutcome) -> str:
     """Serialize one typed run outcome."""
 
-    if outcome is None:
-        return None
     return _OUTCOME_ADAPTER.dump_json(outcome).decode()
 
 
-def _load_outcome(payload_json: str | None) -> RunOutcome | None:
+def _load_outcome(payload_json: str) -> RunOutcome:
     """Deserialize one typed run outcome."""
 
-    if payload_json is None:
-        return None
     return _OUTCOME_ADAPTER.validate_json(payload_json)

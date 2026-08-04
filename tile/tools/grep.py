@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from tile.types.tools import ToolDefinition, ToolDetails, ToolInput, ToolResult
+from tile.tool_truncation import ToolOutputDetails, Truncation
 from tile.tools.support.executables import execute, require_executable
 from tile.tools.support.truncation import (
     GREP_LINE_CHARACTER_LIMIT,
@@ -15,7 +15,7 @@ from tile.tools.support.truncation import (
     truncate_head,
     truncate_line,
 )
-from tile.tool_truncation import ToolOutputDetails, Truncation
+from tile.types.tools import ToolDefinition, ToolDetails, ToolInput, ToolResult
 
 
 class GrepDetails(ToolDetails):
@@ -124,9 +124,9 @@ async def fn(
         params.pattern,
         params.path,
         params.glob,
-        params.ignore_case,
-        params.literal,
-        params.context,
+        ignore_case=params.ignore_case,
+        literal=params.literal,
+        context=params.context,
     )
     output = await execute(executable, args, allowed_exit_codes=(0, 1), cwd=cwd)
     return _build_result(output, limit)
@@ -149,12 +149,16 @@ def _build_result(output: str, limit: int) -> ToolResult:
     text = truncation.content
     lines_truncated = any(line_limit_results)
 
-    notices = _build_notices(results, limit, truncation, lines_truncated)
+    notices = _build_notices(
+        results, limit, truncation, lines_truncated=lines_truncated
+    )
     text = append_notice_block(text, notices)
 
     return ToolResult.text(
         text,
-        details=_build_details(results, limit, truncation, lines_truncated),
+        details=_build_details(
+            results, limit, truncation, lines_truncated=lines_truncated
+        ),
     )
 
 
@@ -183,6 +187,7 @@ def _build_notices(
     results: Results,
     limit: int,
     truncation: Truncation,
+    *,
     lines_truncated: bool,
 ) -> list[str]:
     """Build model-visible grep truncation notices."""
@@ -207,6 +212,7 @@ def _build_details(
     results: Results,
     limit: int,
     truncation: Truncation,
+    *,
     lines_truncated: bool,
 ) -> GrepDetails | None:
     """Build grep details when the UI has a warning to render."""
@@ -226,6 +232,7 @@ def _build_args(
     pattern: str,
     path: str,
     glob: str | None,
+    *,
     ignore_case: bool,
     literal: bool,
     context: int,

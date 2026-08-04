@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import tile.tools.bash as bash
+from tests.support.command_mocks import patch_execution
+from tests.support.tool_results import details_of, tool_text
+from tile.tools import bash
 from tile.tools.bash import BashDetails
 from tile.tools.support.output_accumulator import OutputAccumulator, OutputSnapshot
 from tile.tools.support.truncation import OUTPUT_LINE_LIMIT
 from tile.types.tools import ToolError
-from tests.support.command_mocks import patch_execution
-from tests.support.tool_results import details_of, tool_text
 
 
 def test_bash_schema_requires_only_command() -> None:

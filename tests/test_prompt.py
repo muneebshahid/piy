@@ -13,7 +13,7 @@ from tile.prompt import (
 def _environment(cwd: Path) -> str:
     """Return the environment block expected at the end of every prompt."""
 
-    return f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"
+    return f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"  # noqa: DTZ011
 
 
 def test_build_system_prompt_composes_all_tiers(tmp_path: Path) -> None:

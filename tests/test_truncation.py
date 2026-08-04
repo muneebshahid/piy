@@ -4,8 +4,8 @@ from collections.abc import Callable
 
 import pytest
 
-import tile.tools.support.truncation as truncation
 from tile.tool_truncation import Truncation, TruncationReason
+from tile.tools.support import truncation
 
 
 @pytest.mark.parametrize(

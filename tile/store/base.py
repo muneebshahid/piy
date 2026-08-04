@@ -1,10 +1,16 @@
 """Atomic persistence boundary for sessions, runs, and committed history."""
 
 from collections.abc import Sequence
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol
 
 from tile.result import RunOutcome
-from tile.store.models import HistoryItem, RunRecord, SessionRecord, StartedRun
+from tile.store.models import (
+    HistoryItem,
+    RunRecord,
+    SessionRecord,
+    StartedRun,
+    TerminalRun,
+)
 from tile.types.conversation import ConversationItem
 
 
@@ -13,7 +19,7 @@ class StoreError(RuntimeError):
 
 
 class ActiveRunError(StoreError):
-    """Raised when a session already owns a running run."""
+    """Raised when a session already owns an active run."""
 
 
 class RunAlreadyEndedError(StoreError):
@@ -36,7 +42,7 @@ class RunNotFoundError(StoreError, KeyError):
     """Raised when an operation references an unknown run."""
 
 
-StoreOperation: TypeAlias = Literal[
+type StoreOperation = Literal[
     "create_session",
     "get_session",
     "list_sessions",
@@ -102,7 +108,7 @@ class Store(Protocol):
         """Atomically start a run and snapshot its committed session history.
 
         The returned history must come from the same consistency boundary as
-        the Store-created running record.
+        the Store-created active record.
         """
         ...
 
@@ -113,7 +119,7 @@ class Store(Protocol):
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
+    ) -> TerminalRun:
         """Atomically finalize a run and commit its replayable history delta.
 
         The caller owns the terminal outcome and valid history delta.
@@ -122,7 +128,7 @@ class Store(Protocol):
         """
         ...
 
-    def abort_active_run(self, session_id: str) -> RunRecord | None:
+    def abort_active_run(self, session_id: str) -> TerminalRun | None:
         """Durably abort a session's active run without controlling its process.
 
         Return the aborted record, or ``None`` when the session has no active

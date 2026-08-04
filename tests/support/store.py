@@ -4,6 +4,7 @@ import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import override
 
 from tile import (
     Aborted,
@@ -12,8 +13,9 @@ from tile import (
     RunOutcome,
     RunRecord,
     StorePersistenceError,
+    TerminalRun,
 )
-from tile.store import SQLiteStore, SessionRecord, StartedRun
+from tile.store import SessionRecord, SQLiteStore, StartedRun
 from tile.types import ConversationItem
 
 STARTED_AT = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
@@ -24,6 +26,7 @@ class FailingStartStore(SQLiteStore):
 
     fail_starts: bool = True
 
+    @override
     def start_run(
         self,
         *,
@@ -51,6 +54,7 @@ class FailingFinishStore(SQLiteStore):
 
     fail_finishes: bool = True
 
+    @override
     def finish_run(
         self,
         *,
@@ -58,7 +62,7 @@ class FailingFinishStore(SQLiteStore):
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
+    ) -> TerminalRun:
         """Fail or delegate one atomic finish operation."""
 
         if self.fail_finishes:
@@ -98,8 +102,8 @@ def persist_outcome(
     history_delta: Sequence[ConversationItem],
     session_id: str = "session-1",
     run_id: str = "run-1",
-) -> RunRecord:
-    """Finish and persist one Store-owned running record."""
+) -> TerminalRun:
+    """Finish and persist one Store-owned active record."""
 
     return store.finish_run(
         session_id=session_id,
@@ -107,6 +111,13 @@ def persist_outcome(
         outcome=outcome,
         history_delta=history_delta,
     )
+
+
+def terminal_outcome(record: RunRecord) -> RunOutcome:
+    """Assert one record is terminal and return its authoritative outcome."""
+
+    assert isinstance(record, TerminalRun), f"run {record.id!r} is not terminal"
+    return record.outcome
 
 
 def create_session(
@@ -123,7 +134,7 @@ def seed_database(
     database_path: Path,
     *,
     session_id: str = "session-1",
-    running_run: bool = False,
+    active_run: bool = False,
     run_id: str = "run-1",
 ) -> None:
     """Seed a file-backed database, then close the seeding store."""
@@ -131,7 +142,7 @@ def seed_database(
     seed = SQLiteStore(database_path)
     try:
         create_session(seed, session_id=session_id)
-        if running_run:
+        if active_run:
             start_run(seed, session_id=session_id, run_id=run_id)
     finally:
         seed.close()
@@ -142,13 +153,14 @@ def corrupt_column(
     *,
     table: str,
     column: str,
-    value: str = "not-json",
+    value: str | None = "not-json",
 ) -> None:
     """Overwrite one persisted column with raw corrupt data."""
 
     connection = sqlite3.connect(database_path)
     try:
-        connection.execute(f"UPDATE {table} SET {column} = ?", (value,))  # noqa: S608
+        connection.execute("PRAGMA ignore_check_constraints = 1")
+        connection.execute(f"UPDATE {table} SET {column} = ?", (value,))
         connection.commit()
     finally:
         connection.close()

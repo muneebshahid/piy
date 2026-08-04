@@ -1,7 +1,8 @@
+"""Normalize raw OpenAI SDK stream events into provider events."""
+
 import json
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
-from typing import cast
 
 from openai.types.responses import (
     ResponseCompletedEvent,
@@ -14,35 +15,53 @@ from openai.types.responses import (
     ResponseIncompleteEvent,
     ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
-    ResponseReasoningTextDeltaEvent,
     ResponseReasoningSummaryTextDeltaEvent,
-    ResponseStreamEvent,
+    ResponseReasoningTextDeltaEvent,
     ResponseRefusalDeltaEvent,
+    ResponseStreamEvent,
     ResponseTextDeltaEvent,
 )
 from openai.types.responses.response_output_message import (
     Content as ResponseMessageContent,
+)
+from openai.types.responses.response_output_message import (
     ResponseOutputMessage,
 )
 from openai.types.responses.response_output_refusal import ResponseOutputRefusal
 from openai.types.responses.response_output_text import ResponseOutputText
 from openai.types.responses.response_reasoning_item import (
-    Summary as ResponseReasoningSummary,
     ResponseReasoningItem,
+)
+from openai.types.responses.response_reasoning_item import (
+    Summary as ResponseReasoningSummary,
 )
 
 from tile.providers.openai.normalized_events import (
+    CompletedNormalizedEvent,
+    CreatedNormalizedEvent,
+    FailedNormalizedEvent,
+    IncompleteNormalizedEvent,
+    MessageAddedNormalizedEvent,
+    MessageDoneNormalizedEvent,
+    MessageTextDeltaNormalizedEvent,
     NormalizedEvent,
     NormalizedEventType,
     Phase,
+    ReasoningAddedNormalizedEvent,
+    ReasoningDeltaNormalizedEvent,
+    ReasoningDoneNormalizedEvent,
+    ToolCallAddedNormalizedEvent,
+    ToolCallArgumentsDeltaNormalizedEvent,
+    ToolCallArgumentsDoneNormalizedEvent,
+    ToolCallDoneNormalizedEvent,
 )
 from tile.types.stream_events import StopReason
 from tile.types.tools import JsonObject
 
 
 async def normalize_sdk_events(
-    raw_stream: AsyncGenerator[ResponseStreamEvent, None],
-) -> AsyncGenerator[NormalizedEvent, None]:
+    raw_stream: AsyncGenerator[ResponseStreamEvent],
+) -> AsyncGenerator[NormalizedEvent]:
     """Normalize raw SDK events into transport-independent provider events.
 
     Closing this generator closes ``raw_stream``: closure does not cascade
@@ -65,114 +84,144 @@ def _normalize_sdk_event(event: ResponseStreamEvent) -> NormalizedEvent | None:
     which joins parts with a blank line and is authoritative.
     """
 
+    return (
+        _normalize_response_lifecycle_event(event)
+        or _normalize_content_stream_event(event)
+        or _normalize_output_item_added(event)
+        or _normalize_output_item_done(event)
+    )
+
+
+def _normalize_response_lifecycle_event(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize response creation and terminal lifecycle events."""
+
     match event:
         case ResponseCreatedEvent():
-            return {
-                "type": NormalizedEventType.CREATED,
-                "response_id": event.response.id,
-            }
-        case ResponseOutputItemAddedEvent() if isinstance(
-            event.item, ResponseReasoningItem
-        ):
-            return {
-                "type": NormalizedEventType.REASONING_ADDED,
-                "item_id": event.item.id,
-            }
+            return CreatedNormalizedEvent(
+                type=NormalizedEventType.CREATED,
+                response_id=event.response.id,
+            )
+        case ResponseCompletedEvent():
+            return CompletedNormalizedEvent(
+                type=NormalizedEventType.COMPLETED,
+                stop_reason=_extract_stop_reason(event),
+            )
+        case ResponseIncompleteEvent():
+            return IncompleteNormalizedEvent(
+                type=NormalizedEventType.INCOMPLETE,
+                stop_reason=_extract_stop_reason(event),
+                error_message=_extract_incomplete_error_message(event),
+            )
+        case ResponseErrorEvent():
+            return FailedNormalizedEvent(
+                type=NormalizedEventType.FAILED,
+                message=_extract_stream_error_message(event),
+            )
+        case ResponseFailedEvent():
+            return FailedNormalizedEvent(
+                type=NormalizedEventType.FAILED,
+                message=_extract_error_message(event),
+            )
+
+    return None
+
+
+def _normalize_content_stream_event(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize incremental block content and its argument completion."""
+
+    match event:
         case (
             ResponseReasoningSummaryTextDeltaEvent(delta=delta)
             | ResponseReasoningTextDeltaEvent(delta=delta)
         ):
-            return {
-                "type": NormalizedEventType.REASONING_DELTA,
-                "delta": delta,
-            }
-        case ResponseOutputItemDoneEvent() if isinstance(
-            event.item, ResponseReasoningItem
-        ):
-            return {
-                "type": NormalizedEventType.REASONING_DONE,
-                "item_id": event.item.id,
-                "summary_text": _join_reasoning_summary_text(event.item.summary),
-                "reasoning_signature": _serialize_reasoning_item(event.item),
-            }
-        case ResponseOutputItemAddedEvent() if isinstance(
-            event.item, ResponseOutputMessage
-        ):
-            return {
-                "type": NormalizedEventType.MESSAGE_ADDED,
-                "item_id": event.item.id,
-                "phase": _extract_message_phase(event.item),
-            }
-        case ResponseTextDeltaEvent():
-            return {
-                "type": NormalizedEventType.MESSAGE_TEXT_DELTA,
-                "delta": event.delta,
-            }
-        case ResponseRefusalDeltaEvent():
-            return {
-                "type": NormalizedEventType.MESSAGE_TEXT_DELTA,
-                "delta": event.delta,
-            }
-        case ResponseOutputItemDoneEvent() if isinstance(
-            event.item, ResponseOutputMessage
-        ):
-            return {
-                "type": NormalizedEventType.MESSAGE_DONE,
-                "item_id": event.item.id,
-                "text": _join_message_text(event.item.content),
-                "phase": _extract_message_phase(event.item),
-            }
-        case ResponseOutputItemAddedEvent() if isinstance(
-            event.item, ResponseFunctionToolCall
-        ):
-            return {
-                "type": NormalizedEventType.TOOL_CALL_ADDED,
-                "provider_item_id": event.item.id,
-                "call_id": event.item.call_id,
-                "name": event.item.name,
-                "arguments": _parse_tool_call_arguments(event.item.arguments or ""),
-            }
+            return ReasoningDeltaNormalizedEvent(
+                type=NormalizedEventType.REASONING_DELTA,
+                delta=delta,
+            )
+        case ResponseTextDeltaEvent() | ResponseRefusalDeltaEvent():
+            return MessageTextDeltaNormalizedEvent(
+                type=NormalizedEventType.MESSAGE_TEXT_DELTA,
+                delta=event.delta,
+            )
         case ResponseFunctionCallArgumentsDeltaEvent():
-            return {
-                "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
-                "delta": event.delta,
-            }
+            return ToolCallArgumentsDeltaNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
+                delta=event.delta,
+            )
         case ResponseFunctionCallArgumentsDoneEvent():
-            return {
-                "type": NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
-                "arguments": _parse_tool_call_arguments(event.arguments),
-            }
-        case ResponseOutputItemDoneEvent() if isinstance(
-            event.item, ResponseFunctionToolCall
-        ):
-            return {
-                "type": NormalizedEventType.TOOL_CALL_DONE,
-                "provider_item_id": event.item.id,
-                "call_id": event.item.call_id,
-                "name": event.item.name,
-                "arguments": _parse_tool_call_arguments(event.item.arguments or ""),
-            }
-        case ResponseCompletedEvent():
-            return {
-                "type": NormalizedEventType.COMPLETED,
-                "stop_reason": _extract_stop_reason(event),
-            }
-        case ResponseIncompleteEvent():
-            return {
-                "type": NormalizedEventType.INCOMPLETE,
-                "stop_reason": _extract_stop_reason(event),
-                "error_message": _extract_incomplete_error_message(event),
-            }
-        case ResponseErrorEvent():
-            return {
-                "type": NormalizedEventType.FAILED,
-                "message": _extract_stream_error_message(event),
-            }
-        case ResponseFailedEvent():
-            return {
-                "type": NormalizedEventType.FAILED,
-                "message": _extract_error_message(event),
-            }
+            return ToolCallArgumentsDoneNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
+                arguments=_parse_tool_call_arguments(event.arguments),
+            )
+
+    return None
+
+
+def _normalize_output_item_added(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize the start of a reasoning, message, or tool-call item."""
+
+    if not isinstance(event, ResponseOutputItemAddedEvent):
+        return None
+    match event.item:
+        case ResponseReasoningItem():
+            return ReasoningAddedNormalizedEvent(
+                type=NormalizedEventType.REASONING_ADDED,
+                item_id=event.item.id,
+            )
+        case ResponseOutputMessage():
+            return MessageAddedNormalizedEvent(
+                type=NormalizedEventType.MESSAGE_ADDED,
+                item_id=event.item.id,
+                phase=_extract_message_phase(event.item),
+            )
+        case ResponseFunctionToolCall():
+            return ToolCallAddedNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_ADDED,
+                provider_item_id=event.item.id,
+                call_id=event.item.call_id,
+                name=event.item.name,
+                arguments=_parse_tool_call_arguments(event.item.arguments or ""),
+            )
+
+    return None
+
+
+def _normalize_output_item_done(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize the completion of a reasoning, message, or tool-call item."""
+
+    if not isinstance(event, ResponseOutputItemDoneEvent):
+        return None
+    match event.item:
+        case ResponseReasoningItem():
+            return ReasoningDoneNormalizedEvent(
+                type=NormalizedEventType.REASONING_DONE,
+                item_id=event.item.id,
+                summary_text=_join_reasoning_summary_text(event.item.summary),
+                reasoning_signature=_serialize_reasoning_item(event.item),
+            )
+        case ResponseOutputMessage():
+            return MessageDoneNormalizedEvent(
+                type=NormalizedEventType.MESSAGE_DONE,
+                item_id=event.item.id,
+                text=_join_message_text(event.item.content),
+                phase=_extract_message_phase(event.item),
+            )
+        case ResponseFunctionToolCall():
+            return ToolCallDoneNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_DONE,
+                provider_item_id=event.item.id,
+                call_id=event.item.call_id,
+                name=event.item.name,
+                arguments=_parse_tool_call_arguments(event.item.arguments or ""),
+            )
 
     return None
 
@@ -189,7 +238,7 @@ def _parse_tool_call_arguments(arguments: str) -> JsonObject:
         return {}
 
     if isinstance(parsed, dict):
-        return cast("JsonObject", parsed)
+        return parsed
     return {}
 
 

@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Literal, Self, TypeAlias
+from typing import Literal, Self, assert_never
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from tile.result import Aborted, Completed, Failed, RunOutcome
 from tile.types.conversation import ConversationItem
 
-RunStatus: TypeAlias = Literal["running", "completed", "failed", "aborted"]
-TerminalRunStatus: TypeAlias = Literal["completed", "failed", "aborted"]
+type RunStatus = Literal["active", "completed", "failed", "aborted"]
+type TerminalRunStatus = Literal["completed", "failed", "aborted"]
 
 
 class SessionRecord(BaseModel):
@@ -39,57 +45,72 @@ class SessionRecord(BaseModel):
         return self
 
 
-class RunRecord(BaseModel):
-    """Immutable persistent state for one submitted prompt run."""
+class _RunBase(BaseModel):
+    """Shared identity and admission state for one submitted prompt run."""
 
     model_config = ConfigDict(frozen=True)
 
     id: str
     session_id: str
     prompt: str
-    status: RunStatus
     started_at: datetime
-    ended_at: datetime | None = None
     model: str
     provider: str
-    outcome: RunOutcome | None = None
 
-    @field_validator("started_at", "ended_at")
+    @field_validator("started_at")
     @classmethod
-    def _normalize_timestamp(cls, value: datetime | None) -> datetime | None:
-        """Require timezone-aware timestamps and normalize them to UTC."""
+    def _normalize_started_at(cls, value: datetime) -> datetime:
+        """Require a timezone-aware timestamp and normalize it to UTC."""
 
-        if value is None:
-            return None
+        return _normalize_timestamp(value, label="Run")
+
+
+class ActiveRun(_RunBase):
+    """Immutable persistent state for a run that has not ended."""
+
+    status: Literal["active"] = "active"
+
+
+class TerminalRun(_RunBase):
+    """Immutable persistent state for a run that has ended.
+
+    ``status`` is derived from ``outcome``: dumps include the derived value,
+    inbound ``status`` keys are ignored, and the stored DB column is
+    validated against the derivation on rehydration.
+    """
+
+    ended_at: datetime
+    outcome: RunOutcome
+
+    @computed_field
+    @property
+    def status(self) -> TerminalRunStatus:
+        """Return the terminal status implied by the outcome."""
+
+        return terminal_status_for(self.outcome)
+
+    @field_validator("ended_at")
+    @classmethod
+    def _normalize_ended_at(cls, value: datetime) -> datetime:
+        """Require a timezone-aware timestamp and normalize it to UTC."""
+
         return _normalize_timestamp(value, label="Run")
 
     @model_validator(mode="after")
     def _validate_lifecycle(self) -> Self:
-        """Reject fields that contradict the run lifecycle."""
+        """Reject a run that ends before it starts."""
 
-        if self.status == "running":
-            if self.ended_at is not None or self.outcome is not None:
-                raise ValueError("A running run cannot have terminal data.")
-            return self
-
-        self._validate_terminal_lifecycle()
-        return self
-
-    def _validate_terminal_lifecycle(self) -> None:
-        """Validate timestamps, outcome presence, and derived terminal status."""
-
-        if self.ended_at is None:
-            raise ValueError("A terminal run must have an end timestamp.")
         if self.ended_at < self.started_at:
             raise ValueError("A run cannot end before it starts.")
-        if self.outcome is None:
-            raise ValueError("A terminal run must have an outcome.")
-        implied_status = terminal_status_for(self.outcome)
-        if self.status != implied_status:
-            raise ValueError(
-                f"Status {self.status!r} contradicts the terminal outcome, "
-                f"which implies {implied_status!r}."
-            )
+        return self
+
+
+RunRecord = ActiveRun | TerminalRun
+"""One persistent run in either lifecycle state.
+
+A plain union rather than a ``type`` statement so ``isinstance`` checks
+against the alias keep working.
+"""
 
 
 class HistoryItem(BaseModel):
@@ -126,7 +147,7 @@ class StartedRun(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    run: RunRecord
+    run: ActiveRun
     committed_history: tuple[HistoryItem, ...]
 
 
@@ -141,21 +162,20 @@ def new_session_record(*, session_id: str) -> SessionRecord:
     )
 
 
-def new_running_run_record(
+def new_active_run_record(
     *,
     run_id: str,
     session_id: str,
     prompt: str,
     model: str,
     provider: str,
-) -> RunRecord:
+) -> ActiveRun:
     """Create Store-owned persistent state for a newly accepted run."""
 
-    return RunRecord(
+    return ActiveRun(
         id=run_id,
         session_id=session_id,
         prompt=prompt,
-        status="running",
         started_at=datetime.now(UTC),
         model=model,
         provider=provider,
@@ -163,22 +183,21 @@ def new_running_run_record(
 
 
 def terminal_run_record(
-    running: RunRecord,
+    active: ActiveRun,
     *,
     outcome: RunOutcome,
-) -> RunRecord:
-    """Create terminal persistent state from an authoritative running record."""
+) -> TerminalRun:
+    """Create terminal persistent state from an authoritative active record."""
 
     terminal_time = datetime.now(UTC)
-    return RunRecord(
-        id=running.id,
-        session_id=running.session_id,
-        prompt=running.prompt,
-        status=terminal_status_for(outcome),
-        started_at=running.started_at,
-        ended_at=max(terminal_time, running.started_at),
-        model=running.model,
-        provider=running.provider,
+    return TerminalRun(
+        id=active.id,
+        session_id=active.session_id,
+        prompt=active.prompt,
+        started_at=active.started_at,
+        ended_at=max(terminal_time, active.started_at),
+        model=active.model,
+        provider=active.provider,
         outcome=outcome.model_copy(deep=True),
     )
 
@@ -186,13 +205,15 @@ def terminal_run_record(
 def terminal_status_for(outcome: RunOutcome) -> TerminalRunStatus:
     """Return the terminal run status implied by an outcome."""
 
-    if isinstance(outcome, Completed):
-        return "completed"
-    if isinstance(outcome, Failed):
-        return "failed"
-    if isinstance(outcome, Aborted):
-        return "aborted"
-    raise TypeError(f"Unsupported run outcome: {type(outcome).__name__}")
+    match outcome:
+        case Completed():
+            return "completed"
+        case Failed():
+            return "failed"
+        case Aborted():
+            return "aborted"
+        case _:
+            assert_never(outcome)
 
 
 def _normalize_timestamp(value: datetime, *, label: str) -> datetime:

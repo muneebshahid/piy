@@ -13,7 +13,7 @@ def build_harness(
     *,
     session_id: str | None = None,
     tools: Sequence[ToolDefinition] = (),
-    cwd: Path | str = Path("."),
+    cwd: Path | str = Path(),
     auto_mode: bool = True,
 ) -> AgentHarness:
     """Build a harness bound to one fresh session on the supplied store."""

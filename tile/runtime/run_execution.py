@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from typing import cast
+from typing import Final
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -22,8 +22,8 @@ from tile.result import (
 from tile.runtime.execution import _ExecutionDependencies, execute_prompt
 from tile.runtime.history import _RunHistory
 from tile.sessions import Session
-from tile.store.base import RunAlreadyEndedError
-from tile.store.models import HistoryItem, RunRecord
+from tile.store.base import RunAlreadyEndedError, StoreError
+from tile.store.models import ActiveRun, HistoryItem, TerminalRun
 
 
 class RunExecution:
@@ -60,22 +60,24 @@ class RunExecution:
         self,
         *,
         session: Session,
-        record: RunRecord,
+        record: ActiveRun,
         committed_history: Sequence[HistoryItem],
         result: type[BaseModel] | None,
         dependencies: _ExecutionDependencies,
     ) -> None:
         """Prepare an already accepted run without performing side effects."""
 
-        self._session = session
-        self._record = record
-        self._result_type = result
-        self._dependencies = dependencies
+        self._session: Final = session
+        self._record: Final = record
+        self._result_type: Final = result
+        self._dependencies: Final = dependencies
         self._events: list[AgentEvent] = []
-        self._history = _RunHistory.start(committed_history, prompt=record.prompt)
+        self._history: Final = _RunHistory.start(
+            committed_history, prompt=record.prompt
+        )
         self._result: RunResult | None = None
-        self._changed = asyncio.Event()
-        self._finalized = asyncio.Event()
+        self._changed: Final = asyncio.Event()
+        self._finalized: Final = asyncio.Event()
         self._task: asyncio.Task[RunOutcome] | None = None
         self._emit(RunStartEvent())
 
@@ -152,7 +154,7 @@ class RunExecution:
 
         try:
             result = self._finish(task)
-        except BaseException as error:
+        except BaseException as error:  # noqa: BLE001
             result = Faulted(error=error)
         self._result = result
         self._append_terminal_event(result)
@@ -171,7 +173,7 @@ class RunExecution:
             )
         except RunAlreadyEndedError:
             return self._ended_outcome()
-        return cast("RunOutcome", record.outcome)
+        return record.outcome
 
     def _terminal_outcome(self, task: asyncio.Task[RunOutcome]) -> RunOutcome:
         """Derive a serializable outcome from this execution's task state."""
@@ -187,7 +189,9 @@ class RunExecution:
         """Return the authoritative outcome of an already-ended run."""
 
         record = self._session._get_run(self.id)
-        return cast("RunOutcome", record.outcome)
+        if not isinstance(record, TerminalRun):
+            raise StoreError(f"Run {self.id!r} ended without a terminal record.")
+        return record.outcome
 
     def _append_terminal_event(self, result: RunResult) -> None:
         """Close the live event log with a durable end or harness fault."""

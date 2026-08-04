@@ -6,8 +6,6 @@ from dataclasses import dataclass
 import pytest
 from openai.types.responses import ResponseStreamEvent
 
-from tile.providers.openai.normalized_events import NormalizedEvent, NormalizedEventType
-from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
 from tests.support import normalized_events as normalized
 from tests.support.openai_response_events import (
     content_part_added_event,
@@ -32,6 +30,8 @@ from tests.support.openai_response_events import (
     response_incomplete_event,
     text_delta_event,
 )
+from tile.providers.openai.normalized_events import NormalizedEvent, NormalizedEventType
+from tile.providers.openai.sdk_event_adapter import normalize_sdk_events
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class NormalizationCase:
 
 
 def _build_normalization_cases() -> list[NormalizationCase]:
-    """Returns the full raw-event normalization matrix for the adapter."""
+    """Return the full raw-event normalization matrix for the adapter."""
 
     return [
         *_build_lifecycle_cases(),
@@ -56,7 +56,7 @@ def _build_normalization_cases() -> list[NormalizationCase]:
 
 
 def _build_lifecycle_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for stream lifecycle events."""
+    """Build normalization cases for stream lifecycle events."""
 
     return [
         *_build_response_start_cases(),
@@ -66,7 +66,7 @@ def _build_lifecycle_cases() -> list[NormalizationCase]:
 
 
 def _build_response_start_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for response creation events."""
+    """Build normalization cases for response creation events."""
 
     return [
         NormalizationCase(
@@ -80,7 +80,7 @@ def _build_response_start_cases() -> list[NormalizationCase]:
 
 
 def _build_response_completion_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for completed response events."""
+    """Build normalization cases for completed response events."""
 
     return [
         NormalizationCase(
@@ -113,7 +113,7 @@ def _build_response_completion_cases() -> list[NormalizationCase]:
 
 
 def _build_response_incomplete_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for incomplete response events."""
+    """Build normalization cases for incomplete response events."""
 
     return [
         NormalizationCase(
@@ -142,7 +142,7 @@ def _build_response_incomplete_cases() -> list[NormalizationCase]:
 
 
 def _build_reasoning_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for reasoning-related events."""
+    """Build normalization cases for reasoning-related events."""
 
     return [
         *_build_reasoning_start_cases(),
@@ -152,7 +152,7 @@ def _build_reasoning_cases() -> list[NormalizationCase]:
 
 
 def _build_reasoning_start_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for reasoning start events."""
+    """Build normalization cases for reasoning start events."""
 
     return [
         NormalizationCase(
@@ -167,7 +167,7 @@ def _build_reasoning_start_cases() -> list[NormalizationCase]:
 
 
 def _build_reasoning_delta_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for reasoning delta events."""
+    """Build normalization cases for reasoning delta events."""
 
     return [
         NormalizationCase(
@@ -194,7 +194,7 @@ def _build_reasoning_delta_cases() -> list[NormalizationCase]:
 
 
 def _build_reasoning_done_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for completed reasoning items."""
+    """Build normalization cases for completed reasoning items."""
 
     return [
         NormalizationCase(
@@ -224,7 +224,7 @@ def _build_reasoning_done_cases() -> list[NormalizationCase]:
 
 
 def _build_message_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for assistant message events."""
+    """Build normalization cases for assistant message events."""
 
     return [
         *_build_message_start_cases(),
@@ -234,7 +234,7 @@ def _build_message_cases() -> list[NormalizationCase]:
 
 
 def _build_message_start_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for assistant message start events."""
+    """Build normalization cases for assistant message start events."""
 
     return [
         NormalizationCase(
@@ -253,7 +253,7 @@ def _build_message_start_cases() -> list[NormalizationCase]:
 
 
 def _build_message_delta_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for assistant message delta events."""
+    """Build normalization cases for assistant message delta events."""
 
     return [
         NormalizationCase(
@@ -280,7 +280,7 @@ def _build_message_delta_cases() -> list[NormalizationCase]:
 
 
 def _build_message_done_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for completed assistant message events."""
+    """Build normalization cases for completed assistant message events."""
 
     return [
         NormalizationCase(
@@ -303,7 +303,7 @@ def _build_message_done_cases() -> list[NormalizationCase]:
 
 
 def _build_tool_call_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for tool-call related events."""
+    """Build normalization cases for tool-call related events."""
 
     return [
         *_build_tool_call_start_cases(),
@@ -313,7 +313,7 @@ def _build_tool_call_cases() -> list[NormalizationCase]:
 
 
 def _build_tool_call_start_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for started tool-call events."""
+    """Build normalization cases for started tool-call events."""
 
     return [
         NormalizationCase(
@@ -354,7 +354,7 @@ def _build_tool_call_start_cases() -> list[NormalizationCase]:
 
 
 def _build_tool_call_argument_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for streamed tool-call arguments."""
+    """Build normalization cases for streamed tool-call arguments."""
 
     return [
         NormalizationCase(
@@ -395,7 +395,7 @@ def _build_tool_call_argument_cases() -> list[NormalizationCase]:
 
 
 def _build_tool_call_done_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for completed tool-call events."""
+    """Build normalization cases for completed tool-call events."""
 
     return [
         NormalizationCase(
@@ -436,7 +436,7 @@ def _build_tool_call_done_cases() -> list[NormalizationCase]:
 
 
 def _build_failure_cases() -> list[NormalizationCase]:
-    """Builds normalization cases for stream failure events."""
+    """Build normalization cases for stream failure events."""
 
     return [
         NormalizationCase(
@@ -535,5 +535,5 @@ async def test_normalize_sdk_events_passes_summary_parts_through_without_separat
     ]
     done_event = events[2]
     assert done_event["type"] == NormalizedEventType.REASONING_DONE
-    assert done_event["summary_text"] == "Part one\n\nPart two"  # type: ignore[typeddict-item]
+    assert done_event["summary_text"] == "Part one\n\nPart two"
     assert len(events) == 3

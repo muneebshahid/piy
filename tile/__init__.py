@@ -3,8 +3,8 @@
 from tile.exceptions import TurnFailedError
 from tile.providers import Provider
 from tile.result import (
-    AbortReason,
     Aborted,
+    AbortReason,
     AgentFailure,
     Completed,
     ExecutionFailure,
@@ -18,6 +18,7 @@ from tile.result import (
 from tile.runtime import AgentHarness, RunHandle
 from tile.sessions import Session, SessionRepository
 from tile.store import (
+    ActiveRun,
     ActiveRunError,
     HistoryItem,
     InvalidHistoryError,
@@ -35,12 +36,14 @@ from tile.store import (
     StoreError,
     StoreOperation,
     StorePersistenceError,
+    TerminalRun,
 )
 from tile.tool_executor import ToolExecutor
 
 __all__ = [
     "AbortReason",
     "Aborted",
+    "ActiveRun",
     "ActiveRunError",
     "AgentFailure",
     "AgentHarness",
@@ -72,6 +75,7 @@ __all__ = [
     "StoreError",
     "StoreOperation",
     "StorePersistenceError",
+    "TerminalRun",
     "ToolExecutor",
     "TurnFailedError",
 ]

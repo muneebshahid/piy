@@ -2,6 +2,7 @@
 
 import asyncio
 import difflib
+import itertools
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -10,6 +11,11 @@ from typing import Literal
 
 from pydantic import Field
 
+from tile.tools.support.paths import (
+    normalize_at_prefix,
+    normalize_unicode_spaces,
+    resolve_to_cwd,
+)
 from tile.types.tools import (
     ToolDefinition,
     ToolDetails,
@@ -17,18 +23,13 @@ from tile.types.tools import (
     ToolInput,
     ToolResult,
 )
-from tile.tools.support.paths import (
-    normalize_at_prefix,
-    normalize_unicode_spaces,
-    resolve_to_cwd,
-)
 
 FUZZY_UNICODE_SPACES = re.compile(r"[\u00A0\u2002-\u200A\u202F\u205F\u3000]")
 SMART_SINGLE_QUOTES = re.compile(r"[\u2018\u2019\u201A\u201B]")
 SMART_DOUBLE_QUOTES = re.compile(r"[\u201C\u201D\u201E\u201F]")
 UNICODE_DASHES = re.compile(r"[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]")
 BOM = "\ufeff"
-LineEnding = Literal["\n", "\r\n"]
+type LineEnding = Literal["\n", "\r\n"]
 
 
 class EditDetails(ToolDetails):
@@ -421,7 +422,7 @@ def _validate_non_overlapping(
     """Reject overlapping replacement spans."""
 
     ordered = sorted(spans, key=lambda span: span.start)
-    for previous, current in zip(ordered, ordered[1:]):
+    for previous, current in itertools.pairwise(ordered):
         if previous.end > current.start:
             raise ToolError(
                 _overlap_error(previous.edit_index, current.edit_index, display_path)

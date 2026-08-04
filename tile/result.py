@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny
 
 from tile.types.tools import JsonObject
 
-COMPLETE_TOOL_NAME = "complete"
-FAIL_TOOL_NAME = "fail"
-MAX_RESULT_FOLLOW_UPS = 8
+COMPLETE_TOOL_NAME: Final = "complete"
+FAIL_TOOL_NAME: Final = "fail"
+MAX_RESULT_FOLLOW_UPS: Final = 8
 
-RESULT_CONTRACT = f"""\
+RESULT_CONTRACT: Final = f"""\
 This run must end with a result tool call.
 - When the task is complete, call `{COMPLETE_TOOL_NAME}` with your final result as \
 its arguments. The arguments are validated against the required schema; validation \
@@ -23,13 +23,13 @@ errors come back as tool errors you can correct.
 - Plain text does not end the run. Only a `{COMPLETE_TOOL_NAME}` or \
 `{FAIL_TOOL_NAME}` call does."""
 
-RESULT_FOLLOW_UP = (
+RESULT_FOLLOW_UP: Final = (
     f"You ended your turn without calling `{COMPLETE_TOOL_NAME}` or "
     f"`{FAIL_TOOL_NAME}`. Call `{COMPLETE_TOOL_NAME}` with your final result, "
     f"or `{FAIL_TOOL_NAME}` with a reason if you cannot."
 )
 
-NO_RESULT_REASON = (
+NO_RESULT_REASON: Final = (
     f"The model ended the run without calling `{COMPLETE_TOOL_NAME}` or "
     f"`{FAIL_TOOL_NAME}`."
 )
@@ -51,8 +51,8 @@ class Completed(BaseModel):
     )
 
 
-ExecutionFailureOrigin: TypeAlias = Literal["turn", "execution"]
-AbortReason: TypeAlias = Literal["cancelled"]
+type ExecutionFailureOrigin = Literal["turn", "execution"]
+type AbortReason = Literal["cancelled"]
 
 
 class AgentFailure(BaseModel):
@@ -83,7 +83,8 @@ class ExecutionFailure(BaseModel):
     message: str
 
 
-FailureCause: TypeAlias = AgentFailure | ExecutionFailure
+FailureCause = AgentFailure | ExecutionFailure
+"""A plain union so ``isinstance`` and ``get_args`` work on the public alias."""
 
 
 class Failed(BaseModel):
@@ -108,7 +109,8 @@ class Aborted(BaseModel):
     reason: AbortReason = "cancelled"
 
 
-RunOutcome: TypeAlias = Completed | Failed | Aborted
+RunOutcome = Completed | Failed | Aborted
+"""A plain union so ``isinstance`` and ``get_args`` work on the public alias."""
 
 
 @dataclass(frozen=True)
@@ -119,4 +121,5 @@ class Faulted:
     type: Literal["faulted"] = "faulted"
 
 
-RunResult: TypeAlias = RunOutcome | Faulted
+RunResult = RunOutcome | Faulted
+"""A plain union so ``isinstance`` and ``get_args`` work on the public alias."""

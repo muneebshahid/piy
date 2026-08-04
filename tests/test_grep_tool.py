@@ -7,10 +7,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import tile.tools.grep as grep
-import tile.tools.support.truncation as truncation
-from tile.tools.grep import GrepDetails
-from tile.types.tools import ToolError
 from tests.support.command_mocks import (
     captured_args,
     captured_cwd,
@@ -19,6 +15,10 @@ from tests.support.command_mocks import (
     patch_execution,
 )
 from tests.support.tool_results import details_of, tool_text
+from tile.tools import grep
+from tile.tools.grep import GrepDetails
+from tile.tools.support import truncation
+from tile.types.tools import ToolError
 
 
 def test_schema_requires_only_pattern() -> None:
@@ -261,12 +261,9 @@ def test_build_result_returns_plain_text() -> None:
         limit=100,
     )
 
-    assert tool_text(result) == "\n".join(
-        [
-            "example.txt-1- before",
-            "example.txt:2: needle line",
-            "example.txt-3- after",
-        ]
+    assert (
+        tool_text(result)
+        == "example.txt-1- before\nexample.txt:2: needle line\nexample.txt-3- after"
     )
 
 

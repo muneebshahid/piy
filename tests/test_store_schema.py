@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from tile.store import SQLiteStore, SQLiteStoreSchemaError
 from tests.support.store import STARTED_AT, create_session
+from tile.store import SQLiteStore, SQLiteStoreSchemaError
 
 
 def _raw_schema_connection(
@@ -35,7 +35,7 @@ def _insert_raw_run_row(
         "id": "invalid",
         "session_id": "session-1",
         "prompt": "hello",
-        "status": "running",
+        "status": "active",
         "started_at": STARTED_AT.isoformat(),
         "ended_at": None,
         "model": "gpt-5.4",

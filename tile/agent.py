@@ -3,11 +3,8 @@
 from collections.abc import Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
+from typing import Final
 
-from tile.exceptions import (
-    ProviderStreamProtocolError,
-    TurnFailedError,
-)
 from tile.events import (
     AgentEndEvent,
     AgentStartEvent,
@@ -19,6 +16,10 @@ from tile.events import (
     ToolExecutionStartEvent,
     TurnEndEvent,
     TurnStartEvent,
+)
+from tile.exceptions import (
+    ProviderStreamProtocolError,
+    TurnFailedError,
 )
 from tile.providers.base import Provider
 from tile.tool_executor import ToolExecutor
@@ -42,7 +43,7 @@ from tile.types.stream_events import (
 )
 from tile.types.tool_execution import ToolExecutionOutcome
 
-ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES = (
+ASSISTANT_MESSAGE_UPDATE_EVENT_TYPES: Final = (
     ReasoningStartEvent,
     ReasoningDeltaEvent,
     ReasoningEndEvent,

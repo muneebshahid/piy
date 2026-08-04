@@ -1,14 +1,10 @@
 """Shared helpers for inspecting tool result content in tests."""
 
-from typing import TypeVar
-
 from tile.types.conversation import ToolResultTurn
 from tile.types.tools import ToolResult, ToolTextContent
 
-TDetails = TypeVar("TDetails")
 
-
-def details_of(result: ToolResult, details_type: type[TDetails]) -> TDetails:
+def details_of[TDetails](result: ToolResult, details_type: type[TDetails]) -> TDetails:
     """Return the typed details payload from a tool result."""
 
     details = result.details

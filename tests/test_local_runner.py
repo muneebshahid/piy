@@ -7,9 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from tile import Completed, Provider, RunResult
-from tile.types.conversation import ConversationItem
-from tile.types.tools import ToolTextContent
 from examples import local_runner
 from examples.local_runner import run_cli, run_prompt
 from tests.support.agent_streams import (
@@ -22,6 +19,9 @@ from tests.support.conversation_assertions import (
     expect_user_message,
 )
 from tests.support.files import write_text
+from tile import Completed, Provider, RunResult
+from tile.types.conversation import ConversationItem
+from tile.types.tools import ToolTextContent
 
 
 def test_run_prompt_streams_runtime_tool_flow_as_json_lines(

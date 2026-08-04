@@ -8,6 +8,7 @@ from threading import Barrier
 
 import pytest
 
+from tests.support.store import seed_database, start_run, terminal_outcome
 from tile import (
     Aborted,
     ActiveRunError,
@@ -18,7 +19,6 @@ from tile import (
 )
 from tile.store import SQLiteStore
 from tile.types import UserMessage
-from tests.support.store import seed_database, start_run
 
 
 def _finish_run(store: SQLiteStore) -> RunRecord:
@@ -41,13 +41,13 @@ def _assert_no_run_admitted(store: SQLiteStore) -> None:
 def _assert_start_retry_succeeds(store: SQLiteStore) -> None:
     """Assert admission succeeds once the reader releases its lock."""
 
-    assert start_run(store).run.status == "running"
+    assert start_run(store).run.status == "active"
 
 
-def _assert_run_still_running(store: SQLiteStore) -> None:
+def _assert_run_still_active(store: SQLiteStore) -> None:
     """Assert the failed finish left the run active with no history."""
 
-    assert store.get_run(session_id="session-1", run_id="run-1").status == "running"
+    assert store.get_run(session_id="session-1", run_id="run-1").status == "active"
     assert store.get_history("session-1") == ()
 
 
@@ -58,7 +58,7 @@ def _assert_finish_retry_succeeds(store: SQLiteStore) -> None:
     assert len(store.get_history("session-1")) == 1
 
 
-def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None:
+def test_concurrent_starts_leave_exactly_one_active_run(tmp_path: Path) -> None:
     """Serialize competing starts across independent Store instances."""
 
     database_path = tmp_path / "starts.db"
@@ -85,7 +85,7 @@ def test_concurrent_starts_leave_exactly_one_running_run(tmp_path: Path) -> None
     try:
         assert sorted(results) == ["busy", "started"]
         runs = reopened.list_runs("session-1")
-        assert sum(run.status == "running" for run in runs) == 1
+        assert sum(run.status == "active" for run in runs) == 1
     finally:
         reopened.close()
 
@@ -94,7 +94,7 @@ def test_concurrent_durable_aborts_are_idempotent(tmp_path: Path) -> None:
     """Allow exactly one escape-hatch caller to transition the active run."""
 
     database_path = tmp_path / "aborts.db"
-    seed_database(database_path, running_run=True)
+    seed_database(database_path, active_run=True)
     barrier = Barrier(2)
 
     def abort(_: int) -> str:
@@ -116,7 +116,7 @@ def test_concurrent_durable_aborts_are_idempotent(tmp_path: Path) -> None:
         runs = reopened.list_runs("session-1")
         assert sorted(results) == ["aborted", "idle"]
         assert len(runs) == 1
-        assert runs[0].outcome == Aborted(reason="cancelled")
+        assert terminal_outcome(runs[0]) == Aborted(reason="cancelled")
     finally:
         reopened.close()
 
@@ -127,7 +127,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
     """Keep completion or durable abort intact according to transaction order."""
 
     database_path = tmp_path / "finish-abort.db"
-    seed_database(database_path, running_run=True)
+    seed_database(database_path, active_run=True)
     barrier = Barrier(2)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -140,7 +140,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
 
 
 @pytest.mark.parametrize(
-    ("running_run", "attempt", "assert_unchanged", "assert_recovered"),
+    ("active_run", "attempt", "assert_unchanged", "assert_recovered"),
     [
         pytest.param(
             False,
@@ -152,7 +152,7 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
         pytest.param(
             True,
             _finish_run,
-            _assert_run_still_running,
+            _assert_run_still_active,
             _assert_finish_retry_succeeds,
             id="finish",
         ),
@@ -160,7 +160,8 @@ def test_finish_and_durable_abort_race_preserves_one_valid_winner(
 )
 def test_failed_commit_rolls_back_and_store_recovers(
     tmp_path: Path,
-    running_run: bool,
+    *,
+    active_run: bool,
     attempt: Callable[[SQLiteStore], object],
     assert_unchanged: Callable[[SQLiteStore], None],
     assert_recovered: Callable[[SQLiteStore], None],
@@ -168,7 +169,7 @@ def test_failed_commit_rolls_back_and_store_recovers(
     """Recover cleanly after a reader prevents a write from committing."""
 
     database_path = tmp_path / "failed-commit.db"
-    seed_database(database_path, running_run=running_run)
+    seed_database(database_path, active_run=active_run)
     store = _contention_store(database_path)
     reader = _hold_read_transaction(database_path)
 
@@ -225,7 +226,7 @@ def _assert_finish_abort_winner(
             assert len(reopened.get_history("session-1")) == 1
         else:
             assert abort_result == "aborted"
-            assert run.outcome == Aborted(reason="cancelled")
+            assert terminal_outcome(run) == Aborted(reason="cancelled")
             assert reopened.get_history("session-1") == ()
     finally:
         reopened.close()

@@ -2,13 +2,14 @@
 
 import codecs
 from dataclasses import dataclass, replace
+from typing import Final
 
+from tile.tool_truncation import Truncation, TruncationReason
 from tile.tools.support.truncation import (
     OUTPUT_BYTE_LIMIT,
     OUTPUT_LINE_LIMIT,
     truncate_tail,
 )
-from tile.tool_truncation import Truncation, TruncationReason
 
 
 @dataclass(frozen=True)
@@ -27,10 +28,12 @@ class OutputAccumulator:
         max_lines: int = OUTPUT_LINE_LIMIT,
         max_bytes: int = OUTPUT_BYTE_LIMIT,
     ) -> None:
-        self._max_lines = max_lines
-        self._max_bytes = max_bytes
-        self._max_rolling_bytes = max_bytes * 2
-        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        """Bind the retention limits for accumulated output."""
+
+        self._max_lines: Final = max_lines
+        self._max_bytes: Final = max_bytes
+        self._max_rolling_bytes: Final = max_bytes * 2
+        self._decoder: Final = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._tail_buffer = b""
         self._tail_starts_at_line_boundary = True
         self._total_bytes = 0
@@ -160,6 +163,7 @@ def _utf8_boundary_at_or_after(content: bytes, start: int) -> int:
 def _starts_at_line_boundary(
     content: bytes,
     start: int,
+    *,
     previous: bool,
 ) -> bool:
     """Return whether a retained suffix begins at a complete line boundary."""

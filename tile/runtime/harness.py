@@ -6,7 +6,7 @@ import inspect
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
-from typing import cast
+from typing import Final
 
 from pydantic import BaseModel
 
@@ -38,11 +38,13 @@ class AgentHarness:
 
         _reject_reserved_tool_names(tools)
         normalized_cwd = normalize_cwd(cwd)
-        self._session = session
-        self._cwd = normalized_cwd
-        self._instructions = instructions
-        self._auto_mode = auto_mode
-        self._tool_executor = ToolExecutor(_bind_cwd_tools(tools, normalized_cwd))
+        self._session: Final = session
+        self._cwd: Final = normalized_cwd
+        self._instructions: Final = instructions
+        self._auto_mode: Final = auto_mode
+        self._tool_executor: Final = ToolExecutor(
+            _bind_cwd_tools(tools, normalized_cwd)
+        )
 
     @property
     def session(self) -> Session:
@@ -74,7 +76,7 @@ class AgentHarness:
         return RunHandle(execution)
 
 
-RESERVED_TOOL_NAMES = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
+RESERVED_TOOL_NAMES: Final = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
 
 
 def _reject_reserved_tool_names(tools: Sequence[ToolDefinition]) -> None:
@@ -103,7 +105,7 @@ def _bind_cwd(tool: ToolDefinition, cwd: Path) -> ToolDefinition:
     """Return a tool copy whose function receives the harness cwd."""
 
     _reject_cwd_schema_property(tool)
-    fn = cast(ToolFunction, partial(tool.fn, cwd=cwd))
+    fn = partial(tool.fn, cwd=cwd)
     return tool.model_copy(update={"fn": fn})
 
 

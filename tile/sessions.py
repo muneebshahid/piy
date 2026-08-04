@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import Final
 from uuid import uuid4
 
 from tile.result import RunOutcome
 from tile.store.base import Store
-from tile.store.models import RunRecord, SessionRecord, StartedRun
+from tile.store.models import RunRecord, SessionRecord, StartedRun, TerminalRun
 from tile.types.conversation import ConversationItem
 
 
@@ -24,7 +25,7 @@ class Session:
 
         return self._store.get_session(self.id)
 
-    def get_history(self) -> Sequence[ConversationItem]:
+    def get_history(self) -> tuple[ConversationItem, ...]:
         """Return the committed conversation history for this session."""
 
         return tuple(
@@ -32,10 +33,10 @@ class Session:
             for envelope in self._store.get_history(self.id)
         )
 
-    def get_runs(self) -> Sequence[RunRecord]:
+    def get_runs(self) -> tuple[RunRecord, ...]:
         """Return the persistent runs owned by this session."""
 
-        return self._store.list_runs(self.id)
+        return tuple(self._store.list_runs(self.id))
 
     def _start_run(
         self,
@@ -61,7 +62,7 @@ class Session:
         *,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
+    ) -> TerminalRun:
         """Atomically finish one run and append its replayable history."""
 
         return self._store.finish_run(
@@ -83,7 +84,7 @@ class SessionRepository:
     def __init__(self, store: Store) -> None:
         """Bind the repository to its persistent Store."""
 
-        self._store = store
+        self._store: Final = store
 
     def create(
         self,
@@ -107,8 +108,8 @@ class SessionRepository:
 
         return tuple(self._session(record.id) for record in self._store.list_sessions())
 
-    def abort_active_run(self, session_id: str) -> RunRecord | None:
-        """Durably abort a running record without controlling its local task."""
+    def abort_active_run(self, session_id: str) -> TerminalRun | None:
+        """Durably abort an active record without controlling its local task."""
 
         return self._store.abort_active_run(session_id)
 

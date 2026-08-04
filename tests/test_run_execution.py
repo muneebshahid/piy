@@ -3,9 +3,11 @@
 import asyncio
 from collections.abc import Sequence
 from pathlib import Path
-from typing import get_args
+from typing import get_args, override
 
-from tile import Aborted, Completed, RunOutcome, RunRecord
+from tests.support.agent_streams import ProviderStreamMock, final_text_stream
+from tests.support.store import terminal_outcome
+from tile import Aborted, Completed, RunOutcome, TerminalRun
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent
 from tile.result import Faulted, RunResult
 from tile.runtime.execution import _ExecutionDependencies
@@ -15,7 +17,6 @@ from tile.sessions import SessionRepository
 from tile.store import SQLiteStore
 from tile.tool_executor import ToolExecutor
 from tile.types import ConversationItem
-from tests.support.agent_streams import ProviderStreamMock, final_text_stream
 
 
 async def test_run_execution_persists_before_provider_and_returns_only_outcome(
@@ -33,13 +34,16 @@ async def test_run_execution_persists_before_provider_and_returns_only_outcome(
         dependencies=_dependencies(transport),
     )
     handle = RunHandle(execution)
-    assert store.get_run(session_id=session.id, run_id=handle.id).status == "running"
+    assert store.get_run(session_id=session.id, run_id=handle.id).status == "active"
     result, events = await _wait_and_collect(handle)
 
     assert result == Completed(value="done")
     assert isinstance(events[-1], RunEndEvent)
     assert handle.session_id == session.id
-    assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
+    assert (
+        terminal_outcome(store.get_run(session_id=session.id, run_id=handle.id))
+        == result
+    )
     assert [item.role for item in session.get_history()] == ["user", "assistant"]
     assert tuple(vars(handle)) == ("_execution",)
 
@@ -90,7 +94,10 @@ async def test_cancelled_execution_defaults_a_missing_abort_reason(
 
     assert result == Aborted(reason="cancelled")
     assert isinstance(events[-1], RunEndEvent)
-    assert store.get_run(session_id=session.id, run_id=handle.id).outcome == result
+    assert (
+        terminal_outcome(store.get_run(session_id=session.id, run_id=handle.id))
+        == result
+    )
 
 
 def test_run_result_adds_faulted_without_expanding_persisted_outcomes() -> None:
@@ -103,6 +110,8 @@ def test_run_result_adds_faulted_without_expanding_persisted_outcomes() -> None:
     assert result.type == "faulted"
     assert Faulted not in get_args(RunOutcome)
     assert Faulted in get_args(RunResult)
+    assert isinstance(result, RunResult)
+    assert not isinstance(result, RunOutcome)
 
 
 def test_run_fault_event_carries_serializable_error_details() -> None:
@@ -133,7 +142,7 @@ def _dependencies(transport: ProviderStreamMock) -> _ExecutionDependencies:
     return _ExecutionDependencies(
         provider=transport,
         instructions="Test",
-        cwd=Path("."),
+        cwd=Path(),
         auto_mode=False,
         tool_executor=ToolExecutor(()),
     )
@@ -146,6 +155,7 @@ class _FinalizationCrash(BaseException):
 class _CrashingFinishStore(SQLiteStore):
     """Store that raises an unexpected base exception during finalization."""
 
+    @override
     def finish_run(
         self,
         *,
@@ -153,7 +163,7 @@ class _CrashingFinishStore(SQLiteStore):
         run_id: str,
         outcome: RunOutcome,
         history_delta: Sequence[ConversationItem],
-    ) -> RunRecord:
+    ) -> TerminalRun:
         """Crash terminal persistence after successful admission."""
 
         _ = session_id, run_id, outcome, history_delta
