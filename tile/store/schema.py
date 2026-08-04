@@ -6,7 +6,7 @@ from typing import cast
 from tile._sqlite import immediate_transaction
 from tile.store.base import StoreError
 
-SQLITE_STORE_SCHEMA_VERSION = "2"
+SQLITE_STORE_SCHEMA_VERSION = "1"
 _SCHEMA_VERSION_KEY = "store_schema_version"
 _LEGACY_VERSION_KEYS = ("schema_version", "run_schema_version")
 
