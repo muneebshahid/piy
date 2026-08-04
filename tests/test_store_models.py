@@ -272,6 +272,33 @@ def test_get_run_rejects_a_stored_status_contradicting_its_outcome(
         reopened.close()
 
 
+def test_get_run_rejects_an_active_row_carrying_terminal_data(
+    tmp_path: Path,
+) -> None:
+    """Surface stray terminal data on an active row as a persistence error."""
+
+    database_path = tmp_path / "active-with-terminal-data.db"
+    store = SQLiteStore(database_path)
+    try:
+        create_session(store, session_id="session-1")
+        start_run(store)
+    finally:
+        store.close()
+    corrupt_column(
+        database_path,
+        table="runs",
+        column="ended_at",
+        value=(STARTED_AT + timedelta(seconds=1)).isoformat(),
+    )
+
+    reopened = SQLiteStore(database_path)
+    try:
+        with pytest.raises(StorePersistenceError, match="carries terminal data"):
+            reopened.get_run("session-1", "run-1")
+    finally:
+        reopened.close()
+
+
 def test_get_run_rejects_a_terminal_row_missing_its_terminal_data(
     tmp_path: Path,
 ) -> None:

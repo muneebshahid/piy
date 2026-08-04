@@ -2,7 +2,7 @@
 
 import json
 from collections.abc import Sequence
-from typing import TypeIs, cast
+from typing import TypeIs
 
 from openai.types.responses.easy_input_message_param import EasyInputMessageParam
 from openai.types.responses.function_tool_param import FunctionToolParam
@@ -27,6 +27,7 @@ from openai.types.responses.response_output_message_param import (
     ResponseOutputMessageParam,
 )
 from openai.types.responses.response_output_text_param import ResponseOutputTextParam
+from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from openai.types.responses.response_reasoning_item_param import (
     ResponseReasoningItemParam,
 )
@@ -265,5 +266,10 @@ def _read_provider_phase(block: TextBlock) -> Phase | None:
 def _deserialize_reasoning_signature(
     reasoning_signature: str,
 ) -> ResponseReasoningItemParam:
-    parsed = json.loads(reasoning_signature)
-    return cast("ResponseReasoningItemParam", parsed)
+    """Validate one stored reasoning payload before replaying it."""
+
+    item = ResponseReasoningItem.model_validate_json(reasoning_signature)
+    replayed: ResponseReasoningItemParam = item.model_dump(
+        mode="json", exclude_none=True
+    )
+    return replayed

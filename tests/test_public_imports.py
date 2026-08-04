@@ -16,6 +16,7 @@ from tile import (
     Provider,
     RunAlreadyEndedError,
     RunHandle,
+    RunOutcome,
     RunRecord,
     Session,
     SessionNotFoundError,
@@ -70,7 +71,9 @@ async def test_documented_public_imports_run_fake_prompt() -> None:
     assert issubclass(TurnFailedError, RuntimeError)
     assert ExecutionFailure.model_fields["origin"]
     assert get_args(ExecutionFailureOrigin.__value__) == ("turn", "execution")
-    assert get_args(FailureCause.__value__) == (AgentFailure, ExecutionFailure)
+    assert get_args(FailureCause) == (AgentFailure, ExecutionFailure)
+    assert isinstance(AgentFailure(reason="cannot deliver"), FailureCause)
+    assert isinstance(Aborted(), RunOutcome)
     assert issubclass(RunAlreadyEndedError, RuntimeError)
     assert issubclass(StorePersistenceError, RuntimeError)
     assert Failed.model_fields["cause"]

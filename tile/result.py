@@ -83,7 +83,8 @@ class ExecutionFailure(BaseModel):
     message: str
 
 
-type FailureCause = AgentFailure | ExecutionFailure
+FailureCause = AgentFailure | ExecutionFailure
+"""A plain union so ``isinstance`` and ``get_args`` work on the public alias."""
 
 
 class Failed(BaseModel):
@@ -108,7 +109,8 @@ class Aborted(BaseModel):
     reason: AbortReason = "cancelled"
 
 
-type RunOutcome = Completed | Failed | Aborted
+RunOutcome = Completed | Failed | Aborted
+"""A plain union so ``isinstance`` and ``get_args`` work on the public alias."""
 
 
 @dataclass(frozen=True)
@@ -119,4 +121,5 @@ class Faulted:
     type: Literal["faulted"] = "faulted"
 
 
-type RunResult = RunOutcome | Faulted
+RunResult = RunOutcome | Faulted
+"""A plain union so ``isinstance`` and ``get_args`` work on the public alias."""

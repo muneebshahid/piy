@@ -62,6 +62,12 @@ def _insert_raw_run_row(
     ("meta_key", "meta_value", "match"),
     [
         pytest.param("schema_version", "2", "pre-unified", id="legacy-split-schema"),
+        pytest.param(
+            "store_schema_version",
+            "1",
+            "version: 1",
+            id="pre-active-rename-version",
+        ),
         pytest.param("store_schema_version", "999", "999", id="unknown-future-version"),
     ],
 )

@@ -108,8 +108,10 @@ def test_run_result_adds_faulted_without_expanding_persisted_outcomes() -> None:
 
     assert result.error is error
     assert result.type == "faulted"
-    assert Faulted not in get_args(RunOutcome.__value__)
-    assert Faulted in get_args(RunResult.__value__)
+    assert Faulted not in get_args(RunOutcome)
+    assert Faulted in get_args(RunResult)
+    assert isinstance(result, RunResult)
+    assert not isinstance(result, RunOutcome)
 
 
 def test_run_fault_event_carries_serializable_error_details() -> None:

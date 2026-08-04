@@ -84,92 +84,24 @@ def _normalize_sdk_event(event: ResponseStreamEvent) -> NormalizedEvent | None:
     which joins parts with a blank line and is authoritative.
     """
 
+    return (
+        _normalize_response_lifecycle_event(event)
+        or _normalize_content_stream_event(event)
+        or _normalize_output_item_added(event)
+        or _normalize_output_item_done(event)
+    )
+
+
+def _normalize_response_lifecycle_event(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize response creation and terminal lifecycle events."""
+
     match event:
         case ResponseCreatedEvent():
             return CreatedNormalizedEvent(
                 type=NormalizedEventType.CREATED,
                 response_id=event.response.id,
-            )
-        case ResponseOutputItemAddedEvent() if isinstance(
-            event.item, ResponseReasoningItem
-        ):
-            return ReasoningAddedNormalizedEvent(
-                type=NormalizedEventType.REASONING_ADDED,
-                item_id=event.item.id,
-            )
-        case (
-            ResponseReasoningSummaryTextDeltaEvent(delta=delta)
-            | ResponseReasoningTextDeltaEvent(delta=delta)
-        ):
-            return ReasoningDeltaNormalizedEvent(
-                type=NormalizedEventType.REASONING_DELTA,
-                delta=delta,
-            )
-        case ResponseOutputItemDoneEvent() if isinstance(
-            event.item, ResponseReasoningItem
-        ):
-            return ReasoningDoneNormalizedEvent(
-                type=NormalizedEventType.REASONING_DONE,
-                item_id=event.item.id,
-                summary_text=_join_reasoning_summary_text(event.item.summary),
-                reasoning_signature=_serialize_reasoning_item(event.item),
-            )
-        case ResponseOutputItemAddedEvent() if isinstance(
-            event.item, ResponseOutputMessage
-        ):
-            return MessageAddedNormalizedEvent(
-                type=NormalizedEventType.MESSAGE_ADDED,
-                item_id=event.item.id,
-                phase=_extract_message_phase(event.item),
-            )
-        case ResponseTextDeltaEvent():
-            return MessageTextDeltaNormalizedEvent(
-                type=NormalizedEventType.MESSAGE_TEXT_DELTA,
-                delta=event.delta,
-            )
-        case ResponseRefusalDeltaEvent():
-            return MessageTextDeltaNormalizedEvent(
-                type=NormalizedEventType.MESSAGE_TEXT_DELTA,
-                delta=event.delta,
-            )
-        case ResponseOutputItemDoneEvent() if isinstance(
-            event.item, ResponseOutputMessage
-        ):
-            return MessageDoneNormalizedEvent(
-                type=NormalizedEventType.MESSAGE_DONE,
-                item_id=event.item.id,
-                text=_join_message_text(event.item.content),
-                phase=_extract_message_phase(event.item),
-            )
-        case ResponseOutputItemAddedEvent() if isinstance(
-            event.item, ResponseFunctionToolCall
-        ):
-            return ToolCallAddedNormalizedEvent(
-                type=NormalizedEventType.TOOL_CALL_ADDED,
-                provider_item_id=event.item.id,
-                call_id=event.item.call_id,
-                name=event.item.name,
-                arguments=_parse_tool_call_arguments(event.item.arguments or ""),
-            )
-        case ResponseFunctionCallArgumentsDeltaEvent():
-            return ToolCallArgumentsDeltaNormalizedEvent(
-                type=NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
-                delta=event.delta,
-            )
-        case ResponseFunctionCallArgumentsDoneEvent():
-            return ToolCallArgumentsDoneNormalizedEvent(
-                type=NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
-                arguments=_parse_tool_call_arguments(event.arguments),
-            )
-        case ResponseOutputItemDoneEvent() if isinstance(
-            event.item, ResponseFunctionToolCall
-        ):
-            return ToolCallDoneNormalizedEvent(
-                type=NormalizedEventType.TOOL_CALL_DONE,
-                provider_item_id=event.item.id,
-                call_id=event.item.call_id,
-                name=event.item.name,
-                arguments=_parse_tool_call_arguments(event.item.arguments or ""),
             )
         case ResponseCompletedEvent():
             return CompletedNormalizedEvent(
@@ -191,6 +123,104 @@ def _normalize_sdk_event(event: ResponseStreamEvent) -> NormalizedEvent | None:
             return FailedNormalizedEvent(
                 type=NormalizedEventType.FAILED,
                 message=_extract_error_message(event),
+            )
+
+    return None
+
+
+def _normalize_content_stream_event(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize incremental block content and its argument completion."""
+
+    match event:
+        case (
+            ResponseReasoningSummaryTextDeltaEvent(delta=delta)
+            | ResponseReasoningTextDeltaEvent(delta=delta)
+        ):
+            return ReasoningDeltaNormalizedEvent(
+                type=NormalizedEventType.REASONING_DELTA,
+                delta=delta,
+            )
+        case ResponseTextDeltaEvent() | ResponseRefusalDeltaEvent():
+            return MessageTextDeltaNormalizedEvent(
+                type=NormalizedEventType.MESSAGE_TEXT_DELTA,
+                delta=event.delta,
+            )
+        case ResponseFunctionCallArgumentsDeltaEvent():
+            return ToolCallArgumentsDeltaNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_ARGUMENTS_DELTA,
+                delta=event.delta,
+            )
+        case ResponseFunctionCallArgumentsDoneEvent():
+            return ToolCallArgumentsDoneNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_ARGUMENTS_DONE,
+                arguments=_parse_tool_call_arguments(event.arguments),
+            )
+
+    return None
+
+
+def _normalize_output_item_added(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize the start of a reasoning, message, or tool-call item."""
+
+    if not isinstance(event, ResponseOutputItemAddedEvent):
+        return None
+    match event.item:
+        case ResponseReasoningItem():
+            return ReasoningAddedNormalizedEvent(
+                type=NormalizedEventType.REASONING_ADDED,
+                item_id=event.item.id,
+            )
+        case ResponseOutputMessage():
+            return MessageAddedNormalizedEvent(
+                type=NormalizedEventType.MESSAGE_ADDED,
+                item_id=event.item.id,
+                phase=_extract_message_phase(event.item),
+            )
+        case ResponseFunctionToolCall():
+            return ToolCallAddedNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_ADDED,
+                provider_item_id=event.item.id,
+                call_id=event.item.call_id,
+                name=event.item.name,
+                arguments=_parse_tool_call_arguments(event.item.arguments or ""),
+            )
+
+    return None
+
+
+def _normalize_output_item_done(
+    event: ResponseStreamEvent,
+) -> NormalizedEvent | None:
+    """Normalize the completion of a reasoning, message, or tool-call item."""
+
+    if not isinstance(event, ResponseOutputItemDoneEvent):
+        return None
+    match event.item:
+        case ResponseReasoningItem():
+            return ReasoningDoneNormalizedEvent(
+                type=NormalizedEventType.REASONING_DONE,
+                item_id=event.item.id,
+                summary_text=_join_reasoning_summary_text(event.item.summary),
+                reasoning_signature=_serialize_reasoning_item(event.item),
+            )
+        case ResponseOutputMessage():
+            return MessageDoneNormalizedEvent(
+                type=NormalizedEventType.MESSAGE_DONE,
+                item_id=event.item.id,
+                text=_join_message_text(event.item.content),
+                phase=_extract_message_phase(event.item),
+            )
+        case ResponseFunctionToolCall():
+            return ToolCallDoneNormalizedEvent(
+                type=NormalizedEventType.TOOL_CALL_DONE,
+                provider_item_id=event.item.id,
+                call_id=event.item.call_id,
+                name=event.item.name,
+                arguments=_parse_tool_call_arguments(event.item.arguments or ""),
             )
 
     return None
