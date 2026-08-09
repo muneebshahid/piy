@@ -224,7 +224,7 @@ async def test_runtime_maps_fail_tool_to_failed_outcome(store: SQLiteStore) -> N
     )
     harness = build_harness(store, auto_mode=False)
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert provider.await_count == 1
@@ -276,7 +276,7 @@ async def test_runtime_nudges_text_only_agent_run_toward_result(
     harness = build_harness(store, session_id="nudged", auto_mode=False)
 
     run = await harness.prompt(
-        "Weather in Munich?", provider=provider, result=WeatherReport
+        "Weather in Munich?", provider=provider, result_type=WeatherReport
     )
     outcome = await run.wait()
     events = [event async for event in run.events()]
@@ -305,7 +305,7 @@ async def test_runtime_fails_after_follow_up_cap(store: SQLiteStore) -> None:
     provider = ProviderStreamMock(streams)
     harness = build_harness(store, auto_mode=False)
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert provider.await_count == MAX_RESULT_FOLLOW_UPS + 1
@@ -325,7 +325,7 @@ async def test_runtime_fails_when_nudge_attempt_hits_stream_error(
     )
     harness = build_harness(store, session_id="nudged-error", auto_mode=False)
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert isinstance(outcome, Failed)
@@ -411,7 +411,7 @@ async def test_runtime_keeps_terminal_text_separate_from_result_value(
     )
     harness = build_harness(store, auto_mode=False)
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert isinstance(outcome, Completed)
@@ -445,7 +445,7 @@ async def test_session_mixes_contract_and_plain_prompts(store: SQLiteStore) -> N
     harness = build_harness(store, session_id="mixed-session", auto_mode=False)
 
     contract_run = await harness.prompt(
-        "Weather in Munich?", provider=provider, result=WeatherReport
+        "Weather in Munich?", provider=provider, result_type=WeatherReport
     )
     contract_outcome = await contract_run.wait()
     assert isinstance(contract_outcome, Completed)

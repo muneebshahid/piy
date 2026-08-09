@@ -35,7 +35,7 @@ class RunExecution:
         *,
         session: Session,
         prompt: str,
-        result: type[BaseModel] | None,
+        result_type: type[BaseModel] | None,
         dependencies: _ExecutionDependencies,
     ) -> RunExecution:
         """Durably accept one run, start execution, and return its owner."""
@@ -50,7 +50,7 @@ class RunExecution:
             session=session,
             record=started.run,
             committed_history=started.committed_history,
-            result=result,
+            result_type=result_type,
             dependencies=dependencies,
         )
         execution._begin()
@@ -62,14 +62,14 @@ class RunExecution:
         session: Session,
         record: ActiveRun,
         committed_history: Sequence[HistoryItem],
-        result: type[BaseModel] | None,
+        result_type: type[BaseModel] | None,
         dependencies: _ExecutionDependencies,
     ) -> None:
         """Prepare an already accepted run without performing side effects."""
 
         self._session: Final = session
         self._record: Final = record
-        self._result_type: Final = result
+        self._result_type: Final = result_type
         self._dependencies: Final = dependencies
         self._events: list[AgentEvent] = []
         self._history: Final = _RunHistory.start(
@@ -128,7 +128,7 @@ class RunExecution:
                 self._emit,
                 deps=self._dependencies,
                 history=self._history.working,
-                result=self._result_type,
+                result_type=self._result_type,
             )
         )
         self._task.add_done_callback(self._finalize)

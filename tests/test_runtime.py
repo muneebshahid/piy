@@ -169,7 +169,7 @@ async def test_runtime_keeps_multi_attempt_history_provisional_until_finalizatio
         tools=[_tool("inspect", inspect)],
     )
     session = harness.session
-    handle = await harness.prompt("inspect", provider=provider, result=_TextResult)
+    handle = await harness.prompt("inspect", provider=provider, result_type=_TextResult)
 
     await provider.wait_for_calls(expected=3)
     assert session.get_history() == ()
@@ -320,7 +320,7 @@ async def test_agent_failure_commits_its_complete_replayable_history(
     harness = build_harness(store, session_id="agent-failure-history")
     session = harness.session
 
-    handle = await harness.prompt("try", provider=provider, result=_TextResult)
+    handle = await harness.prompt("try", provider=provider, result_type=_TextResult)
     outcome = await handle.wait()
 
     expected = Failed(cause=AgentFailure(reason="cannot deliver"))
@@ -524,7 +524,7 @@ async def test_finalization_fault_requires_the_durable_abort_escape_hatch(
 
 
 @pytest.mark.parametrize(
-    ("streams", "result"),
+    ("streams", "result_type"),
     [
         pytest.param(
             [
@@ -548,14 +548,14 @@ async def test_finalization_fault_requires_the_durable_abort_escape_hatch(
 async def test_failure_is_overridden_by_a_finalization_fault(
     failing_finish_store: FailingFinishStore,
     streams: Sequence[Sequence[ProviderStreamEvent]],
-    result: type[BaseModel] | None,
+    result_type: type[BaseModel] | None,
 ) -> None:
     """Return the durability fault when a failure outcome cannot be persisted."""
 
     provider = ProviderStreamMock(streams)
     harness = build_harness(failing_finish_store, session_id="failure-override")
 
-    handle = await harness.prompt("fail", provider=provider, result=result)
+    handle = await harness.prompt("fail", provider=provider, result_type=result_type)
     outcome = await handle.wait()
 
     assert isinstance(outcome, Faulted)

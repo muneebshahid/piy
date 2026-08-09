@@ -57,14 +57,14 @@ class AgentHarness:
         prompt: str,
         *,
         provider: Provider,
-        result: type[BaseModel] | None = None,
+        result_type: type[BaseModel] | None = None,
     ) -> RunHandle:
         """Durably accept a prompt and return its live run handle."""
 
         execution = RunExecution.start(
             session=self._session,
             prompt=prompt,
-            result=result,
+            result_type=result_type,
             dependencies=_ExecutionDependencies(
                 provider=provider,
                 instructions=self._instructions,

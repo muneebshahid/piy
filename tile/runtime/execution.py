@@ -59,17 +59,17 @@ async def execute_prompt(
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
-    result: type[BaseModel] | None,
+    result_type: type[BaseModel] | None,
 ) -> RunOutcome:
     """Run one prompt program, emitting inner events, and return its outcome."""
 
-    if result is None:
+    if result_type is None:
         return await _execute_plain(emit, deps=deps, history=history)
-    return await _execute_typed(
+    return await _execute_with_result_contract(
         emit,
         deps=deps,
         history=history,
-        result=result,
+        result_type=result_type,
     )
 
 
@@ -89,17 +89,17 @@ async def _execute_plain(
     return Completed(value=_assistant_text(agent_result.last_turn))
 
 
-async def _execute_typed(
+async def _execute_with_result_contract(
     emit: EmitFn,
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
-    result: type[BaseModel],
+    result_type: type[BaseModel],
 ) -> RunOutcome:
     """Run agent attempts until the required result is produced or exhausted."""
 
-    attempt_dependencies = _typed_attempt_dependencies(deps, result)
-    for attempt in range(MAX_RESULT_FOLLOW_UPS + 1):
+    attempt_dependencies = _result_contract_dependencies(deps, result_type)
+    for follow_ups_used in range(MAX_RESULT_FOLLOW_UPS + 1):
         agent_result = await _run_attempt(
             emit,
             deps=attempt_dependencies,
@@ -108,7 +108,7 @@ async def _execute_typed(
         outcome = _result_outcome(agent_result.tool_executions)
         if outcome is not None:
             return outcome
-        if attempt < MAX_RESULT_FOLLOW_UPS:
+        if follow_ups_used < MAX_RESULT_FOLLOW_UPS:
             emit(ResultFollowUpEvent(message=UserMessage(content=RESULT_FOLLOW_UP)))
     return Failed(cause=AgentFailure(reason=NO_RESULT_REASON))
 
@@ -138,17 +138,17 @@ async def _run_attempt(
     )
 
 
-def _typed_attempt_dependencies(
+def _result_contract_dependencies(
     deps: _ExecutionDependencies,
-    result: type[BaseModel],
+    result_type: type[BaseModel],
 ) -> _ExecutionDependencies:
-    """Resolve one typed prompt's shared attempt dependencies."""
+    """Add the instructions and tools required by a result contract."""
 
     return replace(
         deps,
         instructions=f"{deps.instructions}\n\n{RESULT_CONTRACT}",
         tool_executor=ToolExecutor(
-            (*deps.tool_executor.tools, complete_tool(result), fail_tool)
+            (*deps.tool_executor.tools, complete_tool(result_type), fail_tool)
         ),
     )
 
@@ -159,12 +159,11 @@ def _result_outcome(
     """Build a terminal outcome, or return None when a result remains missing."""
 
     for execution in tool_executions:
-        if not execution.terminate:
-            continue
-        if isinstance(execution.details, CompleteDetails):
-            return Completed(value=execution.details.value)
-        if isinstance(execution.details, FailDetails):
-            return Failed(cause=AgentFailure(reason=execution.details.reason))
+        match execution.details:
+            case CompleteDetails(value=value):
+                return Completed(value=value)
+            case FailDetails(reason=reason):
+                return Failed(cause=AgentFailure(reason=reason))
     return None
 
 

@@ -30,7 +30,7 @@ async def test_run_execution_persists_before_provider_and_returns_only_outcome(
     execution = RunExecution.start(
         session=session,
         prompt="hello",
-        result=None,
+        result_type=None,
         dependencies=_dependencies(transport),
     )
     handle = RunHandle(execution)
@@ -60,7 +60,7 @@ async def test_run_execution_closes_after_an_unexpected_finalization_crash() -> 
             RunExecution.start(
                 session=session,
                 prompt="hello",
-                result=None,
+                result_type=None,
                 dependencies=_dependencies(transport),
             )
         )
@@ -86,7 +86,7 @@ async def test_cancelled_execution_defaults_a_missing_abort_reason(
         RunExecution.start(
             session=session,
             prompt="hello",
-            result=None,
+            result_type=None,
             dependencies=_dependencies(transport),
         )
     )
