@@ -10,11 +10,11 @@ from typing import Final
 
 from pydantic import BaseModel
 
-from tile.prompt import DEFAULT_INSTRUCTIONS
+from tile.extensions import Extension
+from tile.extensions.registry import _register_extensions
 from tile.providers.base import Provider
 from tile.result import COMPLETE_TOOL_NAME, FAIL_TOOL_NAME
-from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.run_execution import RunExecution
+from tile.runtime.run_execution import RunExecution, _RunDependencies
 from tile.runtime.run_handle import RunHandle
 from tile.sessions import Session
 from tile.tool_executor import ToolExecutor
@@ -30,20 +30,22 @@ class AgentHarness:
         *,
         session: Session,
         cwd: Path | str,
+        instructions: str,
         tools: Sequence[ToolDefinition] = (),
-        instructions: str = DEFAULT_INSTRUCTIONS,
-        auto_mode: bool = True,
+        extensions: Sequence[Extension] = (),
     ) -> None:
-        """Configure one session with tools, instructions, working directory, and mode."""
+        """Configure one session with tools, instructions, and extensions."""
 
+        registry = _register_extensions(extensions)
         _reject_reserved_tool_names(tools)
         normalized_cwd = normalize_cwd(cwd)
         self._session: Final = session
-        self._cwd: Final = normalized_cwd
-        self._instructions: Final = instructions
-        self._auto_mode: Final = auto_mode
-        self._tool_executor: Final = ToolExecutor(
-            _bind_cwd_tools(tools, normalized_cwd)
+        self._run_hooks: Final = registry.build_run_hooks()
+        self._run_observers: Final = registry.build_run_observers()
+        self._run_dependencies: Final = _RunDependencies(
+            instructions=instructions,
+            cwd=normalized_cwd,
+            tool_executor=ToolExecutor(_bind_cwd_tools(tools, normalized_cwd)),
         )
 
     @property
@@ -61,17 +63,14 @@ class AgentHarness:
     ) -> RunHandle:
         """Durably accept a prompt and return its live run handle."""
 
-        execution = RunExecution.start(
+        execution = await RunExecution.start(
             session=self._session,
             prompt=prompt,
             result_type=result_type,
-            dependencies=_ExecutionDependencies(
-                provider=provider,
-                instructions=self._instructions,
-                cwd=self._cwd,
-                auto_mode=self._auto_mode,
-                tool_executor=self._tool_executor,
-            ),
+            provider=provider,
+            dependencies=self._run_dependencies,
+            hooks=self._run_hooks,
+            observers=self._run_observers,
         )
         return RunHandle(execution)
 

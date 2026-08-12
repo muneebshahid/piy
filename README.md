@@ -31,6 +31,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from tile import AgentHarness, Completed, SessionRepository, SQLiteStore
+from tile.extensions import NonInteractive
 from tile.providers.openai import OpenAIProvider
 from tile.tools import BUILTIN_TOOLS
 
@@ -40,8 +41,10 @@ async def main() -> None:
     session = SessionRepository(store).create()
     harness = AgentHarness(
         session=session,
+        instructions="You are a coding agent. Complete the requested task.",
         tools=BUILTIN_TOOLS,
         cwd=Path.cwd(),
+        extensions=(NonInteractive(),),
     )
     provider = OpenAIProvider(
         client=AsyncOpenAI(),
@@ -62,6 +65,10 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+`instructions` is required because Tile does not impose an agent identity or
+behavior. `NonInteractive` is explicit because not every agent must run without
+requesting caller input.
+
 `harness.prompt()` returns a handle for waiting on the result or consuming the
 run's event stream:
 
@@ -79,12 +86,20 @@ Tile currently includes:
 - built-in file, search, edit, and shell tools;
 - validated custom tools using Pydantic input models;
 - typed results using your own Pydantic model;
+- hooks and passive run-event observers;
 - structured events for model output, tool calls, and run outcomes; and
 - recovery from interrupted provider responses without committing partial
   conversation turns.
 
-See [the agent harness guide](docs/agent_harness.md) for the runtime model and
-the `examples` directory for a small local runner.
+Hook results are not durable yet. `before_run` output is used for the live run
+and enters history only when finalization commits. Tile cannot currently reopen
+that run, restore the effective hook output, and skip the hook after a crash.
+Persisting and consuming hook results during recovery will be introduced
+together so the durability guarantee is complete.
+
+See [the agent harness guide](docs/agent_harness.md) for the runtime model,
+[the extensions guide](docs/extensions.md) for hooks and observers, and the
+`examples` directory for a small local runner.
 
 ## Project status
 

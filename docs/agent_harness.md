@@ -6,7 +6,13 @@ Tile separates persistent session access from live prompt execution.
 store = SQLiteStore("tile.db")
 repository = SessionRepository(store)
 session = repository.create()
-harness = AgentHarness(session=session, cwd=Path.cwd(), tools=tools)
+harness = AgentHarness(
+    session=session,
+    cwd=Path.cwd(),
+    instructions=instructions,
+    tools=tools,
+    extensions=(NonInteractive(),),
+)
 
 provider = OpenAIProvider(
     client=client,
@@ -19,12 +25,16 @@ result = await run.wait()
 
 ## Responsibilities
 
+`instructions` is required. Tile composes it with runtime context but supplies
+no default agent identity or behavioural policy.
+
 - `SessionRepository` creates, gets, lists, and forks persistent sessions. It
   temporarily exposes a durable active-run abort escape hatch.
 - `Session` is a lightweight, Store-bound handle. It exposes current metadata,
   committed history, and durable run records.
-- `AgentHarness` owns the tools, working directory, instructions, and prompt
-  admission configuration for exactly one session. It does not retain runs.
+- `AgentHarness` assembles caller-provided instructions, tools, extensions, the
+  working directory, and prompt admission configuration for exactly one
+  session. It does not retain runs.
 - `Provider` is the configured streaming abstraction used by execution.
   Implementations own their model, reasoning configuration, and transport. A
   caller may choose a different provider for each prompt.
@@ -35,9 +45,11 @@ result = await run.wait()
 
 ## Durability contract
 
-Prompt admission persists the `ActiveRun` record before a handle is returned
-or provider work begins. A start-write failure raises to the caller, returns no
-handle, and leaves the harness reusable after the persistence issue is resolved.
+Prompt admission runs `before_run` hooks, then persists the `ActiveRun` record
+before a handle is returned or provider work begins. Hook-resolved messages and
+generated history remain provisional until finalization. A hook or start-write
+failure raises to the caller, returns no handle, and leaves the harness reusable
+after the issue is resolved.
 
 Persistent records are Store results. `SessionRepository.create()` supplies a
 session id and receives the Store-created `SessionRecord`; it does not construct

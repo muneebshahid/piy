@@ -222,7 +222,7 @@ async def test_runtime_maps_fail_tool_to_failed_outcome(store: SQLiteStore) -> N
             ),
         ]
     )
-    harness = build_harness(store, auto_mode=False)
+    harness = build_harness(store, extensions=())
 
     run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
@@ -273,7 +273,7 @@ async def test_runtime_nudges_text_only_agent_run_toward_result(
             ),
         ]
     )
-    harness = build_harness(store, session_id="nudged", auto_mode=False)
+    harness = build_harness(store, session_id="nudged", extensions=())
 
     run = await harness.prompt(
         "Weather in Munich?", provider=provider, result_type=WeatherReport
@@ -303,7 +303,7 @@ async def test_runtime_fails_after_follow_up_cap(store: SQLiteStore) -> None:
         for index in range(MAX_RESULT_FOLLOW_UPS + 1)
     ]
     provider = ProviderStreamMock(streams)
-    harness = build_harness(store, auto_mode=False)
+    harness = build_harness(store, extensions=())
 
     run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
@@ -323,7 +323,7 @@ async def test_runtime_fails_when_nudge_attempt_hits_stream_error(
             error_stream("resp_2", "boom"),
         ]
     )
-    harness = build_harness(store, session_id="nudged-error", auto_mode=False)
+    harness = build_harness(store, session_id="nudged-error", extensions=())
 
     run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
@@ -409,7 +409,7 @@ async def test_runtime_keeps_terminal_text_separate_from_result_value(
             ],
         ]
     )
-    harness = build_harness(store, auto_mode=False)
+    harness = build_harness(store, extensions=())
 
     run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
@@ -442,7 +442,7 @@ async def test_session_mixes_contract_and_plain_prompts(store: SQLiteStore) -> N
             final_text_stream("resp_2", "You asked about Munich."),
         ]
     )
-    harness = build_harness(store, session_id="mixed-session", auto_mode=False)
+    harness = build_harness(store, session_id="mixed-session", extensions=())
 
     contract_run = await harness.prompt(
         "Weather in Munich?", provider=provider, result_type=WeatherReport

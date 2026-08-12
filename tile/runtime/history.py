@@ -16,7 +16,6 @@ from tile.types.conversation import (
     AssistantTurn,
     ConversationItem,
     ToolResultTurn,
-    UserMessage,
 )
 from tile.types.stream_events import ToolCallBlock
 from tile.types.tools import ToolTextContent
@@ -34,14 +33,14 @@ class _RunHistory:
         cls,
         committed: Sequence[HistoryItem],
         *,
-        prompt: str,
+        initial_messages: Sequence[ConversationItem],
     ) -> _RunHistory:
-        """Build a run-local buffer from committed history and its prompt."""
+        """Build a run-local buffer from committed and provisional input."""
 
-        delta: list[ConversationItem] = [UserMessage(content=prompt)]
+        delta = [message.model_copy(deep=True) for message in initial_messages]
         working = [
             *(envelope.item.model_copy(deep=True) for envelope in committed),
-            *(item.model_copy(deep=True) for item in delta),
+            *(message.model_copy(deep=True) for message in delta),
         ]
         return cls(working=working, delta=delta)
 

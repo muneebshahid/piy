@@ -9,9 +9,10 @@ from tests.support.agent_streams import ProviderStreamMock, final_text_stream
 from tests.support.store import terminal_outcome
 from tile import Aborted, Completed, RunOutcome, TerminalRun
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent
+from tile.extensions.hooks import RunHooks
+from tile.extensions.run_observers import RunObservers
 from tile.result import Faulted, RunResult
-from tile.runtime.execution import _ExecutionDependencies
-from tile.runtime.run_execution import RunExecution
+from tile.runtime.run_execution import RunExecution, _RunDependencies
 from tile.runtime.run_handle import RunHandle
 from tile.sessions import SessionRepository
 from tile.store import SQLiteStore
@@ -27,11 +28,14 @@ async def test_run_execution_persists_before_provider_and_returns_only_outcome(
     session = SessionRepository(store).create(session_id="session-1")
     transport = ProviderStreamMock([final_text_stream("response-1", "done")])
 
-    execution = RunExecution.start(
+    execution = await RunExecution.start(
         session=session,
         prompt="hello",
         result_type=None,
-        dependencies=_dependencies(transport),
+        provider=transport,
+        dependencies=_dependencies(),
+        hooks=RunHooks(),
+        observers=RunObservers(),
     )
     handle = RunHandle(execution)
     assert store.get_run(session_id=session.id, run_id=handle.id).status == "active"
@@ -57,11 +61,14 @@ async def test_run_execution_closes_after_an_unexpected_finalization_crash() -> 
         transport = ProviderStreamMock([final_text_stream("response-1", "lost")])
 
         handle = RunHandle(
-            RunExecution.start(
+            await RunExecution.start(
                 session=session,
                 prompt="hello",
                 result_type=None,
-                dependencies=_dependencies(transport),
+                provider=transport,
+                dependencies=_dependencies(),
+                hooks=RunHooks(),
+                observers=RunObservers(),
             )
         )
         result, events = await asyncio.wait_for(_wait_and_collect(handle), timeout=1)
@@ -83,11 +90,14 @@ async def test_cancelled_execution_defaults_a_missing_abort_reason(
     transport.mock.side_effect = asyncio.CancelledError()
 
     handle = RunHandle(
-        RunExecution.start(
+        await RunExecution.start(
             session=session,
             prompt="hello",
             result_type=None,
-            dependencies=_dependencies(transport),
+            provider=transport,
+            dependencies=_dependencies(),
+            hooks=RunHooks(),
+            observers=RunObservers(),
         )
     )
     result, events = await _wait_and_collect(handle)
@@ -136,14 +146,12 @@ async def _wait_and_collect(
     return result, events
 
 
-def _dependencies(transport: ProviderStreamMock) -> _ExecutionDependencies:
+def _dependencies() -> _RunDependencies:
     """Build execution dependencies around one configured fake provider."""
 
-    return _ExecutionDependencies(
-        provider=transport,
+    return _RunDependencies(
         instructions="Test",
         cwd=Path(),
-        auto_mode=False,
         tool_executor=ToolExecutor(()),
     )
 
