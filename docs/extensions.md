@@ -1,35 +1,32 @@
 # Extensions
 
-Tile exposes three mechanically distinct ways to customize the harness:
+Tile has three customization mechanisms:
 
-- **Strategies** are explicit dependencies that implement a core capability. There can be
-only one strategy can be selected per capability. The `Store`, for example, is selected when constructing `SessionRepository`.
-  Current strategies include
-  - Persistence (Implemented via `Store`)
-  - Compaction (Planned)
-  - Contract Enforcement (Part of core atm, in case of a need for multiple strategies, this will be extracted)
-- **Hooks** are awaited callbacks at named points in the harness lifecycle. Each
-  hook receives immutable input and may return only that hook's typed decision.
-  The core validates and applies the decision; hooks never mutate harness internals
-  directly.
-- **Observers** passively consume run events. They cannot affect execution, and
-  their failures do not affect the harness or run.
+- **Strategies** implement a core capability. One strategy is selected explicitly
+  for each capability. Persistence uses `Store`; compaction is planned. Result
+  contracts remain in core unless Tile gains another contract-enforcement mode.
+- **Hooks** are awaited lifecycle callbacks. They receive immutable context and
+  return a typed decision. The runtime applies the decision.
+- **Observers** consume events without affecting execution. Their failures do not
+  affect the run.
 
-An **extension** packages one or more of these contributions together.
+An extension packages tools, hooks, observers, or strategies. Registering an
+extension may add tools, hooks, and observers. Strategies are still selected
+explicitly by the caller.
 
 ## Registration
 
-Extensions register their contributions explicitly.
+Extensions register contributions through a closed API:
 
 ```python
 class MyExtension:
-    """Contribute one self-contained harness feature."""
-
-    name = "my_extension"
+    """Contribute one harness feature."""
 
     def register(self, registry: ExtensionRegistry) -> None:
-        registry.observe(self.observer)
+        registry.add_tools(self.tools)
         registry.before_run(self.before_run)
+        registry.observe(self.observer)
+
 
 harness = AgentHarness(
     session=session,
@@ -38,173 +35,230 @@ harness = AgentHarness(
 )
 ```
 
+Direct harness tools and extension tools form one catalog. Duplicate names are
+rejected.
+
+### Assembly
+
+`ExtensionRegistry` is a mutable builder used only while constructing the harness.
+`AgentHarness` calls each extension's `register()` once, then freezes the collected
+handlers into `RunHooks`.
+
+```python
+class ExtensionRegistry:
+    """Collect extension contributions during harness construction."""
+
+    def __init__(self) -> None:
+        self._tools: list[ToolDefinition] = []
+        self._before_run: list[BeforeRunHook] = []
+        self._observers: list[Observer] = []
+
+    def add_tools(self, tools: Sequence[ToolDefinition]) -> None:
+        self._tools.extend(tools)
+
+    def before_run(self, handler: BeforeRunHook) -> None:
+        self._before_run.append(handler)
+
+    def observe(self, observer: Observer) -> None:
+        self._observers.append(observer)
+
+    @property
+    def tools(self) -> tuple[ToolDefinition, ...]:
+        return tuple(self._tools)
+
+    @property
+    def observers(self) -> tuple[Observer, ...]:
+        return tuple(self._observers)
+
+    def build_run_hooks(self) -> RunHooks:
+        return RunHooks(before_run=self._before_run)
+
+
+def _register_extensions(
+    extensions: Sequence[Extension],
+) -> ExtensionRegistry:
+    registry = ExtensionRegistry()
+    for extension in extensions:
+        extension.register(registry)
+    return registry
+```
+
+```python
+class AgentHarness:
+    def __init__(
+        self,
+        *,
+        extensions: Sequence[Extension] = (),
+        ...,
+    ) -> None:
+        registry = _register_extensions(extensions)
+        self._run_hooks = registry.build_run_hooks()
+        self._tool_executor = ToolExecutor((*tools, *registry.tools))
+        self._observers = registry.observers
+
+    async def prompt(self, ...) -> RunHandle:
+        execution = await RunExecution.start(
+            ...,
+            hooks=self._run_hooks,
+        )
+        return RunHandle(execution)
+```
+
+The registry is not passed to a run or handler. It stores bound handler methods;
+`RunHooks` later invokes those methods with hook context.
+
 ## Hooks
 
-Hooks are a closed catalog of named decision points. For every hook Tile defines:
+Hooks are a closed catalog. Each hook defines its own context, result, composition,
+durability, replay, and failure behavior.
 
-- its immutable input;
-- its typed result;
-- how multiple results compose;
-- when its decision becomes durable;
-- whether and when it is replayed;
+`RunExecution` owns run lifecycle hooks. A typed `RunHooks` object keeps their
+registered handlers and exposes one method per hook; there is no generic `Hook`
+base class, string-keyed hook dictionary, or runtime signature inspection.
 
-Handlers run in registration order. Handler failures abort the run and raise an error to the caller.
+The first version contains only `before_run`. Each future hook adds an explicit
+registry method, handler collection, constructor argument, and `RunHooks` method.
+For example, `before_run_end` adds `_before_run_end` and
+`RunHooks.before_run_end()` rather than going through a generic executor.
 
-### Hook Executor
+Hook failures are not ignored. A failure before admission propagates to the caller
+without creating a run. A failure after admission fails that run according to the
+hook's contract.
 
 ### `before_run`
 
+`before_run` runs once in `RunExecution.start()`, before persistence:
+
 ```python
-class Hook(ABC):
+class BeforeRunContext(BaseModel):
+    """Current run input visible to one handler."""
 
-    def __init__(self, func: Callable[[BaseModel | None], BaseModel | None], context_type: BaseModel | None, return_type: BaseModel | None):
-        self.context_type = context_type
-        self.return_type = return_type
-        self.func = func
-        self._verify_signature()
+    model_config = ConfigDict(frozen=True)
 
-    async def __call__(self, context: BaseModel | None) -> BaseModel | None:
-        # do processing and validate the result
-        result = await self.func(context)
-        self._validate(result)
-        return result
-
-    def _verify_signature(self) -> None:
-        # verify that func signature matches context_type and return_type
-        ...
-
-    def _validate(self, result: BaseModel | None) -> None:
-        # validate result is instance of return_type
-        ...
-
-    def __eq__(self, other: object) -> bool:
-        return isinstance(other, Hook) and self.func is other.func
-
-class BeforeRunContext:
-    """Immutable input to the `before_run` hook."""
-
-    session: Session
+    session_id: str
     run_id: str
     system_prompt: str
-    messages: list[ConversationItem]
-
-class BeforeRunResult:
-    """Typed result of the `before_run` hook."""
-
-    modified_system_prompt: str | None
-    additional_messages: list[ConversationItem] | None
-
-class BeforeRunHook(Hook):
-    """Validate and apply the final preparation for the run."""
-
-    def __init__(self, func: Callable[[BeforeRunContext], BeforeRunResult]):
-        super().__init__(context_type=BeforeRunContext, return_type=BeforeRunResult, func=func)
-
-    def _validate(self, result: BeforeRunResult) -> None:
-        # verify that toolcalls if any also have responses etc
-
-# Or may be there is a more pythonic way e.g. BeforeRunHook = Hook[BeforeRunContext, BeforeRunResult]()
-
-class ExtensionRegistry:
-    _observers: list[Observer] = []
-    _before_run_hooks: list[BeforeRunHook] = []
-
-    def observe(self, func: Callable[AsyncIterator[AgentEvents], Awaitable[None]]) -> None:
-        """deduplicate and append observer, same observer instance may not be registered twice"""
-        observer = Observer(func)
-        if observer not in self._observers:
-            self._observers.append(observer)
-
-    def before_run(self, func: Callable[[BeforeRunContext], BeforeRunResult]) -> None:
-      """deduplicate and append before_run hook"""
-        hook = BeforeRunHook(func)
-        if hook not in self._before_run_hooks:
-            self._before_run_hooks.append(hook)
-
-    def hooks(self) -> dict[str, list[Hook]]:
-        return {
-            "before_run": self._before_run_hooks
-        }
-
-class BeforeRunContext:
-    """Immutable input to the `before_run` hook."""
-
-    session: Session
-    run_id: str
-    system_prompt: str
-    messages: list[ConversationItem]
-
-    def deepcopy(self) -> Self:
-      pass
-
-class BeforeRunResult:
-    """Typed result of the `before_run` hook."""
-
-    modified_system_prompt: str | None
-    additional_messages: list[ConversationItem] | None
-
-class HookExecutor:
-    """Run all registered handlers for a given hook."""
-
-    def __init__(self, hooks: dict[str, list[Hook]]):
-        self._hooks = hooks
-
-    def before_run(self, context: BeforeRunContext):
-        for hook in self._hooks["before_run"]:
-            result = hook(context.deepcopy())
-            if result.modified_system_prompt:
-                context.system_prompt = result.modified_system_prompt
-            if result.additional_messages:
-                context.additional_messages.extend(result.additional_messages)
+    messages: tuple[ConversationItem, ...]
 
 
-            # compose results, validate, apply, etc.
+class BeforeRunResult(BaseModel):
+    """Changes requested by one handler."""
 
+    model_config = ConfigDict(frozen=True)
+
+    system_prompt: str | None = None
+    additional_messages: tuple[ConversationItem, ...] = ()
+
+
+type BeforeRunHook = Callable[
+    [BeforeRunContext],
+    Awaitable[BeforeRunResult | None],
+]
+
+
+class RunHooks:
+    """Run lifecycle hook handlers."""
+
+    def __init__(self, *, before_run: Sequence[BeforeRunHook] = ()) -> None:
+        self._before_run = tuple(before_run)
+
+    async def before_run(
+        self,
+        context: BeforeRunContext,
+    ) -> BeforeRunContext:
+        current = context
+        for handler in self._before_run:
+            result = await handler(current.model_copy(deep=True))
+            current = _apply_before_run_result(current, result)
+        return current
+
+
+def _apply_before_run_result(
+    context: BeforeRunContext,
+    result: BeforeRunResult | None,
+) -> BeforeRunContext:
+    """Apply one handler decision to the context for the next handler."""
+
+    if result is None:
+        return context
+    system_prompt = (
+        context.system_prompt if result.system_prompt is None else result.system_prompt
+    )
+    return BeforeRunContext(
+        session_id=context.session_id,
+        run_id=context.run_id,
+        system_prompt=system_prompt,
+        messages=(*context.messages, *result.additional_messages),
+    )
 ```
+
+Handlers run in registration order. Each handler sees the system prompt and
+messages produced by previous handlers. A returned `system_prompt` replaces the
+current value; `additional_messages` are appended.
+
+`messages` contains input for this run, not the full session history. It initially
+contains the caller prompt. Extensions may append any valid `ConversationItem`,
+including assistant and tool-result messages. Tile validates the resulting
+conversation before admission.
+
+The system prompt is fully compiled before the hook runs. A trusted extension may
+replace core or earlier-extension instructions.
 
 ```text
-generate run id
--> compile the complete system prompt for the run
--> run before_run handlers in registration order
--> validate and apply the final preparation
--> persist the effective run intent
+RunExecution.start
+-> allocate run ID
+-> compile the complete system prompt
+-> create BeforeRunContext with the caller prompt
+-> run before_run handlers
+-> validate the final context
+-> atomically persist the run, system prompt, and initial messages
 -> emit RunStartEvent
--> begin provider execution
+-> begin execution
 ```
+
+`RunExecution.start()` is async. It stores `RunHooks` for later lifecycle points.
+`AgentHarness.prompt()` only supplies configuration and awaits
+`RunExecution.start()`.
+
+`RunExecution` carries the complete `RunHooks` object for the lifetime of the run.
+It invokes run-boundary hooks itself and passes the same object down to the layer
+that owns more specific boundaries:
+
+```text
+RunExecution.start       -> hooks.before_run
+execute_prompt finish    -> hooks.before_run_end
+tool execution boundary  -> hooks.before_tool / hooks.after_tool
+```
+
+This keeps every hook scoped to the run without moving tool or provider behavior
+into `RunExecution`.
+
+Initial messages are persisted during admission. `_RunHistory` therefore starts
+from the admitted history instead of creating `UserMessage(prompt)` itself.
 
 ### `before_run_end`
 
-This is a possible future hook at the normal would-finish boundary: no tool
-continuation or other accepted work remains. It receives run facts, not a completed
-`RunOutcome`, because the run has not ended yet. It may request a follow-up message;
-the core durably appends that message and continues the same bounded run loop.
+`before_run_end` runs when the run would normally finish: no tool continuation or
+other accepted work remains. It receives the messages belonging to the current
+run, including agent messages. It may return a follow-up for the runtime to append
+and continue within the same run.
 
-The exact multi-handler composition and error policy for this hook remain open and
-must be decided before it is implemented.
+It does not receive a completed `RunOutcome`, mutate history, or start another run.
+Its exact multi-handler composition is still open.
+
+## Result contracts
+
+Result contracts remain a core mode selected with
+`AgentHarness.prompt(..., result_type=Model)`. Core owns their instructions,
+`complete` and `fail` tools, validation, follow-ups, retry limit, events, and final
+outcome.
 
 ## Observers
 
-Observers receive an independent, read-only view of one run. A run observation
-should include correlation metadata such as `session_id` and `run_id`, together
-with an event stream.
+Observers receive a read-only run event stream with `session_id` and `run_id`.
+They run independently and off the execution path. Delivery is best effort across
+process death.
 
-```python
-class MyObserver:
-    """Observe one run without influencing it."""
-
-    async def listen(self, observation: RunObservation) -> None:
-        async for event in observation.events():
-            ...
-```
-
-Each observer runs independently and off the execution path. If it raises, that
-observer stops or reports its own error; execution continues. Observer delivery is
-best effort across process death.
-
-Telemetry is an observer and owns its own sink, database, or client. Tile does not
-pass its runtime `Store` into telemetry. If a log is required for checkpointing or
-resume, it is a core-owned durable operation journal rather than an observer.
-
-A test recorder is a suitable first observer. A public logger must be safe by
-default and avoid logging prompts, reasoning, tool arguments, tool results, or file
-contents unless content capture is explicitly enabled.
+Telemetry is an observer and owns its own sink. Tile does not pass its runtime
+`Store` to telemetry. Durable data required for resume belongs to the core journal,
+not an observer.
