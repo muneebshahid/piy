@@ -403,7 +403,7 @@ async def test_typed_result_prompt_yields_the_full_expected_event_order(
     )
     harness = build_harness(store, session_id="typed-full-order")
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     assert isinstance(await run.wait(), Completed)
     events = [event async for event in run.events()]
 

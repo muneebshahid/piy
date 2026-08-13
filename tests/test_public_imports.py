@@ -52,6 +52,7 @@ async def test_documented_public_imports_run_fake_prompt() -> None:
     session: Session = SessionRepository(store).create(session_id="public-imports")
     harness = AgentHarness(
         session=session,
+        instructions="Test agent.",
         tools=[_fake_tool_definition()],
         cwd=Path(),
     )

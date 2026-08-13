@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Final
 from uuid import uuid4
 
@@ -11,6 +13,10 @@ from pydantic import BaseModel
 
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent, RunStartEvent
 from tile.exceptions import TurnFailedError
+from tile.extensions.hooks import BeforeRunContext, RunHooks
+from tile.extensions.run_observers import RunObservers
+from tile.prompt import build_system_prompt
+from tile.providers.base import Provider
 from tile.result import (
     Aborted,
     ExecutionFailure,
@@ -19,39 +25,81 @@ from tile.result import (
     RunOutcome,
     RunResult,
 )
-from tile.runtime.execution import _ExecutionDependencies, execute_prompt
+from tile.runtime.execution import (
+    _ExecutionDependencies,
+    build_execution_dependencies,
+    execute_prompt,
+)
 from tile.runtime.history import _RunHistory
 from tile.sessions import Session
 from tile.store.base import RunAlreadyEndedError, StoreError
 from tile.store.models import ActiveRun, HistoryItem, TerminalRun
+from tile.tool_executor import ToolExecutor
+from tile.types.conversation import ConversationItem, UserMessage
+
+
+@dataclass(frozen=True)
+class _RunDependencies:
+    """Harness configuration needed to admit and execute a run."""
+
+    instructions: str
+    cwd: Path
+    tool_executor: ToolExecutor
 
 
 class RunExecution:
     """Own one run's live execution and durable lifecycle."""
 
     @classmethod
-    def start(
+    async def start(
         cls,
         *,
         session: Session,
         prompt: str,
-        result: type[BaseModel] | None,
-        dependencies: _ExecutionDependencies,
+        result_type: type[BaseModel] | None,
+        provider: Provider,
+        dependencies: _RunDependencies,
+        hooks: RunHooks,
+        observers: RunObservers,
     ) -> RunExecution:
         """Durably accept one run, start execution, and return its owner."""
 
+        run_id = str(uuid4())
+        execution_dependencies = build_execution_dependencies(
+            provider=provider,
+            system_prompt=build_system_prompt(
+                dependencies.instructions,
+                dependencies.cwd,
+            ),
+            tool_executor=dependencies.tool_executor,
+            result_type=result_type,
+        )
+        context = await hooks.before_run(
+            BeforeRunContext(
+                session_id=session.id,
+                run_id=run_id,
+                system_prompt=execution_dependencies.system_prompt,
+                messages=(UserMessage(content=prompt),),
+            )
+        )
+        execution_dependencies = replace(
+            execution_dependencies,
+            system_prompt=context.system_prompt,
+        )
         started = session._start_run(
-            run_id=str(uuid4()),
+            run_id=run_id,
             prompt=prompt,
-            model=dependencies.provider.model,
-            provider=dependencies.provider.name,
+            model=provider.model,
+            provider=provider.name,
         )
         execution = cls(
             session=session,
             record=started.run,
             committed_history=started.committed_history,
-            result=result,
-            dependencies=dependencies,
+            initial_messages=context.messages,
+            dependencies=execution_dependencies,
+            hooks=hooks,
+            observers=observers,
         )
         execution._begin()
         return execution
@@ -62,18 +110,22 @@ class RunExecution:
         session: Session,
         record: ActiveRun,
         committed_history: Sequence[HistoryItem],
-        result: type[BaseModel] | None,
+        initial_messages: Sequence[ConversationItem],
         dependencies: _ExecutionDependencies,
+        hooks: RunHooks,
+        observers: RunObservers,
     ) -> None:
         """Prepare an already accepted run without performing side effects."""
 
         self._session: Final = session
         self._record: Final = record
-        self._result_type: Final = result
         self._dependencies: Final = dependencies
+        self._hooks: Final = hooks
+        self._observers: Final = observers
         self._events: list[AgentEvent] = []
         self._history: Final = _RunHistory.start(
-            committed_history, prompt=record.prompt
+            committed_history,
+            initial_messages=initial_messages,
         )
         self._result: RunResult | None = None
         self._changed: Final = asyncio.Event()
@@ -100,8 +152,9 @@ class RunExecution:
         while True:
             self._changed.clear()
             while index < len(self._events):
-                yield self._events[index]
+                event = self._events[index].model_copy(deep=True)
                 index += 1
+                yield event
             if self._finalized.is_set():
                 return
             await self._changed.wait()
@@ -122,16 +175,25 @@ class RunExecution:
     def _begin(self) -> None:
         """Start the task for an already durably accepted run."""
 
+        self._start_observers()
         loop = asyncio.get_running_loop()
         self._task = loop.create_task(
             execute_prompt(
                 self._emit,
                 deps=self._dependencies,
                 history=self._history.working,
-                result=self._result_type,
             )
         )
         self._task.add_done_callback(self._finalize)
+
+    def _start_observers(self) -> None:
+        """Start independent consumers of this run's event log."""
+
+        self._observers.start(
+            session_id=self.session_id,
+            run_id=self.id,
+            events=self.events,
+        )
 
     def _cancel(self) -> None:
         """Cancel unfinished execution."""

@@ -18,6 +18,7 @@ from tile import (
     SQLiteStore,
 )
 from tile.events import AgentEvent
+from tile.extensions import NonInteractive
 from tile.providers.openai import OpenAIProvider
 from tile.tools import BUILTIN_TOOLS
 
@@ -57,8 +58,10 @@ async def run_prompt(
         session = SessionRepository(store).create()
         harness = AgentHarness(
             session=session,
+            instructions="You are a coding agent. Complete the requested task.",
             tools=BUILTIN_TOOLS,
             cwd=Path.cwd(),
+            extensions=(NonInteractive(),),
         )
 
         run = await harness.prompt(prompt, provider=provider)

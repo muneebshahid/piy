@@ -71,7 +71,6 @@ class ToolResult(BaseModel):
 
     content: list[ToolResultContent]
     details: SerializeAsAny[ToolDetails] | None = None
-    terminate: bool = False
 
     @classmethod
     def text(
@@ -79,14 +78,12 @@ class ToolResult(BaseModel):
         text: str,
         *,
         details: ToolDetails | None = None,
-        terminate: bool = False,
     ) -> Self:
         """Create a text-only tool result."""
 
         return cls(
             content=[ToolTextContent(text=text)],
             details=details,
-            terminate=terminate,
         )
 
     @classmethod
@@ -96,14 +93,12 @@ class ToolResult(BaseModel):
         image: ToolImageContent,
         *,
         details: ToolDetails | None = None,
-        terminate: bool = False,
     ) -> Self:
         """Create an image tool result with an explanatory text block."""
 
         return cls(
             content=[ToolTextContent(text=text), image],
             details=details,
-            terminate=terminate,
         )
 
 

@@ -10,14 +10,12 @@ into the terminal run end event.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
-from pathlib import Path
+from dataclasses import dataclass
 
 from pydantic import BaseModel
 
 from tile.agent import AgentResult, run_agent
 from tile.events import EmitFn, ResultFollowUpEvent
-from tile.prompt import build_system_prompt
 from tile.providers.base import Provider
 from tile.result import (
     MAX_RESULT_FOLLOW_UPS,
@@ -41,17 +39,36 @@ from tile.types.tool_execution import ToolExecutionOutcome
 
 @dataclass(frozen=True)
 class _ExecutionDependencies:
-    """Caller-constructed dependencies a prompt program may touch.
+    """Admitted run dependencies a prompt program may touch.
 
     Deliberately excludes persistence. Execution receives one run-local
     history snapshot and drives only the provider and tools.
     """
 
     provider: Provider
-    instructions: str
-    cwd: Path
-    auto_mode: bool
+    system_prompt: str
     tool_executor: ToolExecutor
+    result_type: type[BaseModel] | None
+
+
+def build_execution_dependencies(
+    *,
+    provider: Provider,
+    system_prompt: str,
+    tool_executor: ToolExecutor,
+    result_type: type[BaseModel] | None,
+) -> _ExecutionDependencies:
+    """Construct the complete dependencies for one prompt execution."""
+
+    if result_type is not None:
+        system_prompt = f"{system_prompt}\n\n{RESULT_CONTRACT}"
+        tool_executor = _result_contract_tool_executor(tool_executor, result_type)
+    return _ExecutionDependencies(
+        provider=provider,
+        system_prompt=system_prompt,
+        tool_executor=tool_executor,
+        result_type=result_type,
+    )
 
 
 async def execute_prompt(
@@ -59,17 +76,15 @@ async def execute_prompt(
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
-    result: type[BaseModel] | None,
 ) -> RunOutcome:
     """Run one prompt program, emitting inner events, and return its outcome."""
 
-    if result is None:
+    if deps.result_type is None:
         return await _execute_plain(emit, deps=deps, history=history)
-    return await _execute_typed(
+    return await _execute_with_result_contract(
         emit,
         deps=deps,
         history=history,
-        result=result,
     )
 
 
@@ -89,26 +104,24 @@ async def _execute_plain(
     return Completed(value=_assistant_text(agent_result.last_turn))
 
 
-async def _execute_typed(
+async def _execute_with_result_contract(
     emit: EmitFn,
     *,
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
-    result: type[BaseModel],
 ) -> RunOutcome:
     """Run agent attempts until the required result is produced or exhausted."""
 
-    attempt_dependencies = _typed_attempt_dependencies(deps, result)
-    for attempt in range(MAX_RESULT_FOLLOW_UPS + 1):
+    for follow_ups_used in range(MAX_RESULT_FOLLOW_UPS + 1):
         agent_result = await _run_attempt(
             emit,
-            deps=attempt_dependencies,
+            deps=deps,
             history=history,
         )
         outcome = _result_outcome(agent_result.tool_executions)
         if outcome is not None:
             return outcome
-        if attempt < MAX_RESULT_FOLLOW_UPS:
+        if follow_ups_used < MAX_RESULT_FOLLOW_UPS:
             emit(ResultFollowUpEvent(message=UserMessage(content=RESULT_FOLLOW_UP)))
     return Failed(cause=AgentFailure(reason=NO_RESULT_REASON))
 
@@ -121,8 +134,7 @@ async def _run_attempt(
 ) -> AgentResult:
     """Drive one stateless agent attempt, emitting every event.
 
-    The system prompt is composed here, per attempt, so project context and
-    environment lines stay current across attempts.
+    The complete system prompt was compiled and admitted before execution.
     """
 
     return await run_agent(
@@ -130,27 +142,17 @@ async def _run_attempt(
         emit=emit,
         provider=deps.provider,
         tool_executor=deps.tool_executor,
-        instructions=build_system_prompt(
-            deps.instructions,
-            deps.cwd,
-            auto_mode=deps.auto_mode,
-        ),
+        instructions=deps.system_prompt,
     )
 
 
-def _typed_attempt_dependencies(
-    deps: _ExecutionDependencies,
-    result: type[BaseModel],
-) -> _ExecutionDependencies:
-    """Resolve one typed prompt's shared attempt dependencies."""
+def _result_contract_tool_executor(
+    tool_executor: ToolExecutor,
+    result_type: type[BaseModel],
+) -> ToolExecutor:
+    """Add the tools required by a result contract."""
 
-    return replace(
-        deps,
-        instructions=f"{deps.instructions}\n\n{RESULT_CONTRACT}",
-        tool_executor=ToolExecutor(
-            (*deps.tool_executor.tools, complete_tool(result), fail_tool)
-        ),
-    )
+    return ToolExecutor((*tool_executor.tools, complete_tool(result_type), fail_tool))
 
 
 def _result_outcome(
@@ -159,12 +161,11 @@ def _result_outcome(
     """Build a terminal outcome, or return None when a result remains missing."""
 
     for execution in tool_executions:
-        if not execution.terminate:
-            continue
-        if isinstance(execution.details, CompleteDetails):
-            return Completed(value=execution.details.value)
-        if isinstance(execution.details, FailDetails):
-            return Failed(cause=AgentFailure(reason=execution.details.reason))
+        match execution.details:
+            case CompleteDetails(value=value):
+                return Completed(value=value)
+            case FailDetails(reason=reason):
+                return Failed(cause=AgentFailure(reason=reason))
     return None
 
 

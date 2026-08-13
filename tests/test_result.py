@@ -133,7 +133,6 @@ def test_complete_tool_preserves_aliased_result_fields() -> None:
     )
 
     assert not outcome.tool_result_turn.is_error
-    assert outcome.terminate
     details = outcome.details
     assert isinstance(details, CompleteDetails)
     assert details.value == AliasedReport(city="Munich")
@@ -187,7 +186,7 @@ def test_agent_stops_after_terminating_tool_batch() -> None:
     assert provider.await_count == 1
     executions = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
     assert len(executions) == 1
-    assert executions[0].outcome.terminate
+    assert isinstance(executions[0].outcome.details, CompleteDetails)
     _agent_end_event(events)
 
 
@@ -222,9 +221,9 @@ async def test_runtime_maps_fail_tool_to_failed_outcome(store: SQLiteStore) -> N
             ),
         ]
     )
-    harness = build_harness(store, auto_mode=False)
+    harness = build_harness(store, extensions=())
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert provider.await_count == 1
@@ -255,8 +254,8 @@ def test_agent_retries_complete_after_validation_error() -> None:
     assert isinstance(error_result, ToolResultTurn)
     assert error_result.is_error
     executions = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
-    assert not executions[0].outcome.terminate
-    assert executions[1].outcome.terminate
+    assert executions[0].outcome.tool_result_turn.is_error
+    assert isinstance(executions[1].outcome.details, CompleteDetails)
     _agent_end_event(events)
 
 
@@ -273,10 +272,10 @@ async def test_runtime_nudges_text_only_agent_run_toward_result(
             ),
         ]
     )
-    harness = build_harness(store, session_id="nudged", auto_mode=False)
+    harness = build_harness(store, session_id="nudged", extensions=())
 
     run = await harness.prompt(
-        "Weather in Munich?", provider=provider, result=WeatherReport
+        "Weather in Munich?", provider=provider, result_type=WeatherReport
     )
     outcome = await run.wait()
     events = [event async for event in run.events()]
@@ -303,9 +302,9 @@ async def test_runtime_fails_after_follow_up_cap(store: SQLiteStore) -> None:
         for index in range(MAX_RESULT_FOLLOW_UPS + 1)
     ]
     provider = ProviderStreamMock(streams)
-    harness = build_harness(store, auto_mode=False)
+    harness = build_harness(store, extensions=())
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert provider.await_count == MAX_RESULT_FOLLOW_UPS + 1
@@ -323,9 +322,9 @@ async def test_runtime_fails_when_nudge_attempt_hits_stream_error(
             error_stream("resp_2", "boom"),
         ]
     )
-    harness = build_harness(store, session_id="nudged-error", auto_mode=False)
+    harness = build_harness(store, session_id="nudged-error", extensions=())
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert isinstance(outcome, Failed)
@@ -379,9 +378,8 @@ def test_agent_finishes_tool_batch_after_terminating_result() -> None:
 
     executions = [e for e in events if isinstance(e, ToolExecutionEndEvent)]
     assert len(executions) == 2
-    assert executions[0].outcome.terminate
+    assert isinstance(executions[0].outcome.details, CompleteDetails)
     assert not executions[1].outcome.tool_result_turn.is_error
-    assert not executions[1].outcome.terminate
     assert provider.await_count == 1
 
 
@@ -409,9 +407,9 @@ async def test_runtime_keeps_terminal_text_separate_from_result_value(
             ],
         ]
     )
-    harness = build_harness(store, auto_mode=False)
+    harness = build_harness(store, extensions=())
 
-    run = await harness.prompt("Weather?", provider=provider, result=WeatherReport)
+    run = await harness.prompt("Weather?", provider=provider, result_type=WeatherReport)
     outcome = await run.wait()
 
     assert isinstance(outcome, Completed)
@@ -442,10 +440,10 @@ async def test_session_mixes_contract_and_plain_prompts(store: SQLiteStore) -> N
             final_text_stream("resp_2", "You asked about Munich."),
         ]
     )
-    harness = build_harness(store, session_id="mixed-session", auto_mode=False)
+    harness = build_harness(store, session_id="mixed-session", extensions=())
 
     contract_run = await harness.prompt(
-        "Weather in Munich?", provider=provider, result=WeatherReport
+        "Weather in Munich?", provider=provider, result_type=WeatherReport
     )
     contract_outcome = await contract_run.wait()
     assert isinstance(contract_outcome, Completed)

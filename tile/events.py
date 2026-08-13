@@ -77,7 +77,7 @@ class AgentStartEvent(AgentEvent):
 
     Attempts within one run are strictly sequential, so events carry no
     attempt label: position in the log identifies the attempt, with
-    ``ResultFollowUpEvent`` separating typed-result retries.
+    ``ResultFollowUpEvent`` separating result-contract attempts.
     """
 
     type: Literal["agent_start"] = "agent_start"

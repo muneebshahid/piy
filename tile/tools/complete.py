@@ -17,7 +17,7 @@ class CompleteDetails(ToolDetails):
     value: SerializeAsAny[BaseModel]
 
 
-def tool(result: type[BaseModel]) -> ToolDefinition:
+def tool(result_type: type[BaseModel]) -> ToolDefinition:
     """Build a complete tool that validates results against one schema."""
 
     async def fn(params: BaseModel) -> ToolResult:
@@ -26,7 +26,6 @@ def tool(result: type[BaseModel]) -> ToolDefinition:
         return ToolResult.text(
             "Result recorded.",
             details=CompleteDetails(value=params),
-            terminate=True,
         )
 
     return ToolDefinition(
@@ -37,6 +36,6 @@ def tool(result: type[BaseModel]) -> ToolDefinition:
             "are returned for correction. Call this exactly once, when the "
             "task is done."
         ),
-        input_model=result,
+        input_model=result_type,
         fn=fn,
     )

@@ -93,7 +93,11 @@ async def test_harness_runs_prompts_for_its_single_session(
 
     session = SessionRepository(store).create(session_id="session-1")
     transport = ProviderStreamMock([final_text_stream("response-1", "done")])
-    harness = AgentHarness(session=session, cwd=Path())
+    harness = AgentHarness(
+        session=session,
+        cwd=Path(),
+        instructions="Test agent.",
+    )
 
     handle = await harness.prompt("hello", provider=transport)
     result = await handle.wait()
@@ -169,7 +173,7 @@ async def test_runtime_keeps_multi_attempt_history_provisional_until_finalizatio
         tools=[_tool("inspect", inspect)],
     )
     session = harness.session
-    handle = await harness.prompt("inspect", provider=provider, result=_TextResult)
+    handle = await harness.prompt("inspect", provider=provider, result_type=_TextResult)
 
     await provider.wait_for_calls(expected=3)
     assert session.get_history() == ()
@@ -262,7 +266,11 @@ async def test_runtime_bootstraps_from_start_run_history_snapshot() -> None:
             [final_text_stream("response-2", "second answer")]
         )
         session = SessionRepository(store).get("session-1")
-        harness = AgentHarness(session=session, cwd=Path())
+        harness = AgentHarness(
+            session=session,
+            cwd=Path(),
+            instructions="Test agent.",
+        )
 
         handle = await harness.prompt("second", provider=provider)
 
@@ -320,7 +328,7 @@ async def test_agent_failure_commits_its_complete_replayable_history(
     harness = build_harness(store, session_id="agent-failure-history")
     session = harness.session
 
-    handle = await harness.prompt("try", provider=provider, result=_TextResult)
+    handle = await harness.prompt("try", provider=provider, result_type=_TextResult)
     outcome = await handle.wait()
 
     expected = Failed(cause=AgentFailure(reason="cannot deliver"))
@@ -445,7 +453,11 @@ async def test_durable_abort_works_across_harness_instances(tmp_path: Path) -> N
 
         second_repository = SessionRepository(second_store)
         second_session = second_repository.get("shared")
-        second_harness = AgentHarness(session=second_session, cwd=Path())
+        second_harness = AgentHarness(
+            session=second_session,
+            cwd=Path(),
+            instructions="Test agent.",
+        )
         aborted = second_repository.abort_active_run(second_session.id)
         second = await second_harness.prompt("second", provider=second_provider)
 
@@ -524,7 +536,7 @@ async def test_finalization_fault_requires_the_durable_abort_escape_hatch(
 
 
 @pytest.mark.parametrize(
-    ("streams", "result"),
+    ("streams", "result_type"),
     [
         pytest.param(
             [
@@ -548,14 +560,14 @@ async def test_finalization_fault_requires_the_durable_abort_escape_hatch(
 async def test_failure_is_overridden_by_a_finalization_fault(
     failing_finish_store: FailingFinishStore,
     streams: Sequence[Sequence[ProviderStreamEvent]],
-    result: type[BaseModel] | None,
+    result_type: type[BaseModel] | None,
 ) -> None:
     """Return the durability fault when a failure outcome cannot be persisted."""
 
     provider = ProviderStreamMock(streams)
     harness = build_harness(failing_finish_store, session_id="failure-override")
 
-    handle = await harness.prompt("fail", provider=provider, result=result)
+    handle = await harness.prompt("fail", provider=provider, result_type=result_type)
     outcome = await handle.wait()
 
     assert isinstance(outcome, Faulted)
@@ -600,7 +612,11 @@ async def test_forked_session_inherits_flat_history_and_diverges(
     assert fork.get_history() == source.get_history()
     assert fork.get_runs() == ()
 
-    fork_harness = AgentHarness(session=fork, cwd=Path())
+    fork_harness = AgentHarness(
+        session=fork,
+        cwd=Path(),
+        instructions="Test agent.",
+    )
     second = await fork_harness.prompt("second", provider=provider)
     assert isinstance(await second.wait(), Completed)
     assert len(fork.get_history()) == 4
