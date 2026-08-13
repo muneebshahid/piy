@@ -1,57 +1,77 @@
-"""Passive run-event observation contracts and delivery."""
+"""Passive run-event stream contracts and execution."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from tile.events import AgentEvent
 
 
 @dataclass(frozen=True)
-class RunEvent:
-    """One run event enriched with its durable run identity."""
+class RunEventStream:
+    """One run's identity and independently consumable event iterator."""
 
     session_id: str
     run_id: str
-    event: AgentEvent
+    events: AsyncIterator[AgentEvent]
+
+    def __aiter__(self) -> AsyncIterator[AgentEvent]:
+        """Iterate over this observer's ordered run events."""
+
+        return self.events
 
 
-type RunObserver = Callable[[RunEvent], None]
+type RunObserver = Callable[[RunEventStream], Awaitable[None]]
+type _EventStreamFactory = Callable[[], AsyncIterator[AgentEvent]]
 
 
 class RunObservers:
-    """Publish run events to passive, failure-isolated observers."""
+    """Start passive, failure-isolated consumers for one run."""
 
     def __init__(self, observers: Sequence[RunObserver] = ()) -> None:
-        """Freeze observers in registration order."""
+        """Freeze observers and own their active run-consumer tasks."""
 
         self._observers = tuple(observers)
+        self._tasks: set[asyncio.Task[None]] = set()
 
-    def publish(self, event: RunEvent) -> None:
-        """Notify every observer without exposing mutable runtime state."""
+    def start(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        events: _EventStreamFactory,
+    ) -> None:
+        """Start and retain every observer with an independent event cursor."""
 
         for observer in self._observers:
-            try:
-                observer(_copy_run_event(event))
-            except Exception:
-                _LOGGER.exception(
-                    "Tile run observer failed for %s/%s event %s.",
-                    event.session_id,
-                    event.run_id,
-                    event.event.type,
+            task = asyncio.create_task(
+                _observe(
+                    observer,
+                    RunEventStream(
+                        session_id=session_id,
+                        run_id=run_id,
+                        events=events(),
+                    ),
                 )
+            )
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _copy_run_event(event: RunEvent) -> RunEvent:
-    """Return an observer-owned copy of one published run event."""
+async def _observe(observer: RunObserver, stream: RunEventStream) -> None:
+    """Run one observer without letting its failure affect execution."""
 
-    return RunEvent(
-        session_id=event.session_id,
-        run_id=event.run_id,
-        event=event.event.model_copy(deep=True),
-    )
+    try:
+        await observer(stream)
+    except Exception:
+        _LOGGER.exception(
+            "Tile run observer failed for %s/%s.",
+            stream.session_id,
+            stream.run_id,
+        )

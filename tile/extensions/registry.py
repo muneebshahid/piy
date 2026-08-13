@@ -33,7 +33,7 @@ class ExtensionRegistry:
         self._before_run.append(hook)
 
     def observe(self, observer: RunObserver) -> None:
-        """Register one passive run-event observer in delivery order."""
+        """Register one passive run-event stream observer."""
 
         self._observers.append(observer)
 

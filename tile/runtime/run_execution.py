@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from tile.events import AgentEvent, RunEndEvent, RunFaultEvent, RunStartEvent
 from tile.exceptions import TurnFailedError
 from tile.extensions.hooks import BeforeRunContext, RunHooks
-from tile.extensions.run_observers import RunEvent, RunObservers
+from tile.extensions.run_observers import RunObservers
 from tile.prompt import build_system_prompt
 from tile.providers.base import Provider
 from tile.result import (
@@ -152,8 +152,9 @@ class RunExecution:
         while True:
             self._changed.clear()
             while index < len(self._events):
-                yield self._events[index]
+                event = self._events[index].model_copy(deep=True)
                 index += 1
+                yield event
             if self._finalized.is_set():
                 return
             await self._changed.wait()
@@ -174,6 +175,7 @@ class RunExecution:
     def _begin(self) -> None:
         """Start the task for an already durably accepted run."""
 
+        self._start_observers()
         loop = asyncio.get_running_loop()
         self._task = loop.create_task(
             execute_prompt(
@@ -183,6 +185,15 @@ class RunExecution:
             )
         )
         self._task.add_done_callback(self._finalize)
+
+    def _start_observers(self) -> None:
+        """Start independent consumers of this run's event log."""
+
+        self._observers.start(
+            session_id=self.session_id,
+            run_id=self.id,
+            events=self.events,
+        )
 
     def _cancel(self) -> None:
         """Cancel unfinished execution."""
@@ -199,9 +210,6 @@ class RunExecution:
         self._history.observe(event)
         self._events.append(event)
         self._changed.set()
-        self._observers.publish(
-            RunEvent(session_id=self.session_id, run_id=self.id, event=event)
-        )
 
     def _finalize(self, task: asyncio.Task[RunOutcome]) -> None:
         """Persist a terminal outcome or expose a process-local fault."""

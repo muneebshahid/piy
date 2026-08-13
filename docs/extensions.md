@@ -6,7 +6,7 @@ lifecycle hooks that influence a run and observers that react to its events.
 Tile currently supports:
 
 - the `before_run` hook;
-- synchronous run-event observers;
+- asynchronous run-event stream observers;
 - the built-in `NonInteractive` and `EventLogger` extensions.
 
 An extension is any object with a `register()` method. It does not need to
@@ -18,7 +18,7 @@ from tile.extensions import (
     BeforeRunContext,
     BeforeRunResult,
     ExtensionRegistry,
-    RunEvent,
+    RunEventStream,
 )
 
 
@@ -37,8 +37,9 @@ class MyExtension:
             system_prompt=f"{context.system_prompt}\n\nNever expose secrets.",
         )
 
-    def observe(self, event: RunEvent) -> None:
-        print(event.event.type)
+    async def observe(self, stream: RunEventStream) -> None:
+        async for event in stream:
+            print(event.type)
 
 
 harness = AgentHarness(
@@ -50,8 +51,8 @@ harness = AgentHarness(
 ```
 
 `AgentHarness` calls `register()` once during construction. The registered hook
-then runs once for each prompt, while the observer is called for every event
-published by those runs.
+then runs once for each prompt. The observer is also called once per run and
+receives an asynchronous stream containing that run's events.
 
 ## Extension boundaries
 
@@ -230,29 +231,31 @@ is intentionally deferred.
 
 ## Observers
 
-Observers passively consume events after the runtime publishes them:
+Observers passively consume one run's event stream:
 
 ```python
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 from tile.events import AgentEvent
 
 
 @dataclass(frozen=True)
-class RunEvent:
+class RunEventStream:
     session_id: str
     run_id: str
-    event: AgentEvent
+    events: AsyncIterator[AgentEvent]
+
+    def __aiter__(self) -> AsyncIterator[AgentEvent]: ...
 
 
-type RunObserver = Callable[[RunEvent], None]
+type RunObserver = Callable[[RunEventStream], Awaitable[None]]
 ```
 
 Register an observer with `registry.observe()`:
 
 ```python
-from tile.extensions import ExtensionRegistry, RunEvent
+from tile.extensions import ExtensionRegistry, RunEventStream
 
 
 class EventCounter:
@@ -262,28 +265,40 @@ class EventCounter:
     def register(self, registry: ExtensionRegistry) -> None:
         registry.observe(self.observe)
 
-    def observe(self, event: RunEvent) -> None:
-        self.count += 1
+    async def observe(self, stream: RunEventStream) -> None:
+        async for _ in stream:
+            self.count += 1
 ```
 
 Observers receive run lifecycle events and the agent events emitted between
 them. Delivery has these rules:
 
-- observers run synchronously in registration order;
-- each observer receives its own deep copy of the event;
-- an observer cannot modify the runtime event or another observer's value;
-- an observer exception is logged and later observers still run;
+- each observer is invoked once per run in its own task;
+- every observer receives an independent iterator beginning with `run_start`;
+- events are yielded in publication order through `run_end` or `run_fault`;
+- each iterator yields defensive event copies, so a consumer cannot modify the
+  runtime log or another consumer's values;
+- an ordinary observer exception is logged, ends that observer for the current
+  run, and does not interrupt other observers;
+- cancelling an observer task stops only that observer, not the run;
 - observer failures never change the run result.
 
-Observers should perform bounded local work such as logging or updating an
-in-memory metric. They are not a durability mechanism: delivery is best effort
-if the process exits, and a slow observer delays event publication. An async or
-buffered observer pipeline is not currently provided.
+`RunHandle.wait()` waits for execution and durable finalization, not observer
+completion. An observer that is temporarily behind can continue consuming the
+buffered stream after `wait()` returns. Observer delivery remains best effort:
+process exit can discard unfinished observers, and a slow or stuck observer
+retains its task and the run's in-memory event log. Observers are therefore not
+a durability mechanism.
+
+Observers do not run inside event publication and asynchronous I/O does not
+delay `_emit()`. They still share the application's event loop: CPU-heavy work,
+blocking I/O, or long synchronous logging handlers inside an observer can block
+other tasks and should be offloaded.
 
 Applications can also consume `RunHandle.events()` directly. That pull-based
-stream belongs to the caller; registered observers use runtime-owned push
-delivery so extensions do not need tasks, cancellation handling, or access to a
-live run handle.
+stream and registered observers use the same in-memory event log. Every call
+gets an independent cursor, so the caller and all observers can consume the
+complete sequence at their own pace.
 
 ## Built-in extensions
 
@@ -335,7 +350,7 @@ tile/extensions/
 ├── registry.py              # registration and harness assembly
 ├── non_interactive.py       # built-in before_run extension
 ├── event_logger.py          # built-in observer extension
-├── run_observers.py         # observer contract and failure-isolated delivery
+├── run_observers.py         # stream contract and failure-isolated observer tasks
 └── hooks/
     ├── __init__.py          # public hook exports
     ├── before_run.py        # context, result, validation, and application
@@ -343,9 +358,9 @@ tile/extensions/
 ```
 
 `AgentHarness` performs registration and retains the assembled `RunHooks` and
-`RunObservers`. `RunExecution` owns invocation because it owns run admission,
-event publication, and finalization. Provider execution does not know which
-extension supplied an instruction or message.
+`RunObservers`. `RunExecution` owns the event log and starts one independent
+stream consumer for every registered observer. Provider execution does not know
+which extension supplied an instruction, message, or observer.
 
 New hook points are added as explicit typed contracts rather than string names
 in a generic dispatcher. Until another registry method is implemented and

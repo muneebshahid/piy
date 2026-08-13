@@ -14,6 +14,7 @@ from tests.support.agent_streams import (
     tool_call_block,
 )
 from tile import AgentHarness, Completed, SessionRepository
+from tile.events import AgentEvent
 from tile.extensions import (
     BeforeRunContext,
     BeforeRunHook,
@@ -21,7 +22,7 @@ from tile.extensions import (
     EventLogger,
     ExtensionRegistry,
     NonInteractive,
-    RunEvent,
+    RunEventStream,
 )
 from tile.store import SQLiteStore
 from tile.types import (
@@ -276,36 +277,56 @@ async def test_non_interactive_is_an_explicit_before_run_extension(
 
 
 class _ObservingExtension:
-    """Capture run events after one deliberately failing observer."""
+    """Exercise independent, failure-isolated run event streams."""
 
     def __init__(self) -> None:
-        """Create an empty observed-event log."""
+        """Create empty observation state."""
 
-        self.events: list[RunEvent] = []
+        self.events: list[AgentEvent] = []
+        self.identities: list[tuple[str, str]] = []
+        self.cancelled = asyncio.Event()
+        self.completed = asyncio.Event()
 
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register failure-isolation and collection observers in order."""
+        """Register failure, mutation, and collection stream consumers."""
 
         registry.observe(self._raise)
+        registry.observe(self._cancel)
         registry.observe(self._mutate_copy)
-        registry.observe(self.events.append)
+        registry.observe(self._collect)
 
-    def _raise(self, event: RunEvent) -> None:
-        """Prove one observer cannot interrupt event publication."""
+    async def _raise(self, stream: RunEventStream) -> None:
+        """Prove one observer cannot interrupt execution or another stream."""
 
-        raise LookupError(event.event.type)
+        async for event in stream:
+            raise LookupError(event.type)
 
-    def _mutate_copy(self, event: RunEvent) -> None:
-        """Try to alter the observer-owned event copy."""
+    async def _cancel(self, stream: RunEventStream) -> None:
+        """Prove observer cancellation remains local to its own task."""
 
-        event.event.type = "mutated"
+        async for _ in stream:
+            self.cancelled.set()
+            raise asyncio.CancelledError
+
+    async def _mutate_copy(self, stream: RunEventStream) -> None:
+        """Try to alter every event yielded to one observer."""
+
+        async for event in stream:
+            event.type = "mutated"
+
+    async def _collect(self, stream: RunEventStream) -> None:
+        """Capture one independent stream and its stable run identity."""
+
+        self.identities.append((stream.session_id, stream.run_id))
+        self.events.extend([event async for event in stream])
+        self.completed.set()
 
 
 async def test_run_observers_receive_identity_without_affecting_execution(
     store: SQLiteStore,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Publish every event to observers while isolating observer failures."""
+    """Give each observer a complete copy-safe stream and isolate failures."""
 
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     session = SessionRepository(store).create(session_id="observed-session")
@@ -320,13 +341,69 @@ async def test_run_observers_receive_identity_without_affecting_execution(
     with caplog.at_level(logging.ERROR, logger="tile.extensions.run_observers"):
         run = await harness.prompt("hello", provider=provider)
         assert await run.wait() == Completed(value="done")
+        await asyncio.wait_for(extension.cancelled.wait(), timeout=1)
+        await asyncio.wait_for(extension.completed.wait(), timeout=1)
+        caller_events = [event async for event in run.events()]
 
-    assert extension.events[0].event.type == "run_start"
-    assert extension.events[-1].event.type == "run_end"
-    assert all(event.event.type != "mutated" for event in extension.events)
-    assert {event.session_id for event in extension.events} == {session.id}
-    assert {event.run_id for event in extension.events} == {run.id}
+    assert extension.events[0].type == "run_start"
+    assert extension.events[-1].type == "run_end"
+    assert all(event.type != "mutated" for event in extension.events)
+    assert all(event.type != "mutated" for event in caller_events)
+    assert extension.identities == [(session.id, run.id)]
     assert "Tile run observer failed" in caplog.text
+
+
+class _DelayedObserver:
+    """Delay consumption until after its observed run has finalized."""
+
+    def __init__(self) -> None:
+        """Create explicit release and completion signals."""
+
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.completed = asyncio.Event()
+        self.events: list[AgentEvent] = []
+
+    def register(self, registry: ExtensionRegistry) -> None:
+        """Register the delayed stream consumer."""
+
+        registry.observe(self.observe)
+
+    async def observe(self, stream: RunEventStream) -> None:
+        """Drain the buffered stream only after the test releases it."""
+
+        self.started.set()
+        await self.release.wait()
+        self.events.extend([event async for event in stream])
+        self.completed.set()
+
+
+async def test_run_observer_can_drain_events_after_wait_returns(
+    store: SQLiteStore,
+) -> None:
+    """Retain a complete observer stream beyond run finalization."""
+
+    observer = _DelayedObserver()
+    provider = ProviderStreamMock([final_text_stream("response-1", "done")])
+    session = SessionRepository(store).create(session_id="delayed-observer")
+    harness = AgentHarness(
+        session=session,
+        cwd=Path(),
+        instructions="Test agent.",
+        extensions=(observer,),
+    )
+
+    run = await harness.prompt("hello", provider=provider)
+    try:
+        await asyncio.wait_for(observer.started.wait(), timeout=1)
+        assert await asyncio.wait_for(run.wait(), timeout=1) == Completed(value="done")
+        assert not observer.completed.is_set()
+    finally:
+        observer.release.set()
+    await asyncio.wait_for(observer.completed.wait(), timeout=1)
+
+    assert observer.events[0].type == "run_start"
+    assert observer.events[-1].type == "run_end"
 
 
 async def test_event_logger_logs_every_observed_run_event(
@@ -348,6 +425,10 @@ async def test_event_logger_logs_every_observed_run_event(
     with caplog.at_level(logging.INFO, logger=logger.name):
         run = await harness.prompt("hello", provider=provider)
         assert await run.wait() == Completed(value="done")
+        await asyncio.wait_for(
+            _wait_for_log(caplog, "event={'type': 'run_end'"),
+            timeout=1,
+        )
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("event={'type': 'run_start'}" in message for message in messages)
@@ -360,3 +441,13 @@ def test_extension_registry_does_not_register_tools() -> None:
     """Keep model-callable tools on the explicit harness API."""
 
     assert not hasattr(ExtensionRegistry(), "add_tools")
+
+
+async def _wait_for_log(
+    caplog: pytest.LogCaptureFixture,
+    expected: str,
+) -> None:
+    """Yield until one asynchronously observed log message arrives."""
+
+    while not any(expected in record.getMessage() for record in caplog.records):
+        await asyncio.sleep(0)

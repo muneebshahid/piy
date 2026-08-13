@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from tile.extensions.registry import ExtensionRegistry
-from tile.extensions.run_observers import RunEvent
+from tile.extensions.run_observers import RunEventStream
 
 
 class EventLogger:
@@ -27,13 +27,14 @@ class EventLogger:
 
         registry.observe(self.observe)
 
-    def observe(self, event: RunEvent) -> None:
-        """Log one run event with its session and run identities."""
+    async def observe(self, stream: RunEventStream) -> None:
+        """Log every event from one run stream."""
 
-        self._logger.log(
-            self._level,
-            "Tile run event session_id=%s run_id=%s event=%s",
-            event.session_id,
-            event.run_id,
-            event.event.model_dump(mode="json"),
-        )
+        async for event in stream:
+            self._logger.log(
+                self._level,
+                "Tile run event session_id=%s run_id=%s event=%s",
+                stream.session_id,
+                stream.run_id,
+                event.model_dump(mode="json"),
+            )
