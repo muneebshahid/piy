@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from tile.extensions import Extension
 from tile.extensions.registry import _register_extensions
 from tile.providers.base import Provider
-from tile.result import COMPLETE_TOOL_NAME, FAIL_TOOL_NAME
+from tile.result import RESULT_TOOL_NAMES, is_result_tool_name
 from tile.runtime.run_execution import RunExecution, _RunDependencies
 from tile.runtime.run_handle import RunHandle
 from tile.sessions import Session
@@ -75,14 +75,14 @@ class AgentHarness:
         return RunHandle(execution)
 
 
-RESERVED_TOOL_NAMES: Final = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
+RESERVED_TOOL_NAMES: Final = RESULT_TOOL_NAMES
 
 
 def _reject_reserved_tool_names(tools: Sequence[ToolDefinition]) -> None:
     """Reject caller tools whose names the output contract reserves."""
 
     for tool in tools:
-        if tool.name.lower() in RESERVED_TOOL_NAMES:
+        if is_result_tool_name(tool.name):
             raise ValueError(
                 f"Tool name '{tool.name}' is reserved by the harness for "
                 "output contracts; rename the tool."

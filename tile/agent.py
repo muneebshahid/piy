@@ -22,6 +22,7 @@ from tile.exceptions import (
     TurnFailedError,
 )
 from tile.providers.base import Provider
+from tile.result import is_result_tool_name
 from tile.tool_executor import ToolExecutor
 from tile.types.conversation import AssistantTurn, ConversationItem
 from tile.types.stream_events import (
@@ -91,8 +92,15 @@ class _TurnResult:
         """Return whether this turn requires another provider turn."""
 
         return bool(self.tool_executions) and not any(
-            execution.terminate for execution in self.tool_executions
+            _is_successful_result_tool(execution) for execution in self.tool_executions
         )
+
+
+def _is_successful_result_tool(execution: ToolExecutionOutcome) -> bool:
+    """Return whether one successful execution ends a result-contract loop."""
+
+    result = execution.tool_result_turn
+    return not result.is_error and is_result_tool_name(result.tool_name)
 
 
 async def run_agent(
@@ -105,10 +113,10 @@ async def run_agent(
 ) -> AgentResult:
     """Run one stateless agent invocation and return its terminal facts.
 
-    A successful tool result with ``terminate=True`` ends the loop after the
-    current tool batch without another provider call. ``instructions`` is the
-    complete system prompt, sent to the provider verbatim; the caller owns
-    its composition.
+    A successful ``complete`` or ``fail`` result-tool execution ends the loop
+    after the current tool batch without another provider call. ``instructions``
+    is the complete system prompt, sent to the provider verbatim; the caller
+    owns its composition.
     """
 
     emit(AgentStartEvent())

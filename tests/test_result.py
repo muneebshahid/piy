@@ -133,7 +133,6 @@ def test_complete_tool_preserves_aliased_result_fields() -> None:
     )
 
     assert not outcome.tool_result_turn.is_error
-    assert outcome.terminate
     details = outcome.details
     assert isinstance(details, CompleteDetails)
     assert details.value == AliasedReport(city="Munich")
@@ -187,7 +186,7 @@ def test_agent_stops_after_terminating_tool_batch() -> None:
     assert provider.await_count == 1
     executions = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
     assert len(executions) == 1
-    assert executions[0].outcome.terminate
+    assert isinstance(executions[0].outcome.details, CompleteDetails)
     _agent_end_event(events)
 
 
@@ -255,8 +254,8 @@ def test_agent_retries_complete_after_validation_error() -> None:
     assert isinstance(error_result, ToolResultTurn)
     assert error_result.is_error
     executions = [event for event in events if isinstance(event, ToolExecutionEndEvent)]
-    assert not executions[0].outcome.terminate
-    assert executions[1].outcome.terminate
+    assert executions[0].outcome.tool_result_turn.is_error
+    assert isinstance(executions[1].outcome.details, CompleteDetails)
     _agent_end_event(events)
 
 
@@ -379,9 +378,8 @@ def test_agent_finishes_tool_batch_after_terminating_result() -> None:
 
     executions = [e for e in events if isinstance(e, ToolExecutionEndEvent)]
     assert len(executions) == 2
-    assert executions[0].outcome.terminate
+    assert isinstance(executions[0].outcome.details, CompleteDetails)
     assert not executions[1].outcome.tool_result_turn.is_error
-    assert not executions[1].outcome.terminate
     assert provider.await_count == 1
 
 

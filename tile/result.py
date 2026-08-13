@@ -11,6 +11,7 @@ from tile.types.tools import JsonObject
 
 COMPLETE_TOOL_NAME: Final = "complete"
 FAIL_TOOL_NAME: Final = "fail"
+RESULT_TOOL_NAMES: Final = (COMPLETE_TOOL_NAME, FAIL_TOOL_NAME)
 MAX_RESULT_FOLLOW_UPS: Final = 8
 
 RESULT_CONTRACT: Final = f"""\
@@ -33,6 +34,12 @@ NO_RESULT_REASON: Final = (
     f"The model ended the run without calling `{COMPLETE_TOOL_NAME}` or "
     f"`{FAIL_TOOL_NAME}`."
 )
+
+
+def is_result_tool_name(tool_name: str) -> bool:
+    """Return whether a model-requested name identifies a result tool."""
+
+    return tool_name.lower().strip() in RESULT_TOOL_NAMES
 
 
 class Completed(BaseModel):

@@ -29,7 +29,6 @@ async def fn(params: FailInput) -> ToolResult:
     return ToolResult.text(
         "Failure recorded.",
         details=FailDetails(reason=params.reason),
-        terminate=True,
     )
 
 

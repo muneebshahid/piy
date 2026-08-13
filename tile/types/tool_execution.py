@@ -38,7 +38,6 @@ class ToolExecutionOutcome(BaseModel):
 
     tool_result_turn: ToolResultTurn
     details: SerializeAsAny[ToolDetails] | None = None
-    terminate: bool = False
 
     @classmethod
     def from_result(
@@ -57,7 +56,6 @@ class ToolExecutionOutcome(BaseModel):
                 content=result.content,
             ),
             details=result.details,
-            terminate=result.terminate,
         )
 
     @classmethod
