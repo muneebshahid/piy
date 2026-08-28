@@ -1,5 +1,3 @@
-"""Tests for extension assembly, lifecycle hooks, and observers."""
-
 import asyncio
 import logging
 from pathlib import Path
@@ -34,24 +32,16 @@ from tile.types import (
 
 
 class _ChainedHooks:
-    """Contribute ordered hooks and record the contexts they observe."""
-
     def __init__(self) -> None:
-        """Create an unregistered extension."""
-
         self.registrations = 0
         self.seen: list[BeforeRunContext] = []
 
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register two hooks once during harness construction."""
-
         self.registrations += 1
         registry.before_run(self._first)
         registry.before_run(self._second)
 
     async def _first(self, context: BeforeRunContext) -> BeforeRunResult:
-        """Replace instructions and append one run input message."""
-
         self.seen.append(context)
         return BeforeRunResult(
             system_prompt="first hook",
@@ -59,8 +49,6 @@ class _ChainedHooks:
         )
 
     async def _second(self, context: BeforeRunContext) -> BeforeRunResult:
-        """Observe the first result and replace its instructions."""
-
         self.seen.append(context)
         return BeforeRunResult(system_prompt="second hook")
 
@@ -68,8 +56,6 @@ class _ChainedHooks:
 async def test_before_run_hooks_chain_and_commit_their_final_input(
     store: SQLiteStore,
 ) -> None:
-    """Apply hooks in order and commit their final context at run end."""
-
     extension = _ChainedHooks()
     release = asyncio.Event()
     provider = GatedProviderStreamMock([release])
@@ -103,16 +89,10 @@ async def test_before_run_hooks_chain_and_commit_their_final_input(
 
 
 class _FailingHook:
-    """Reject a run before it reaches persistence."""
-
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register the failing handler."""
-
         registry.before_run(self.before_run)
 
     async def before_run(self, context: BeforeRunContext) -> None:
-        """Raise a deterministic admission failure."""
-
         _ = context
         raise LookupError("missing extension configuration")
 
@@ -120,8 +100,6 @@ class _FailingHook:
 async def test_before_run_failure_rejects_admission(
     store: SQLiteStore,
 ) -> None:
-    """Propagate hook failures without creating a run or invoking a provider."""
-
     provider = ProviderStreamMock([final_text_stream("response-1", "unused")])
     session = SessionRepository(store).create(session_id="hook-failure")
     harness = AgentHarness(
@@ -140,16 +118,10 @@ async def test_before_run_failure_rejects_admission(
 
 
 class _InvalidResultHook:
-    """Return a value that violates the typed hook contract."""
-
     def register(self, registry: ExtensionRegistry) -> None:
-        """Simulate registration from an untyped extension."""
-
         registry.before_run(cast(BeforeRunHook, self.before_run))
 
     async def before_run(self, context: BeforeRunContext) -> str:
-        """Return an invalid hook result."""
-
         _ = context
         return "invalid"
 
@@ -157,8 +129,6 @@ class _InvalidResultHook:
 async def test_before_run_rejects_an_invalid_result_type(
     store: SQLiteStore,
 ) -> None:
-    """Reject runtime contract violations before run admission."""
-
     provider = ProviderStreamMock([final_text_stream("response-1", "unused")])
     session = SessionRepository(store).create(session_id="invalid-result-type")
     harness = AgentHarness(
@@ -176,21 +146,13 @@ async def test_before_run_rejects_an_invalid_result_type(
 
 
 class _ToolExchangeHook:
-    """Add a tool exchange to the initial run conversation."""
-
     def __init__(self, *, include_result: bool) -> None:
-        """Choose whether the injected tool call is complete."""
-
         self._include_result = include_result
 
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register the tool-exchange hook."""
-
         registry.before_run(self.before_run)
 
     async def before_run(self, context: BeforeRunContext) -> BeforeRunResult:
-        """Return one tool call and, when requested, its result."""
-
         _ = context
         tool_call = AssistantTurn(
             blocks=[
@@ -214,8 +176,6 @@ class _ToolExchangeHook:
 async def test_before_run_rejects_an_unanswered_tool_call(
     store: SQLiteStore,
 ) -> None:
-    """Validate each hook result before admitting its messages."""
-
     provider = ProviderStreamMock([final_text_stream("response-1", "unused")])
     session = SessionRepository(store).create(session_id="invalid-hook-result")
     harness = AgentHarness(
@@ -236,8 +196,6 @@ async def test_before_run_rejects_an_unanswered_tool_call(
 async def test_before_run_accepts_a_complete_tool_exchange(
     store: SQLiteStore,
 ) -> None:
-    """Admit matching tool calls and results returned by one hook."""
-
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     session = SessionRepository(store).create(session_id="valid-hook-result")
     harness = AgentHarness(
@@ -256,8 +214,6 @@ async def test_before_run_accepts_a_complete_tool_exchange(
 async def test_non_interactive_is_an_explicit_before_run_extension(
     store: SQLiteStore,
 ) -> None:
-    """Prepend the non-interactive execution policy for each run."""
-
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     session = SessionRepository(store).create(session_id="non-interactive")
     harness = AgentHarness(
@@ -277,46 +233,32 @@ async def test_non_interactive_is_an_explicit_before_run_extension(
 
 
 class _ObservingExtension:
-    """Exercise independent, failure-isolated run event streams."""
-
     def __init__(self) -> None:
-        """Create empty observation state."""
-
         self.events: list[AgentEvent] = []
         self.identities: list[tuple[str, str]] = []
         self.cancelled = asyncio.Event()
         self.completed = asyncio.Event()
 
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register failure, mutation, and collection stream consumers."""
-
         registry.observe(self._raise)
         registry.observe(self._cancel)
         registry.observe(self._mutate_copy)
         registry.observe(self._collect)
 
     async def _raise(self, stream: RunEventStream) -> None:
-        """Prove one observer cannot interrupt execution or another stream."""
-
         async for event in stream:
             raise LookupError(event.type)
 
     async def _cancel(self, stream: RunEventStream) -> None:
-        """Prove observer cancellation remains local to its own task."""
-
         async for _ in stream:
             self.cancelled.set()
             raise asyncio.CancelledError
 
     async def _mutate_copy(self, stream: RunEventStream) -> None:
-        """Try to alter every event yielded to one observer."""
-
         async for event in stream:
             event.type = "mutated"
 
     async def _collect(self, stream: RunEventStream) -> None:
-        """Capture one independent stream and its stable run identity."""
-
         self.identities.append((stream.session_id, stream.run_id))
         self.events.extend([event async for event in stream])
         self.completed.set()
@@ -326,8 +268,6 @@ async def test_run_observers_receive_identity_without_affecting_execution(
     store: SQLiteStore,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Give each observer a complete copy-safe stream and isolate failures."""
-
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     session = SessionRepository(store).create(session_id="observed-session")
     extension = _ObservingExtension()
@@ -354,24 +294,16 @@ async def test_run_observers_receive_identity_without_affecting_execution(
 
 
 class _DelayedObserver:
-    """Delay consumption until after its observed run has finalized."""
-
     def __init__(self) -> None:
-        """Create explicit release and completion signals."""
-
         self.started = asyncio.Event()
         self.release = asyncio.Event()
         self.completed = asyncio.Event()
         self.events: list[AgentEvent] = []
 
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register the delayed stream consumer."""
-
         registry.observe(self.observe)
 
     async def observe(self, stream: RunEventStream) -> None:
-        """Drain the buffered stream only after the test releases it."""
-
         self.started.set()
         await self.release.wait()
         self.events.extend([event async for event in stream])
@@ -381,8 +313,6 @@ class _DelayedObserver:
 async def test_run_observer_can_drain_events_after_wait_returns(
     store: SQLiteStore,
 ) -> None:
-    """Retain a complete observer stream beyond run finalization."""
-
     observer = _DelayedObserver()
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     session = SessionRepository(store).create(session_id="delayed-observer")
@@ -410,8 +340,6 @@ async def test_event_logger_logs_every_observed_run_event(
     store: SQLiteStore,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Expose logging as an explicit built-in observer extension."""
-
     logger = logging.getLogger("tests.tile.events")
     provider = ProviderStreamMock([final_text_stream("response-1", "done")])
     session = SessionRepository(store).create(session_id="logged-session")
@@ -438,8 +366,6 @@ async def test_event_logger_logs_every_observed_run_event(
 
 
 def test_extension_registry_does_not_register_tools() -> None:
-    """Keep model-callable tools on the explicit harness API."""
-
     assert not hasattr(ExtensionRegistry(), "add_tools")
 
 
@@ -447,7 +373,5 @@ async def _wait_for_log(
     caplog: pytest.LogCaptureFixture,
     expected: str,
 ) -> None:
-    """Yield until one asynchronously observed log message arrives."""
-
     while not any(expected in record.getMessage() for record in caplog.records):
         await asyncio.sleep(0)

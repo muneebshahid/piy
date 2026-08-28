@@ -35,8 +35,6 @@ class _RunHistory:
         *,
         initial_messages: Sequence[ConversationItem],
     ) -> _RunHistory:
-        """Build a run-local buffer from committed and provisional input."""
-
         delta = [message.model_copy(deep=True) for message in initial_messages]
         working = [
             *(envelope.item.model_copy(deep=True) for envelope in committed),

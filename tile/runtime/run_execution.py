@@ -40,8 +40,6 @@ from tile.types.conversation import ConversationItem, UserMessage
 
 @dataclass(frozen=True)
 class _RunDependencies:
-    """Harness configuration needed to admit and execute a run."""
-
     instructions: str
     cwd: Path
     tool_executor: ToolExecutor
@@ -187,8 +185,6 @@ class RunExecution:
         self._task.add_done_callback(self._finalize)
 
     def _start_observers(self) -> None:
-        """Start independent consumers of this run's event log."""
-
         self._observers.start(
             session_id=self.session_id,
             run_id=self.id,

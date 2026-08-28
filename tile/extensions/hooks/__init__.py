@@ -1,5 +1,3 @@
-"""Typed lifecycle hooks carried by one Tile run."""
-
 from tile.extensions.hooks.before_run import (
     BeforeRunContext,
     BeforeRunHook,

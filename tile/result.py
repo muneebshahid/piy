@@ -37,8 +37,6 @@ NO_RESULT_REASON: Final = (
 
 
 def is_result_tool_name(tool_name: str) -> bool:
-    """Return whether a model-requested name identifies a result tool."""
-
     return tool_name.lower().strip() in RESULT_TOOL_NAMES
 
 

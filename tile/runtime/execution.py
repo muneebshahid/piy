@@ -39,12 +39,6 @@ from tile.types.tool_execution import ToolExecutionOutcome
 
 @dataclass(frozen=True)
 class _ExecutionDependencies:
-    """Admitted run dependencies a prompt program may touch.
-
-    Deliberately excludes persistence. Execution receives one run-local
-    history snapshot and drives only the provider and tools.
-    """
-
     provider: Provider
     system_prompt: str
     tool_executor: ToolExecutor
@@ -58,8 +52,6 @@ def build_execution_dependencies(
     tool_executor: ToolExecutor,
     result_type: type[BaseModel] | None,
 ) -> _ExecutionDependencies:
-    """Construct the complete dependencies for one prompt execution."""
-
     if result_type is not None:
         system_prompt = f"{system_prompt}\n\n{RESULT_CONTRACT}"
         tool_executor = _result_contract_tool_executor(tool_executor, result_type)
@@ -132,11 +124,6 @@ async def _run_attempt(
     deps: _ExecutionDependencies,
     history: Sequence[ConversationItem],
 ) -> AgentResult:
-    """Drive one stateless agent attempt, emitting every event.
-
-    The complete system prompt was compiled and admitted before execution.
-    """
-
     return await run_agent(
         history,
         emit=emit,
@@ -150,8 +137,6 @@ def _result_contract_tool_executor(
     tool_executor: ToolExecutor,
     result_type: type[BaseModel],
 ) -> ToolExecutor:
-    """Add the tools required by a result contract."""
-
     return ToolExecutor((*tool_executor.tools, complete_tool(result_type), fail_tool))
 
 

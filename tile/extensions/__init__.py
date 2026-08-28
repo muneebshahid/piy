@@ -1,5 +1,3 @@
-"""Public extension contracts and built-in Tile extensions."""
-
 from tile.extensions.event_logger import EventLogger
 from tile.extensions.hooks import BeforeRunContext, BeforeRunHook, BeforeRunResult
 from tile.extensions.non_interactive import NonInteractive

@@ -1,5 +1,3 @@
-"""Pre-admission run hook contracts and execution."""
-
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -15,8 +13,6 @@ from tile.types.stream_events import ToolCallBlock
 
 
 class BeforeRunContext(BaseModel):
-    """Run input visible to one ``before_run`` hook."""
-
     model_config = ConfigDict(frozen=True)
 
     session_id: str
@@ -26,8 +22,6 @@ class BeforeRunContext(BaseModel):
 
 
 class BeforeRunResult(BaseModel):
-    """Changes requested by one ``before_run`` hook."""
-
     model_config = ConfigDict(frozen=True)
 
     system_prompt: str | None = None
@@ -41,16 +35,10 @@ type BeforeRunHook = Callable[
 
 
 class _BeforeRunExecution:
-    """Invoke, validate, and apply one ``before_run`` hook."""
-
     def __init__(self, hook: BeforeRunHook) -> None:
-        """Store one typed hook for repeated run invocation."""
-
         self._hook = hook
 
     async def apply(self, context: BeforeRunContext) -> BeforeRunContext:
-        """Apply one validated hook result to the current run input."""
-
         result = await self._hook(context.model_copy(deep=True))
         result = _validate_before_run_result(context, result)
         return _apply_before_run_result(context, result)
@@ -60,8 +48,6 @@ def _validate_before_run_result(
     context: BeforeRunContext,
     result: object,
 ) -> BeforeRunResult | None:
-    """Validate one hook result before it enters the run context."""
-
     if result is None:
         return None
     if not isinstance(result, BeforeRunResult):
@@ -75,8 +61,6 @@ def _apply_before_run_result(
     context: BeforeRunContext,
     result: BeforeRunResult | None,
 ) -> BeforeRunContext:
-    """Apply one hook decision to the context for the next hook."""
-
     if result is None:
         return context
     return BeforeRunContext(
@@ -88,8 +72,6 @@ def _apply_before_run_result(
 
 
 def _validate_tool_exchanges(messages: Sequence[ConversationItem]) -> None:
-    """Require every tool call to have one matching subsequent result."""
-
     calls: dict[str, str] = {}
     answered: set[str] = set()
     for message in messages:
@@ -104,8 +86,6 @@ def _validate_tool_exchanges(messages: Sequence[ConversationItem]) -> None:
 
 
 def _collect_tool_calls(turn: AssistantTurn, calls: dict[str, str]) -> None:
-    """Collect unique tool calls from one assistant turn."""
-
     for block in turn.blocks:
         if not isinstance(block, ToolCallBlock):
             continue
@@ -119,8 +99,6 @@ def _validate_tool_result(
     calls: dict[str, str],
     answered: set[str],
 ) -> None:
-    """Validate one tool result against a preceding tool call."""
-
     tool_name = calls.get(result.call_id)
     if tool_name is None:
         raise ValueError(f"Unknown before_run tool call: {result.call_id}")
@@ -138,8 +116,6 @@ def _result_system_prompt(
     context: BeforeRunContext,
     result: BeforeRunResult,
 ) -> str:
-    """Resolve the system prompt requested by one hook."""
-
     if result.system_prompt is None:
         return context.system_prompt
     return result.system_prompt
