@@ -8,8 +8,7 @@ from tile.extensions.run_observers import RunObserver, RunObservers
 
 
 class Extension(Protocol):
-    def register(self, registry: ExtensionRegistry) -> None:
-        ...
+    def register(self, registry: ExtensionRegistry) -> None: ...
 
 
 class ExtensionRegistry:

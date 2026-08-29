@@ -1,13 +1,13 @@
 """Tests for system prompt composition and project context discovery."""
 
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 from tile.prompt import build_system_prompt, read_project_context
 
 
 def _environment(cwd: Path) -> str:
-    return f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"
+    return f"Current date: {datetime.now().astimezone().date().isoformat()}\nCurrent working directory: {cwd}"
 
 
 def test_build_system_prompt_composes_all_core_tiers(tmp_path: Path) -> None:
