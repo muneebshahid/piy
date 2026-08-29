@@ -7,14 +7,10 @@ from tile.prompt import build_system_prompt, read_project_context
 
 
 def _environment(cwd: Path) -> str:
-    """Return the environment block expected at the end of every prompt."""
-
-    return f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"  # noqa: DTZ011
+    return f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"
 
 
 def test_build_system_prompt_composes_all_core_tiers(tmp_path: Path) -> None:
-    """Order instructions, project context, and environment."""
-
     (tmp_path / "AGENTS.md").write_text("Project rules.", encoding="utf-8")
 
     prompt = build_system_prompt("Instructions body.", tmp_path)

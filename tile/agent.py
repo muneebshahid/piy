@@ -97,8 +97,6 @@ class _TurnResult:
 
 
 def _is_successful_result_tool(execution: ToolExecutionOutcome) -> bool:
-    """Return whether one successful execution ends a result-contract loop."""
-
     result = execution.tool_result_turn
     return not result.is_error and is_result_tool_name(result.tool_name)
 

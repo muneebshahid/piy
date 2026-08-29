@@ -34,8 +34,6 @@ class AgentHarness:
         tools: Sequence[ToolDefinition] = (),
         extensions: Sequence[Extension] = (),
     ) -> None:
-        """Configure one session with tools, instructions, and extensions."""
-
         registry = _register_extensions(extensions)
         _reject_reserved_tool_names(tools)
         normalized_cwd = normalize_cwd(cwd)

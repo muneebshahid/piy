@@ -1,5 +1,3 @@
-"""Non-interactive execution instructions packaged as a Tile extension."""
-
 from typing import Final
 
 from tile.extensions.hooks import BeforeRunContext, BeforeRunResult
@@ -20,16 +18,10 @@ output. Never present unverified work as done."""
 
 
 class NonInteractive:
-    """Instruct every run to proceed without caller interaction."""
-
     def register(self, registry: ExtensionRegistry) -> None:
-        """Register the policy at the pre-admission instruction boundary."""
-
         registry.before_run(self.before_run)
 
     async def before_run(self, context: BeforeRunContext) -> BeforeRunResult:
-        """Prepend non-interactive guidance to the complete system prompt."""
-
         return BeforeRunResult(
             system_prompt=(
                 f"{_NON_INTERACTIVE_INSTRUCTIONS}\n\n{context.system_prompt}"
