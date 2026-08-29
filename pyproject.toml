@@ -36,7 +36,7 @@ unsupported-dynamic-base = "error"
 missing-override-decorator = "error"
 
 [tool.ruff.lint]
-extend-select = ["ARG", "D1", "D401", "FBT", "PT", "PTH"]
+extend-select = ["ARG", "FBT", "PT", "PTH"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

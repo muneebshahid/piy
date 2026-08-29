@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 from typing import Final
 
@@ -20,9 +20,7 @@ def build_system_prompt(
     instructions: str,
     cwd: Path,
 ) -> str:
-    environment = (
-        f"Current date: {date.today().isoformat()}\nCurrent working directory: {cwd}"
-    )
+    environment = f"Current date: {datetime.now().astimezone().date().isoformat()}\nCurrent working directory: {cwd}"
     parts = [
         instructions,
         read_project_context(cwd),
